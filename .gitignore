@@ -6,3 +6,4 @@ wrangler.local.toml
 coverage/
 test-results/
 playwright-report/
+packages/cli/skills/
