@@ -483,7 +483,7 @@ skills/
 - localStorage は try/catch で囲み、なくても動くようにする
 - 秘密情報・認証情報・個人データをページに書かない
 
-`article setup` が `~/.codex/skills/`、`~/.gemini/skills/`、`~/.claude/skills/` にコピーする。skills だけ入れ直すときは `article install-skills`（`--agent codex` のように対象を絞れる）。npm で `article` を更新したら、skills も新しい版に入れ直す。
+`article setup` が `~/.agents/skills/`（Codex と Gemini CLI の両方が読む）と `~/.claude/skills/`（Claude Code）にコピーする。コピーした skill のフォルダには印のファイルを置き、同じ名前の他人の skill は上書きしない。skills だけ入れ直すときは `article install-skills`（`--agent codex` のように対象を絞れる）。npm で `article` を更新したら、skills も新しい版に入れ直す。
 
 ## 画面
 
@@ -515,10 +515,16 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
 他の人が自分の Cloudflare に立てるときは:
 
 ```bash
-npx @keyhole-koro/article deploy
+git clone https://github.com/Keyhole-Koro/SelfHostArticle.git
+cd SelfHostArticle && pnpm install
+cd packages/worker && npx wrangler login && pnpm run deploy
 ```
 
-対話式で次をまとめて行う: ドメインと `ROOT_EMAIL` の入力、D1 と R2 の作成、マイグレーション、secret の入力（Google の OAuth クライアント ID と secret、`SESSION_SECRET` と `CONTENT_TOKEN_SECRET` は自動生成）、`wrangler deploy`。結果は `wrangler.local.toml` に書く。README には同じことを手作業でやる手順も残す。
+`scripts/deploy.mjs` が対話式で次をまとめて行う: ホスト名と `ROOT_EMAIL` の入力、D1 と R2 の作成（あれば再利用）、`wrangler.local.toml` の生成（`DEV_LOGIN_EMAIL` は消し、Custom Domain を足す）、マイグレーション、`wrangler deploy`、まだない secret の設定（`SESSION_SECRET` と `CONTENT_TOKEN_SECRET` は自動生成、Google の OAuth クライアントは入力）。何度実行してもよい。
+
+当初は npm の CLI に `article deploy` として入れる予定だったが、wrangler と Worker のソースを CLI に同梱すると重くなるのでやめた。デプロイする人はリポジトリを clone する。
+
+Cloudflare 側の設定（D1・R2 の binding、Custom Domain、Cron、Rate Limiting）はすべて `wrangler.toml` に書いてあり、これが IaC の代わりになる。Google の OAuth クライアントだけはコード化できないので手で作る。
 
 ## 乱用対策
 
@@ -546,7 +552,7 @@ SelfHostArticle/
 
 使う技術: TypeScript、pnpm、Hono、zod、`@modelcontextprotocol/sdk`、wrangler、Web Crypto（Ed25519 の検証は Workers で使える）、vitest、Playwright。
 
-npm に公開するのは `packages/cli` だけ（`@keyhole-koro/article`）。skills はこのパッケージに同梱し、`article setup` が配る。`deploy` を使うため、Worker のソースとマイグレーションも同梱する。
+npm に公開するのは `packages/cli` だけ（`@keyhole-koro/article`）。skills はこのパッケージに同梱し、`article setup` が配る。
 
 ## フェーズ
 

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc -p .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
     "@article/shared": "workspace:*",
