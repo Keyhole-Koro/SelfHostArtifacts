@@ -1,0 +1,32 @@
+# Development defaults. For a real deployment, `article deploy` writes wrangler.local.toml
+# (git-ignored) with your hostname, ROOT_EMAIL and resource ids, and deploys with it.
+name = "article"
+main = "src/index.ts"
+compatibility_date = "2026-08-15"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+APP_HOST = "localhost:8787"
+ROOT_EMAIL = "root@example.com"
+KEEP_VERSIONS = "0"
+TRASH_DAYS = "30"
+# Skips Google sign-in and signs in as this address. Refused unless APP_HOST is localhost.
+DEV_LOGIN_EMAIL = "root@example.com"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "article"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "article-blobs"
+
+[[ratelimits]]
+name = "PAIR_LIMITER"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }
+
+[triggers]
+crons = ["17 3 * * *"]
