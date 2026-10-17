@@ -52,10 +52,13 @@ export function browserCommand(choice: string | undefined): string[] {
 
 /**
  * Opens the URL in the browser given by `choice`, else ARTIFACT_BROWSER, else BROWSER, else the
- * system default. `choice` may be a short name (chrome, firefox, edge, safari) or a command.
+ * system default. `choice` may be a short name (chrome, firefox, edge, safari), a command, or
+ * "none" to only print the URL.
  */
 export function openBrowser(url: string, choice?: string): void {
-  const [command, ...args] = browserCommand(choice || process.env["ARTIFACT_BROWSER"] || process.env["BROWSER"] || undefined);
+  const chosen = choice || process.env["ARTIFACT_BROWSER"] || process.env["BROWSER"] || undefined;
+  if (chosen && /^(none|false|0|off)$/i.test(chosen)) return; // only print the URL
+  const [command, ...args] = browserCommand(chosen);
   try {
     spawn(command!, [...args, url], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
   } catch {

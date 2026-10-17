@@ -167,7 +167,7 @@ artifact uninstall                        # remove the MCP registrations and ski
 
 `--profile <name>` keeps a separate deployment or key; `--json` gives machine-readable output;
 `--browser chrome` (or `ARTIFACT_BROWSER=chrome`) picks the browser for `login` and `open`, Flatpak
-browsers included.
+browsers included; `ARTIFACT_BROWSER=none` only prints the link.
 
 ## Development
 

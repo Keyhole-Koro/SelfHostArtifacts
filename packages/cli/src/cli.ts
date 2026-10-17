@@ -41,7 +41,7 @@ Options
   --profile <name>   Use another profile (separate deployment or device key)
   --agent <a,b>      Limit setup/install-skills/uninstall to codex, gemini, claude
   --json             Machine-readable output
-  --browser <name>   Browser for login and open: chrome, firefox, edge, safari or a command
+  --browser <name>   Browser for login and open: chrome, firefox, edge, safari, a command, or none
                      (default: $ARTIFACT_BROWSER, then $BROWSER, then the system default)
   --no-browser       Only print the URL
 `;
