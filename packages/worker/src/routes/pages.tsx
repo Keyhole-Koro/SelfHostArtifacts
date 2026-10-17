@@ -1,5 +1,6 @@
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { raw } from "hono/html";
+import type { Child } from "hono/jsx";
 import type { AppEnv } from "../app-env.ts";
 import { requireSameOriginForm, requireViewer } from "../auth/session.ts";
 import { mintContentToken } from "../content.ts";
@@ -365,24 +366,44 @@ interface PairingRow {
   expires_at: string;
 }
 
+function findPairing(c: Context<AppEnv>, code: string): Promise<PairingRow | null> {
+  return c.env.DB.prepare("select * from pairings where code = ?").bind(code.toUpperCase()).first<PairingRow>();
+}
+
+function isPending(row: PairingRow | null): row is PairingRow {
+  return row?.status === "pending" && Date.parse(row.expires_at) > Date.now();
+}
+
 async function pendingPairing(c: Context<AppEnv>, code: string): Promise<PairingRow | undefined> {
-  const row = await c.env.DB.prepare("select * from pairings where code = ?").bind(code.toUpperCase()).first<PairingRow>();
-  if (!row || row.status !== "pending" || Date.parse(row.expires_at) <= Date.now()) return undefined;
-  return row;
+  const row = await findPairing(c, code);
+  return isPending(row) ? row : undefined;
+}
+
+/** What the approval page says once a request can no longer be approved (e.g. on reload). */
+function closedPairing(row: PairingRow | null): { title: string; body: Child } {
+  if (row?.status === "approved") {
+    return { title: `${row.name} can publish`, body: <>This request was approved. You can close this tab.</> };
+  }
+  if (row?.status === "denied") {
+    return { title: "This request was denied", body: <>{row.name} cannot publish. Run <code>artifact login</code> again if that was a mistake.</> };
+  }
+  return { title: "This login request has expired", body: <>Requests last 10 minutes. Run <code>artifact login</code> again.</> };
 }
 
 root.get("/pair/:code", async (c) => {
   const viewer = c.get("viewer");
-  const pairing = await pendingPairing(c, c.req.param("code"));
-  if (!pairing) {
+  const row = await findPairing(c, c.req.param("code"));
+  if (!isPending(row)) {
+    const closed = closedPairing(row);
     return c.html(
       <Page title="Login request" viewer={viewer}>
-        <h1>This login request is no longer valid</h1>
-        <p class="muted">It was already handled or has expired. Run <code>artifact login</code> again.</p>
+        <h1>{closed.title}</h1>
+        <p class="muted">{closed.body}</p>
       </Page>,
-      404,
+      row ? 200 : 404,
     );
   }
+  const pairing = row;
   return c.html(
     <Page title="Approve device" viewer={viewer}>
       <h1>Let this device publish?</h1>

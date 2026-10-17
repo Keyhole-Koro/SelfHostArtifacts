@@ -132,6 +132,25 @@ describe("device pairing", () => {
     const root = await sessionCookie(ROOT);
     await browserPost(`/pair/${code}`, root.cookie, { csrf: root.csrf, decision: "deny" });
     expect((await poll(code)).status).toBe("denied");
+    expect(await (await browserGet(`/pair/${code}`, root.cookie)).text()).toContain("This request was denied");
+  });
+
+  it("says the device was approved when the approval page is reloaded", async () => {
+    const { code } = await startPairing();
+    const root = await sessionCookie(ROOT);
+    await browserPost(`/pair/${code}`, root.cookie, { csrf: root.csrf, decision: "approve" });
+    const reload = await browserGet(`/pair/${code}`, root.cookie);
+    expect(reload.status).toBe(200);
+    const html = await reload.text();
+    expect(html).toContain("codex-laptop can publish");
+    expect(html).not.toContain("Approve</button>");
+  });
+
+  it("says an unknown code has expired", async () => {
+    const root = await sessionCookie(ROOT);
+    const res = await browserGet("/pair/ZZZZ-ZZZZ", root.cookie);
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain("expired");
   });
 
   it("limits how many requests can wait for approval", async () => {
