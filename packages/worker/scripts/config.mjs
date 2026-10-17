@@ -9,19 +9,16 @@ function check(name, value, pattern) {
   return value;
 }
 
-export function renderConfig({ host, rootEmail, keep = "0", trash = "30", dbId }) {
+export function renderConfig({ host, keep = "0", trash = "30", dbId }) {
   check("APP_HOST", host, /^[a-z0-9.-]+\.[a-z]{2,}$/);
-  if (rootEmail) check("ROOT_EMAIL", rootEmail, /^[^\s"@]+@[^\s"@]+$/);
   check("KEEP_VERSIONS", keep, /^\d+$/);
   check("TRASH_DAYS", trash, /^\d+$/);
   check("D1 database id", dbId, /^[0-9a-f-]{36}$|^<.*>$/);
   const base = readFileSync("wrangler.toml", "utf8")
     .replace(/^APP_HOST = .*$/m, `APP_HOST = "${host}"`)
-    // ROOT_EMAIL is only for Google sign-in; without it the line is dropped.
-    .replace(/^ROOT_EMAIL = .*\n/m, rootEmail ? `ROOT_EMAIL = "${rootEmail}"\n` : "")
     .replace(/^KEEP_VERSIONS = .*$/m, `KEEP_VERSIONS = "${keep}"`)
     .replace(/^TRASH_DAYS = .*$/m, `TRASH_DAYS = "${trash}"`)
-    .replace(/^# Skips Google sign-in.*\n.*\n/m, "") // comment line + DEV_LOGIN_EMAIL: never in a deployment
+    .replace(/^# Skips sign-in.*\n.*\n/m, "") // comment line + DEV_LOGIN: never in a deployment
     .replace(/^database_id = .*$/m, `database_id = "${dbId}"`)
     .replace(/^# Development defaults[\s\S]*?\n(?=name = )/m, "");
   return `# Generated from wrangler.toml. Not committed: it holds your hostname and account's resource ids.\n${base}

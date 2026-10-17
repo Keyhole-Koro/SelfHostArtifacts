@@ -4,14 +4,11 @@ export interface Env {
   PAIR_LIMITER?: RateLimit;
 
   APP_HOST: string;
-  /** Optional: the owner's Google account, only used when Google sign-in is configured. */
-  ROOT_EMAIL?: string;
   KEEP_VERSIONS?: string;
   TRASH_DAYS?: string;
-  DEV_LOGIN_EMAIL?: string;
+  /** "true" skips sign-in and signs in as the owner. Refused unless APP_HOST is localhost. */
+  DEV_LOGIN?: string;
 
-  GOOGLE_CLIENT_ID?: string;
-  GOOGLE_CLIENT_SECRET?: string;
   SESSION_SECRET: string;
   CONTENT_TOKEN_SECRET: string;
 }
@@ -21,10 +18,9 @@ export interface Config {
   origin: string;
   /** Host name without the port: the WebAuthn relying party id. */
   rpId: string;
-  rootEmail: string | undefined;
   keepVersions: number;
   trashDays: number;
-  devLoginEmail: string | undefined;
+  devLogin: boolean;
 }
 
 export function isLocalHost(host: string): boolean {
@@ -42,12 +38,10 @@ function nonNegativeInt(value: string | undefined, fallback: number, name: strin
 export function loadConfig(env: Env): Config {
   const host = env.APP_HOST?.trim().toLowerCase();
   if (!host) throw new Error("APP_HOST is not set");
-  const rootEmail = env.ROOT_EMAIL?.trim().toLowerCase() || undefined;
-  if (rootEmail && !rootEmail.includes("@")) throw new Error(`ROOT_EMAIL is not an email address: "${rootEmail}"`);
   const local = isLocalHost(host);
-  const devLoginEmail = env.DEV_LOGIN_EMAIL?.trim().toLowerCase() || undefined;
-  if (devLoginEmail && !local) {
-    throw new Error("DEV_LOGIN_EMAIL is only allowed when APP_HOST is localhost; remove it from this deployment");
+  const devLogin = env.DEV_LOGIN?.trim().toLowerCase() === "true";
+  if (devLogin && !local) {
+    throw new Error("DEV_LOGIN is only allowed when APP_HOST is localhost; remove it from this deployment");
   }
   if (!env.SESSION_SECRET || !env.CONTENT_TOKEN_SECRET) {
     throw new Error("SESSION_SECRET and CONTENT_TOKEN_SECRET must be set (wrangler secret put)");
@@ -56,9 +50,8 @@ export function loadConfig(env: Env): Config {
     host,
     origin: `${local ? "http" : "https"}://${host}`,
     rpId: host.replace(/:\d+$/, ""),
-    rootEmail,
     keepVersions: nonNegativeInt(env.KEEP_VERSIONS, 0, "KEEP_VERSIONS"),
     trashDays: nonNegativeInt(env.TRASH_DAYS, 30, "TRASH_DAYS"),
-    devLoginEmail,
+    devLogin,
   };
 }

@@ -18,7 +18,7 @@ export const pageSecurity: MiddlewareHandler<AppEnv> = async (c, next) => {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
       "frame-src 'self'",
-      "form-action 'self' https://accounts.google.com",
+      "form-action 'self'",
       "frame-ancestors 'none'",
       "base-uri 'none'",
     ].join("; "),

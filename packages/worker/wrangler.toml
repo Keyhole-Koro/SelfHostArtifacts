@@ -1,5 +1,5 @@
-# Development defaults. For a real deployment, `artifact deploy` writes wrangler.local.toml
-# (git-ignored) with your hostname, ROOT_EMAIL and resource ids, and deploys with it.
+# Development defaults. For a real deployment, `pnpm run deploy` (scripts/deploy.mjs) writes
+# wrangler.local.toml (git-ignored) with your hostname and resource ids, and deploys with it.
 name = "artifacts"
 main = "src/index.ts"
 compatibility_date = "2026-08-15"
@@ -7,11 +7,10 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 APP_HOST = "localhost:8787"
-ROOT_EMAIL = "root@example.com"
 KEEP_VERSIONS = "0"
 TRASH_DAYS = "30"
-# Skips Google sign-in and signs in as this address. Refused unless APP_HOST is localhost.
-DEV_LOGIN_EMAIL = "root@example.com"
+# Skips sign-in and signs in as the owner. Refused unless APP_HOST is localhost.
+DEV_LOGIN = "true"
 
 [[d1_databases]]
 binding = "DB"

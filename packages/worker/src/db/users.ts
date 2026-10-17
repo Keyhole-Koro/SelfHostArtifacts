@@ -5,6 +5,7 @@ export interface UserRow {
   id: string;
   name: string;
   role: Role;
+  /** Unused since Google sign-in was removed; kept because SQLite cannot drop a UNIQUE column. */
   email: string | null;
   created_at: string;
 }
@@ -42,16 +43,12 @@ export async function firstRoot(db: D1Database): Promise<UserRow | null> {
   return db.prepare("select * from users where role = 'root' order by created_at limit 1").first<UserRow>();
 }
 
-export async function userByEmail(db: D1Database, email: string): Promise<UserRow | null> {
-  return db.prepare("select * from users where email = ?").bind(email.toLowerCase()).first<UserRow>();
-}
-
-export async function createUser(db: D1Database, user: { name: string; role: Role; email?: string | null }): Promise<UserRow> {
+export async function createUser(db: D1Database, user: { name: string; role: Role }): Promise<UserRow> {
   const row: UserRow = {
     id: newUserId(),
     name: user.name,
     role: user.role,
-    email: user.email?.toLowerCase() ?? null,
+    email: null,
     created_at: new Date().toISOString(),
   };
   await db

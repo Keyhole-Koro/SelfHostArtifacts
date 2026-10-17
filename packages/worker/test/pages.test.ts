@@ -10,7 +10,7 @@ describe("sign-in and roles", () => {
     expect(res.headers.get("location")).toBe("/auth/login?next=%2Fsettings");
   });
 
-  it("dev login signs in as DEV_LOGIN_EMAIL with a strict session cookie", async () => {
+  it("dev login (DEV_LOGIN) signs in as the owner with a strict session cookie", async () => {
     const res = await browserGet("/auth/login?next=/settings");
     expect(res.headers.get("location")).toBe("/settings");
     const cookie = res.headers.get("set-cookie")!;

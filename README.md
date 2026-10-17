@@ -15,7 +15,8 @@ Agent ──stdio MCP──▶ artifact (CLI on your computer) ──signed HTTP
 - **One hostname**, e.g. `artifacts.example.com`: `/` lists pages, `/a/<id>` shows one,
   `/settings` manages viewers and devices.
 - **People** sign in with a passkey (fingerprint, face or screen lock). No OAuth app, no
-  passwords. The owner invites viewers with single-use links; Google sign-in is optional.
+  passwords. The owner invites viewers with single-use links, and a QR code on the account page
+  signs in your phone.
 - **Agents** never hold a password: each computer gets its own Ed25519 key, approved once in the
   browser (`artifact login`), and signs every request.
 - **Pages are isolated**: they run in a CSP sandbox with an opaque origin, so a page's scripts
@@ -91,15 +92,6 @@ browser in with that computer's key. Or run `pnpm run deploy --owner-link` for a
 Run `pnpm run deploy` again to update. It reuses `wrangler.local.toml` (git-ignored) and only sets
 secrets that are missing. All Cloudflare resources are declared in `wrangler.toml`.
 
-<details>
-<summary>Optional: Google sign-in as well</summary>
-
-Answer "y" when the script asks about Google. It then asks for the owner's Google account
-(`ROOT_EMAIL`) and an OAuth client: Google Cloud console → APIs & Services → Credentials →
-Create credentials → OAuth client ID → Web application, with the redirect URI
-`https://<your host>/auth/callback`. People added in Settings by Google account can then sign in
-with Google too.
-</details>
 
 ### Deploy from GitHub Actions
 
@@ -118,7 +110,6 @@ In your fork, add under Settings → Secrets and variables → Actions:
 |---|---|---|
 | Secret | `CLOUDFLARE_API_TOKEN` | API token from the "Edit Cloudflare Workers" template, plus **D1: Edit** |
 | Secret | `CLOUDFLARE_ACCOUNT_ID` | Your account id (`npx wrangler whoami`) |
-| Secret | `ROOT_EMAIL` | Only with Google sign-in: the owner's Google account (a secret so it is masked in public logs) |
 | Variable | `APP_HOST` | Your hostname |
 | Variable | `D1_DATABASE_ID` | `database_id` from `wrangler.local.toml` |
 
@@ -179,13 +170,13 @@ pnpm typecheck
 cd packages/worker
 cp .dev.vars.example .dev.vars
 npx wrangler d1 migrations apply artifacts --local
-pnpm dev           # http://localhost:8787, signs you in as DEV_LOGIN_EMAIL
+pnpm dev           # http://localhost:8787, DEV_LOGIN signs you in as the owner
 
 cd ../cli
 node src/cli.ts login --host localhost:8787
 ```
 
-`DEV_LOGIN_EMAIL` skips sign-in (you become the owner) and is refused unless `APP_HOST` is localhost.
+`DEV_LOGIN` skips sign-in (you become the owner) and is refused unless `APP_HOST` is localhost.
 
 The design (in Japanese) is in [docs/design.md](docs/design.md).
 

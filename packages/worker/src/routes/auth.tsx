@@ -1,8 +1,6 @@
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from "@simplewebauthn/server";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { AppEnv } from "../app-env.ts";
-import { authorizeUrl, codeChallengeFor, exchangeCode, verifyIdToken } from "../auth/google.ts";
 import {
   authenticationOptions,
   passkeyLabel,
@@ -21,24 +19,10 @@ import {
   newUserId,
   openInvite,
   useInvite,
-  userByEmail,
   type UserRow,
 } from "../db/users.ts";
-import { randomToken, sha256Hex } from "../lib/encoding.ts";
-import { sign, verify } from "../lib/signed.ts";
 import { Page } from "../ui/layout.tsx";
 import { pageSecurity } from "../ui/security.ts";
-
-const OAUTH_COOKIE = "__Host-artifact_oauth";
-const OAUTH_SECONDS = 10 * 60;
-
-interface OAuthState {
-  state: string;
-  nonce: string;
-  verifier: string;
-  next: string;
-  exp: number;
-}
 
 export const auth = new Hono<AppEnv>();
 auth.use(pageSecurity);
@@ -46,10 +30,6 @@ auth.use(pageSecurity);
 /** Only same-site paths, so a crafted link cannot bounce the user elsewhere after sign-in. */
 export function safeNext(next: string | undefined): string {
   return next?.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/";
-}
-
-function googleConfigured(c: Context<AppEnv>): boolean {
-  return Boolean(c.env.GOOGLE_CLIENT_ID && c.env.GOOGLE_CLIENT_SECRET);
 }
 
 function message(c: Context<AppEnv>, title: string, body: string, status: 400 | 403 | 404 | 500) {
@@ -66,7 +46,7 @@ function message(c: Context<AppEnv>, title: string, body: string, status: 400 | 
 }
 
 /**
- * After a navigation that started on another site (Google, or a link opened by the CLI), the
+ * After a navigation that started outside the site (a link opened by the CLI or a QR code), the
  * browser does not send our SameSite=Strict cookie on a redirect. A page that moves on by itself
  * starts a fresh same-site navigation, which does.
  */
@@ -95,7 +75,7 @@ const sameOrigin: MiddlewareHandler<AppEnv> = async (c, next) => {
 
 async function devUser(db: D1Database, config: Config): Promise<UserRow> {
   const root = await firstRoot(db);
-  return root ?? createUser(db, { name: "Owner", role: "root", email: config.devLoginEmail });
+  return root ?? createUser(db, { name: "Owner", role: "root" });
 }
 
 // --- Sign-in page ---
@@ -103,7 +83,7 @@ async function devUser(db: D1Database, config: Config): Promise<UserRow> {
 auth.get("/login", async (c) => {
   const config = c.get("config");
   const next = safeNext(c.req.query("next"));
-  if (config.devLoginEmail) {
+  if (config.devLogin) {
     const user = await devUser(c.env.DB, config);
     await startSession(c, user.id);
     return c.redirect(next);
@@ -112,7 +92,7 @@ auth.get("/login", async (c) => {
   return c.html(
     <Page title="Sign in" passkeys>
       <h1>Sign in</h1>
-      {!hasOwner && !config.rootEmail && (
+      {!hasOwner && (
         <p class="card">
           This deployment has no owner yet. Open the owner link that <code>pnpm run deploy</code> printed.
         </p>
@@ -127,16 +107,11 @@ auth.get("/login", async (c) => {
         >
           Sign in with a passkey
         </button>
-        {googleConfigured(c) && (
-          <a class="button" href={`/auth/google?next=${encodeURIComponent(next)}`}>
-            Sign in with Google
-          </a>
-        )}
       </div>
       <p class="muted" style="margin-top:24px">
         No passkey here yet? Open the invite link you were sent; it creates one. If you already have an account, sign in
-        another way first{googleConfigured(c) ? " (Google, or " : " ("}<code>artifact open</code> on a computer set up with
-        <code>artifact</code>) and add a passkey under your name.
+        another way first (<code>artifact open</code> on a computer set up with <code>artifact</code>, or a QR code from
+        your account on another device) and add a passkey under your name.
       </p>
     </Page>,
   );
@@ -161,88 +136,6 @@ auth.get("/link/:token", async (c) => {
   if (!link) return message(c, "This sign-in link has expired", "Links work once, for two minutes. Run artifact open again.", 403);
   await startSession(c, link.userId);
   return continueTo(c, safeNext(link.next));
-});
-
-// --- Google (optional) ---
-
-auth.get("/google", async (c) => {
-  if (!googleConfigured(c)) return message(c, "Google sign-in is not set up", "Sign in with a passkey instead.", 404);
-  const pending: OAuthState = {
-    state: randomToken(),
-    nonce: randomToken(),
-    verifier: randomToken(),
-    next: safeNext(c.req.query("next")),
-    exp: Math.floor(Date.now() / 1000) + OAUTH_SECONDS,
-  };
-  // Lax: this cookie must come back on the top-level redirect from Google.
-  setCookie(c, OAUTH_COOKIE, await sign(pending, c.env.SESSION_SECRET), {
-    path: "/",
-    secure: true,
-    httpOnly: true,
-    sameSite: "Lax",
-    maxAge: OAUTH_SECONDS,
-  });
-  return c.redirect(
-    authorizeUrl({
-      clientId: c.env.GOOGLE_CLIENT_ID!,
-      redirectUri: `${c.get("config").origin}/auth/callback`,
-      state: pending.state,
-      nonce: await sha256Hex(pending.nonce),
-      codeChallenge: await codeChallengeFor(pending.verifier),
-    }),
-  );
-});
-
-/**
- * The user a verified Google account signs in as: the user with that email, or, for ROOT_EMAIL,
- * the owner (created on first sign-in, or linked to an owner who signed up with a passkey).
- */
-async function userForGoogle(db: D1Database, config: Config, email: string): Promise<UserRow | null> {
-  const existing = await userByEmail(db, email);
-  if (existing) return existing;
-  if (email !== config.rootEmail) return null;
-  const root = await firstRoot(db);
-  if (root && !root.email) {
-    await db.prepare("update users set email = ? where id = ?").bind(email, root.id).run();
-    return { ...root, email };
-  }
-  return root ?? createUser(db, { name: email, role: "root", email });
-}
-
-auth.get("/callback", async (c) => {
-  const cookie = getCookie(c, OAUTH_COOKIE);
-  deleteCookie(c, OAUTH_COOKIE, { path: "/", secure: true });
-  const pending = cookie ? await verify<OAuthState>(cookie, c.env.SESSION_SECRET) : undefined;
-  if (!pending || c.req.query("state") !== pending.state) {
-    return message(c, "Sign-in expired", "The sign-in took too long or was started in another browser.", 400);
-  }
-  if (c.req.query("error")) return message(c, "Sign-in cancelled", "Google did not complete the sign-in.", 400);
-  const code = c.req.query("code");
-  if (!code || !googleConfigured(c)) return message(c, "Sign-in failed", "Google returned no authorization code.", 400);
-
-  let email: string;
-  try {
-    const idToken = await exchangeCode({
-      code,
-      clientId: c.env.GOOGLE_CLIENT_ID!,
-      clientSecret: c.env.GOOGLE_CLIENT_SECRET!,
-      redirectUri: `${c.get("config").origin}/auth/callback`,
-      codeVerifier: pending.verifier,
-    });
-    const claims = await verifyIdToken(idToken, { clientId: c.env.GOOGLE_CLIENT_ID!, nonce: pending.nonce });
-    if (!claims.email || claims.email_verified !== true) {
-      return message(c, "Email not verified", "This Google account has no verified email address.", 403);
-    }
-    email = claims.email.toLowerCase();
-  } catch (e) {
-    console.error("auth.callback_failed", String(e));
-    return message(c, "Sign-in failed", "Google's response could not be verified.", 400);
-  }
-
-  const user = await userForGoogle(c.env.DB, c.get("config"), email);
-  if (!user) return message(c, "No access", `${email} has not been given access. Ask the owner for an invite link.`, 403);
-  await startSession(c, user.id);
-  return continueTo(c, pending.next);
 });
 
 auth.post("/logout", requireViewer(), requireSameOriginForm(), async (c) => {

@@ -39,7 +39,7 @@ function previous() {
   if (!existsSync(LOCAL)) return {};
   const text = readFileSync(LOCAL, "utf8");
   const get = (key) => new RegExp(`^${key} = "([^"]*)"`, "m").exec(text)?.[1];
-  return { host: get("APP_HOST"), rootEmail: get("ROOT_EMAIL"), keep: get("KEEP_VERSIONS"), trash: get("TRASH_DAYS"), dbId: get("database_id") };
+  return { host: get("APP_HOST"), keep: get("KEEP_VERSIONS"), trash: get("TRASH_DAYS"), dbId: get("database_id") };
 }
 
 /**
@@ -76,11 +76,6 @@ async function main() {
 
   const host = (await ask("Hostname (a subdomain of a zone on this account)", prev.host)).toLowerCase();
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)) throw new Error(`Not a hostname: ${host}`);
-  const google = prev.rootEmail
-    ? true
-    : /^y/i.test(await ask("Also allow Google sign-in? Needs an OAuth client from Google Cloud (y/N)", "n"));
-  const rootEmail = google ? (await ask("Owner's Google account (ROOT_EMAIL)", prev.rootEmail)).toLowerCase() : "";
-  if (google && !rootEmail.includes("@")) throw new Error(`Not an email address: ${rootEmail}`);
   const keep = await ask("Versions to keep per artifact (0 = all)", prev.keep ?? "0");
   const trash = await ask("Days before the trash is emptied", prev.trash ?? "30");
 
@@ -97,7 +92,7 @@ async function main() {
     console.log(`D1 database ${DB_NAME}: ${dbId}`);
   }
 
-  const toml = renderConfig({ host, rootEmail, keep, trash, dbId });
+  const toml = renderConfig({ host, keep, trash, dbId });
   if (DRY_RUN) {
     console.log(`\n--- ${LOCAL} ---\n${toml}`);
     return;
@@ -118,24 +113,8 @@ async function main() {
     // first deployment
   }
   const secrets = {};
-  let googleLater = false;
   for (const name of ["SESSION_SECRET", "CONTENT_TOKEN_SECRET"]) {
     if (!existingSecrets.includes(name)) secrets[name] = randomBytes(32).toString("base64url");
-  }
-  if (google && !existingSecrets.includes("GOOGLE_CLIENT_ID")) {
-    console.log(`
-Google sign-in needs an OAuth client (Google Cloud console → APIs & Services → Credentials →
-Create credentials → OAuth client ID → Web application) with this authorized redirect URI:
-
-  https://${host}/auth/callback
-`);
-    if (process.stdin.isTTY) {
-      secrets.GOOGLE_CLIENT_ID = await ask("Client ID");
-      secrets.GOOGLE_CLIENT_SECRET = await ask("Client secret");
-    } else {
-      // Not a terminal (e.g. run by an agent): keep the client secret out of its transcript.
-      googleLater = true;
-    }
   }
   if (Object.keys(secrets).length) {
     const file = join(tmpdir(), `artifact-secrets-${process.pid}.json`);
@@ -145,15 +124,6 @@ Create credentials → OAuth client ID → Web application) with this authorized
     } finally {
       rmSync(file, { force: true });
     }
-  }
-
-  if (googleLater) {
-    console.log(`
-Google sign-in is not configured yet. In your own terminal, from packages/worker, run:
-
-  npx wrangler secret put GOOGLE_CLIENT_ID -c ${LOCAL}
-  npx wrangler secret put GOOGLE_CLIENT_SECRET -c ${LOCAL}
-`);
   }
 
   const ownerLink = ownerInvite(host);

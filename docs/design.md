@@ -51,12 +51,11 @@ Claude の Artifact ツールが `file_path` を受け取るのは、ツール�
 ```toml
 [vars]
 APP_HOST = "artifacts.example.com"
-ROOT_EMAIL = "you@example.com"   # 任意。Google ログインも使うときだけ
 KEEP_VERSIONS = "0"              # 残す版の数。0 なら全部残す
 TRASH_DAYS = "30"                # 削除してから本当に消すまでの日数
 
 # 秘密情報は wrangler secret put で入れる
-# GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / SESSION_SECRET / CONTENT_TOKEN_SECRET
+# SESSION_SECRET / CONTENT_TOKEN_SECRET（deploy スクリプトが自動生成）
 ```
 
 - `wrangler.toml` では `APP_HOST` を Workers の Custom Domain にする（DNS と証明書は Cloudflare が用意する）
@@ -73,7 +72,7 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 | `/a/:id/v/:version` | 閲覧の外枠（過去の版） | root・viewer |
 | `/settings` | 閲覧者の追加と削除、端末の一覧と失効、外部通信を許可したページ、ゴミ箱 | root |
 | `/pair/:code` | `artifact login` の承認画面 | root |
-| `/auth/login`, `/auth/callback`, `/auth/logout` | Google ログイン | — |
+| `/auth/login`, `/auth/passkey/*`, `/auth/link/:token`, `/auth/logout` | パスキーとログインリンク | — |
 | `/c/:token/*` | ページ本体の配信 | パスの中の署名付きトークン |
 | `/api/v1/*` | エージェント用 API | 端末の署名 |
 
@@ -120,7 +119,7 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 
 ### 人（ブラウザ）: パスキー
 
-2026-10-17 に Google ログインからパスキーへ切り替えた。デプロイする人が Google Cloud で OAuth クライアントを作る手間をなくすため。外部サービスの登録は一切要らない。
+2026-10-17 に Google ログインからパスキーへ切り替え、Google ログインはそのあと削除した。デプロイする人が Google Cloud で OAuth クライアントを作る手間をなくすため。外部サービスの登録は一切要らない。
 
 - 人は D1 の `users`（名前と役割）で表し、ログインはその人のパスキー（`passkeys`）で行う。メールアドレスは使わない
 - 検証は `@simplewebauthn/server`（Workers で動く）。attestation は `none`、discoverable credential（`residentKey: required`）なので、ログインでユーザー名を聞かない。user verification は `preferred`
@@ -135,7 +134,7 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 | 持ち主の招待リンク | 最初の持ち主。デプロイスクリプトが owner がいないとき（または `--owner-link`）に D1 へ直接作り、URL を表示する。1日・1回限り |
 | 閲覧者の招待リンク | 持ち主が `/settings` で作る。7日・1回限り。開いた人が名前を入れてパスキーを作る |
 | `artifact open` | 登録済みの PC から、端末の鍵で署名した使い捨てのログインリンク（2分・1回）を開く。承認した人としてログインする。パスキーをなくしたときの復旧にもなる |
-| Google（任意） | `GOOGLE_CLIENT_ID` を設定したときだけ。`ROOT_EMAIL` の Google アカウントは持ち主として、`/settings` で Google アカウントを登録した人は閲覧者としてログインできる |
+| QR コード | `/account` で使い捨てのログインリンクを QR にして表示し、スマホで読み取ってログインする。そのスマホでパスキーを足す |
 
 招待リンクとログインリンクは、トークンそのものではなく sha256 だけを D1 に保存する。招待の受け付けは「招待を使用済みにする → ユーザーを作る（その招待を自分が使った場合だけ）→ パスキーを登録する」を1トランザクションで行い、同時に開かれても1人しか作られない。
 
@@ -150,7 +149,7 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 - 人を削除すると、その人のパスキーとセッションも消え、次のリクエストから見えなくなる
 - 最後の1つのパスキーは削除できない（先に別のパスキーを足す）
 - セッションは D1 に保存し、`APP_HOST` 限定の cookie（`HttpOnly; Secure; SameSite=Strict; __Host-` プレフィックス）を発行する。有効期限は30日
-  - `Strict` にするのは、sandbox のページからのリクエストに確実に付かないようにするため。Google や CLI が開いたリンクから来た直後はクロスサイト扱いで cookie が付かないので、ログイン直後は同じサイト内のページへ一度移ってから表示する
+  - `Strict` にするのは、sandbox のページからのリクエストに確実に付かないようにするため。CLI や QR コードで開いたリンクから来た直後はクロスサイト扱いで cookie が付かないので、ログイン直後は同じサイト内のページへ一度移ってから表示する
 - 端末の鍵で管理画面にもログインできる（`artifact open`）ので、端末の承認は持ち主の権限を渡すのと同じ重さになる。承認画面でコードと要求元の IP を必ず確かめる
 
 ### エージェント（CLI / MCP）: 端末ごとの公開鍵
@@ -214,7 +213,7 @@ Workers の無料プランは1回の処理あたり CPU 10ms まで。数 MB の
 - ファイルは1つずつ生のまま `PUT` し、Worker は本文を読まずに `R2.put(key, request.body, { sha256 })` へ流す。ハッシュの検証は R2 がやるので、Worker の CPU はほとんど使わない（待ち時間は CPU 時間に数えない）
 - `PUT /api/v1/blobs/:sha256` の署名は、本文のハッシュの代わりにパスの `sha256` を使う（本文と一致するかは R2 が確かめる）
 - 配信も `R2.get()` の本文をそのまま応答に流す
-- 署名の検証（Ed25519）、HMAC、Google の ID トークンの検証（RS256）は Web Crypto のネイティブ実装で、どれも 1ms 前後
+- 署名の検証（Ed25519）、HMAC、パスキーの署名の検証（ES256 など）は Web Crypto のネイティブ実装で、どれも 1ms 前後
 
 ### 制限
 
@@ -270,7 +269,7 @@ create table users (            -- 人。2026-10-17 に members（メールア�
   id text primary key,
   name text not null,
   role text not null,           -- root | viewer
-  email text unique,            -- Google ログインを使うときだけ
+  email text unique,            -- 未使用（Google ログインの名残。SQLite は UNIQUE 列を消せない）
   created_at text not null
 );
 
@@ -388,7 +387,7 @@ R2 は無料プランでも Paid でも無料枠が同じで、超えた分だ�
 ### そのほか
 
 - ドメイン: 手持ちのドメインのサブドメインなので追加費用なし。証明書も Cloudflare の無料のもの
-- パスキー: 外部サービスなし。Google ログインを足す場合も無料
+- パスキー: 外部サービスなし
 - GitHub と npm への公開: 無料
 
 ## インストール
@@ -551,7 +550,7 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
 ## 開発とテスト
 
 - モノレポは pnpm workspaces
-- ローカルは `wrangler dev`（D1・R2 はローカル）。Google ログインは開発用の OAuth クライアント（リダイレクト先 `http://localhost:8787/auth/callback`）を使う
+- ローカルは `wrangler dev`（D1・R2 はローカル）。パスキーは `localhost` でも動く（ブラウザは localhost を安全なオリジンとして扱う）
   - テストとオフライン開発のために、`DEV_LOGIN_EMAIL` を設定するとログインを省略できる。`APP_HOST` が `localhost` 以外なら起動時にエラーにして、本番で有効にならないようにする
 - Worker のテストは `@cloudflare/vitest-pool-workers`（本物に近い D1・R2 で動く）
 - 外枠と sandbox の隔離（ページの JS から cookie・親の DOM・`/api` に触れないこと）は Playwright で確かめる
@@ -567,11 +566,11 @@ cd SelfHostArtifacts && pnpm install
 cd packages/worker && npx wrangler login && pnpm run deploy
 ```
 
-`scripts/deploy.mjs` が対話式で次をまとめて行う: ホスト名と `ROOT_EMAIL` の入力、D1 と R2 の作成（あれば再利用）、`wrangler.local.toml` の生成（`DEV_LOGIN_EMAIL` は消し、Custom Domain を足す）、マイグレーション、`wrangler deploy`、まだない secret の設定（`SESSION_SECRET` と `CONTENT_TOKEN_SECRET` は自動生成、Google の OAuth クライアントは入力）。何度実行してもよい。
+`scripts/deploy.mjs` が対話式で次をまとめて行う: ホスト名の入力、D1 と R2 の作成（あれば再利用）、`wrangler.local.toml` の生成（`DEV_LOGIN` は消し、Custom Domain を足す）、マイグレーション、`wrangler deploy`、まだない secret の生成（`SESSION_SECRET` と `CONTENT_TOKEN_SECRET`）、持ち主がいなければ持ち主の招待リンクの表示。何度実行してもよい。
 
 当初は npm の CLI に `artifact deploy` として入れる予定だったが、wrangler と Worker のソースを CLI に同梱すると重くなるのでやめた。デプロイする人はリポジトリを clone する。
 
-Cloudflare 側の設定（D1・R2 の binding、Custom Domain、Cron、Rate Limiting）はすべて `wrangler.toml` に書いてあり、これが IaC の代わりになる。Google の OAuth クライアントだけはコード化できないので手で作る。
+Cloudflare 側の設定（D1・R2 の binding、Custom Domain、Cron、Rate Limiting）はすべて `wrangler.toml` に書いてあり、これが IaC の代わりになる。Cloudflare 以外に作るものはない。
 
 ## 乱用対策
 
@@ -603,7 +602,7 @@ npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）�
 
 ## フェーズ
 
-1. **v1（最小）**: Worker（Google ログイン、root と閲覧者、API、閲覧の外枠とページ本体）、D1・R2、`artifact setup/login/publish/list/read/delete`、stdio MCP、skills。Codex と Gemini の両方から1枚公開して開けるところまで
+1. **v1（最小）**: Worker（ログイン、root と閲覧者、API、閲覧の外枠とページ本体）、D1・R2、`artifact setup/login/publish/list/read/delete`、stdio MCP、skills。Codex と Gemini の両方から1枚公開して開けるところまで
 2. **v2**: 版の履歴と比較、ラベル、タイトル・説明の編集、端末の管理画面
 3. **v3（共有）**: Artifact ごとの共有リンク（署名付き、期限つき、失効できる）、Artifact ごとに見せる相手を絞る
 4. **v4（ページの機能）**: ページから使える共有 DB とページごとの保存領域（外枠が `postMessage` で受けて、Artifact ごとの Durable Object に読み書きする。sandbox のページは localStorage が使えないので、その代わり）、コメント
@@ -613,7 +612,7 @@ npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）�
 - 名前: npm パッケージ `@keyhole-koro/artifacts`、コマンド `artifact`、リポジトリ `SelfHostArtifacts`
 - ライセンス: MIT（Keyhole-Koro）
 - ホスト: 1つ（keyhole.work では `artifacts.keyhole.work`）。パスで振り分ける。ページ本体は opaque origin で隔離する
-- 認証: 人はパスキー（招待リンクで登録、Google は任意）、エージェントは端末ごとの Ed25519 鍵
+- 認証: 人はパスキー（招待リンクで登録）、エージェントは端末ごとの Ed25519 鍵
 - 配布: npm。`artifact setup` が各エージェントの公式コマンドで MCP を登録し、skills を配る
 - 言語: UI・README・skills は英語
 - 外部通信: 既定で禁止、`allow_connect` でページごとに許可

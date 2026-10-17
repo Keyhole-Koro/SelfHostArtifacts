@@ -20,13 +20,11 @@ import {
   INVITE_DAYS,
   createInvite,
   createLoginLink,
-  createUser,
   deleteUser,
   insertPasskey,
   listOpenInvites,
   listPasskeys,
   listUsers,
-  userByEmail,
 } from "../db/users.ts";
 import { randomId } from "../lib/encoding.ts";
 import { renderSVG } from "uqr";
@@ -346,7 +344,6 @@ root.get("/settings", async (c) => {
     listTrash(c.env.DB),
   ]);
   const trashDays = c.get("config").trashDays;
-  const google = Boolean(c.env.GOOGLE_CLIENT_ID && c.env.GOOGLE_CLIENT_SECRET);
   return c.html(
     <Page title="Settings" viewer={viewer}>
       <h1>Settings</h1>
@@ -360,7 +357,6 @@ root.get("/settings", async (c) => {
               <strong>{u.name}</strong> <span class="badge">{u.role === "root" ? "Owner" : "Viewer"}</span>
               <div class="meta">
                 {u.passkeys} passkey{u.passkeys === 1 ? "" : "s"}
-                {u.email && ` · Google: ${u.email}`}
               </div>
             </span>
             {u.id !== viewer.userId && (
@@ -390,13 +386,6 @@ root.get("/settings", async (c) => {
             <button type="submit">Cancel unused links</button>
           </form>
         </p>
-      )}
-      {google && (
-        <form method="post" action="/settings/google" class="row" style="margin-top:12px">
-          <CsrfField token={viewer.csrf} />
-          <input class="grow" type="email" name="email" required placeholder="name@gmail.com" aria-label="Google account" />
-          <button type="submit">Add by Google account</button>
-        </form>
       )}
 
       <h2 id="devices">Devices</h2>
@@ -486,13 +475,6 @@ root.post("/settings/invites", requireSameOriginForm(), async (c) => {
 
 root.post("/settings/invites/revoke", requireSameOriginForm(), async (c) => {
   await c.env.DB.prepare("delete from invites where used_at is null").run();
-  return c.redirect("/settings#people", 303);
-});
-
-root.post("/settings/google", requireSameOriginForm(), async (c) => {
-  const email = String((await c.req.parseBody())["email"] ?? "").trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.text("That is not an email address.", 400);
-  if (!(await userByEmail(c.env.DB, email))) await createUser(c.env.DB, { name: email, role: "viewer", email });
   return c.redirect("/settings#people", 303);
 });
 
