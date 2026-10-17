@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { ArticleError } from "./client.ts";
+import { ArtifactError } from "./client.ts";
 import { list, publish, read, remove } from "./operations.ts";
 import { VERSION } from "./version.ts";
 
@@ -16,13 +16,13 @@ async function run(fn: () => Promise<string>): Promise<ToolResult> {
   try {
     return text(await fn());
   } catch (e) {
-    const message = e instanceof ArticleError ? e.message : `Unexpected error: ${(e as Error).message}`;
+    const message = e instanceof ArtifactError ? e.message : `Unexpected error: ${(e as Error).message}`;
     return { ...text(message), isError: true };
   }
 }
 
 export function createServer(): McpServer {
-  const server = new McpServer({ name: "article", version: VERSION });
+  const server = new McpServer({ name: "artifact", version: VERSION });
 
   server.registerTool(
     "publish",
@@ -30,7 +30,7 @@ export function createServer(): McpServer {
       title: "Publish a page",
       description:
         "Publish a local HTML page as a private web page and return its URL. Publishing the same file_path again updates the same URL " +
-        "(a new version). Pass url to update a page that was published from another file. Read the article-design skill before writing " +
+        "(a new version). Pass url to update a page that was published from another file. Read the artifact-design skill before writing " +
         "the page. Never put secrets, credentials or personal data in a page.",
       inputSchema: {
         file_path: z.string().describe("Absolute path of the .html page, or of a folder that has an index.html (all its files are published)"),

@@ -1,10 +1,10 @@
-import { CONTENT_HASH_HEADER, canonicalRequest, formatSignatureHeader } from "@article/shared";
+import { CONTENT_HASH_HEADER, canonicalRequest, formatSignatureHeader } from "@artifact/shared";
 import { createHash, createPrivateKey, randomBytes, sign, type KeyObject } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { loadConfig, originFor, paths, type ProfileConfig } from "./profile.ts";
 
 /** An error whose message is meant for the agent (or person) as is. */
-export class ArticleError extends Error {
+export class ArtifactError extends Error {
   readonly code: string;
   readonly details: Record<string, unknown>;
 
@@ -28,7 +28,7 @@ export interface Session {
 export function session(): Session {
   const config = loadConfig();
   if (!config?.device_id || !existsSync(paths.key())) {
-    throw new ArticleError("Not logged in. Ask the user to run `article login` (or `article setup`) in a terminal.", "not_logged_in");
+    throw new ArtifactError("Not logged in. Ask the user to run `artifact login` (or `artifact setup`) in a terminal.", "not_logged_in");
   }
   return {
     config: config as Session["config"],
@@ -60,7 +60,7 @@ export async function signedFetch(s: Session, method: string, pathWithQuery: str
   try {
     res = await fetch(`${s.origin}${pathWithQuery}`, { method, headers, body });
   } catch (e) {
-    throw new ArticleError(`Could not reach ${s.origin}: ${(e as Error).message}`, "network");
+    throw new ArtifactError(`Could not reach ${s.origin}: ${(e as Error).message}`, "network");
   }
   return res;
 }
@@ -75,7 +75,7 @@ export async function expectOk(res: Response): Promise<Response> {
     // not JSON
   }
   const message = body.error?.message ?? `The server answered ${res.status} ${res.statusText}.`;
-  throw new ArticleError(message, body.error?.code ?? `http_${res.status}`, body);
+  throw new ArtifactError(message, body.error?.code ?? `http_${res.status}`, body);
 }
 
 export async function signedJson<T>(s: Session, method: string, path: string, json?: unknown): Promise<T> {
@@ -90,11 +90,11 @@ export function artifactIdFromUrl(s: Session, url: string): string {
     parsed = new URL(url);
   } catch {
     if (/^[0-9a-z]{16}$/.test(url)) return url;
-    throw new ArticleError(`Not an artifact URL: ${url}`, "bad_url");
+    throw new ArtifactError(`Not an artifact URL: ${url}`, "bad_url");
   }
   const match = /^\/a\/([0-9a-z]{16})(?:\/|$)/.exec(parsed.pathname);
   if (!match || parsed.host !== new URL(s.origin).host) {
-    throw new ArticleError(`Not an artifact URL of ${s.origin}: ${url}`, "bad_url");
+    throw new ArtifactError(`Not an artifact URL of ${s.origin}: ${url}`, "bad_url");
   }
   return match[1]!;
 }

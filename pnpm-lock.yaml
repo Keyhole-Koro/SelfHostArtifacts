@@ -179,7 +179,7 @@ importers:
         specifier: 4.6.5
         version: 4.6.5
     devDependencies:
-      '@article/shared':
+      '@artifact/shared':
         specifier: workspace:*
         version: link:../shared
       '@types/node':
@@ -204,7 +204,7 @@ importers:
 
   packages/worker:
     dependencies:
-      '@article/shared':
+      '@artifact/shared':
         specifier: workspace:*
         version: link:../shared
       hono:

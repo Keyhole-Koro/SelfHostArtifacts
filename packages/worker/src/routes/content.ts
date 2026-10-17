@@ -20,9 +20,9 @@ function plain(status: number, text: string, allowConnect: string[] = []) {
 content.on(["GET", "HEAD"], "/:token/*", async (c) => {
   const token = c.req.param("token");
   const claims = await readContentToken(c.env.CONTENT_TOKEN_SECRET, token);
-  if (!claims) return plain(403, "This link has expired. Reopen the article from its page.");
+  if (!claims) return plain(403, "This link has expired. Reopen the artifact from its page.");
   const artifact = await getArtifact(c.env.DB, claims.a);
-  if (!artifact) return plain(404, "This article was deleted.");
+  if (!artifact) return plain(404, "This artifact was deleted.");
   const version = await getVersion(c.env.DB, claims.a, claims.v);
   if (!version) return plain(404, "This version no longer exists.");
 
@@ -34,7 +34,7 @@ content.on(["GET", "HEAD"], "/:token/*", async (c) => {
   }
   if (path === "" || path.endsWith("/")) path = path + (path === "" ? version.entry : "index.html");
   const file = version.files[path];
-  if (!file) return plain(404, `No file ${path} in this article.`);
+  if (!file) return plain(404, `No file ${path} in this artifact.`);
 
   const headers = contentHeaders(file.type, version.allow_connect);
   headers.set("content-length", String(file.size));

@@ -41,8 +41,8 @@ describe("signature header", () => {
 
   it("refuses other schemes and malformed fields", () => {
     expect(parseSignatureHeader("Bearer x")).toBeUndefined();
-    expect(parseSignatureHeader("Article-Sig key=a,ts=x,nonce=b,sig=c")).toBeUndefined();
-    expect(parseSignatureHeader("Article-Sig key=a b,ts=1,nonce=b,sig=c")).toBeUndefined();
+    expect(parseSignatureHeader("Artifact-Sig key=a,ts=x,nonce=b,sig=c")).toBeUndefined();
+    expect(parseSignatureHeader("Artifact-Sig key=a b,ts=1,nonce=b,sig=c")).toBeUndefined();
   });
 
   it("puts each part on its own line", () => {

@@ -5,8 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { profileName } from "../profile.ts";
 
-/** Marks a skill folder as installed by `article`, so we only ever replace or remove our own. */
-const MARKER = ".installed-by-article";
+/** Marks a skill folder as installed by `artifact`, so we only ever replace or remove our own. */
+const MARKER = ".installed-by-artifact";
 
 export type Agent = "codex" | "gemini" | "claude";
 export const AGENTS: Agent[] = ["codex", "gemini", "claude"];
@@ -20,16 +20,16 @@ export function detectAgents(): Agent[] {
   return AGENTS.filter(onPath);
 }
 
-/** MCP server name: "article", or "article-<profile>" for other profiles. */
+/** MCP server name: "artifact", or "artifact-<profile>" for other profiles. */
 export function serverName(): string {
   const profile = profileName();
-  return profile === "default" ? "article" : `article-${profile}`;
+  return profile === "default" ? "artifact" : `artifact-${profile}`;
 }
 
-/** How agents should start this CLI: `article mcp` when it is on PATH, else node + this script. */
+/** How agents should start this CLI: `artifact mcp` when it is on PATH, else node + this script. */
 function launchCommand(): string[] {
   const profileArgs = profileName() === "default" ? [] : ["--profile", profileName()];
-  if (onPath("article")) return ["article", ...profileArgs, "mcp"];
+  if (onPath("artifact")) return ["artifact", ...profileArgs, "mcp"];
   return [process.execPath, fileURLToPath(new URL(import.meta.url)), ...profileArgs, "mcp"];
 }
 
@@ -78,7 +78,7 @@ export function skillDirsFor(agents: Agent[]): string[] {
 export function bundledSkillsDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   for (const candidate of [join(here, "..", "skills"), join(here, "..", "..", "..", "skills"), join(here, "..", "..", "..", "..", "skills")]) {
-    if (existsSync(join(candidate, "article-design", "SKILL.md"))) return candidate;
+    if (existsSync(join(candidate, "artifact-design", "SKILL.md"))) return candidate;
   }
   throw new Error("The bundled skills are missing from this installation.");
 }
@@ -101,7 +101,7 @@ export function installSkills(targetDir: string): SkillInstall {
     }
     rmSync(dest, { recursive: true, force: true });
     cpSync(join(source, skill), dest, { recursive: true });
-    writeFileSync(join(dest, MARKER), "Installed by `article install-skills`. Reinstalled on update; removed by `article uninstall`.\n");
+    writeFileSync(join(dest, MARKER), "Installed by `artifact install-skills`. Reinstalled on update; removed by `artifact uninstall`.\n");
     result.installed.push(skill);
   }
   return result;

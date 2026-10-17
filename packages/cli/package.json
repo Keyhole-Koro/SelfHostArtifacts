@@ -1,12 +1,12 @@
 {
-  "name": "@keyhole-koro/article",
+  "name": "@keyhole-koro/artifacts",
   "version": "0.1.0",
   "description": "Publish private HTML pages from Codex, Gemini CLI and Claude Code to your own Cloudflare deployment",
   "license": "MIT",
   "author": "Keyhole-Koro",
-  "repository": { "type": "git", "url": "git+https://github.com/Keyhole-Koro/SelfHostArticle.git", "directory": "packages/cli" },
+  "repository": { "type": "git", "url": "git+https://github.com/Keyhole-Koro/SelfHostArtifacts.git", "directory": "packages/cli" },
   "type": "module",
-  "bin": { "article": "dist/cli.js" },
+  "bin": { "artifact": "dist/cli.js" },
   "files": ["dist", "skills"],
   "engines": { "node": ">=20" },
   "scripts": {
@@ -21,7 +21,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@article/shared": "workspace:*",
+    "@artifact/shared": "workspace:*",
     "@types/node": "22.20.5",
     "esbuild": "0.28.1",
     "vitest": "4.1.12"

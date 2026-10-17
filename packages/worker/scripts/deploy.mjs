@@ -14,8 +14,8 @@ import { createInterface } from "node:readline/promises";
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const LOCAL = "wrangler.local.toml";
-const DB_NAME = "article";
-const BUCKET = "article-blobs";
+const DB_NAME = "artifacts";
+const BUCKET = "artifacts-blobs";
 
 const rl = createInterface({ input: process.stdin, terminal: false });
 // Reading from the iterator keeps lines that arrive before the question (piped input).
@@ -57,7 +57,7 @@ custom_domain = true
 
 async function main() {
   const prev = previous();
-  console.log("Deploy article to your Cloudflare account.\n");
+  console.log("Deploy artifact to your Cloudflare account.\n");
 
   if (!DRY_RUN) {
     try {
@@ -72,7 +72,7 @@ async function main() {
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(host)) throw new Error(`Not a hostname: ${host}`);
   const rootEmail = (await ask("Owner's Google account (ROOT_EMAIL)", prev.rootEmail)).toLowerCase();
   if (!rootEmail.includes("@")) throw new Error(`Not an email address: ${rootEmail}`);
-  const keep = await ask("Versions to keep per article (0 = all)", prev.keep ?? "0");
+  const keep = await ask("Versions to keep per artifact (0 = all)", prev.keep ?? "0");
   const trash = await ask("Days before the trash is emptied", prev.trash ?? "30");
 
   let dbId = prev.dbId && !/^0{8}-/.test(prev.dbId) ? prev.dbId : undefined;
@@ -109,6 +109,7 @@ async function main() {
     // first deployment
   }
   const secrets = {};
+  let googleLater = false;
   for (const name of ["SESSION_SECRET", "CONTENT_TOKEN_SECRET"]) {
     if (!existingSecrets.includes(name)) secrets[name] = randomBytes(32).toString("base64url");
   }
@@ -119,11 +120,16 @@ Create credentials → OAuth client ID → Web application) with this authorized
 
   https://${host}/auth/callback
 `);
-    secrets.GOOGLE_CLIENT_ID = await ask("Client ID");
-    secrets.GOOGLE_CLIENT_SECRET = await ask("Client secret");
+    if (process.stdin.isTTY) {
+      secrets.GOOGLE_CLIENT_ID = await ask("Client ID");
+      secrets.GOOGLE_CLIENT_SECRET = await ask("Client secret");
+    } else {
+      // Not a terminal (e.g. run by an agent): keep the client secret out of its transcript.
+      googleLater = true;
+    }
   }
   if (Object.keys(secrets).length) {
-    const file = join(tmpdir(), `article-secrets-${process.pid}.json`);
+    const file = join(tmpdir(), `artifact-secrets-${process.pid}.json`);
     writeFileSync(file, JSON.stringify(secrets), { mode: 0o600 });
     try {
       wrangler(["secret", "bulk", file, "-c", LOCAL], { inherit: true });
@@ -132,13 +138,22 @@ Create credentials → OAuth client ID → Web application) with this authorized
     }
   }
 
+  if (googleLater) {
+    console.log(`
+Google sign-in is not configured yet. In your own terminal, from packages/worker, run:
+
+  npx wrangler secret put GOOGLE_CLIENT_ID -c ${LOCAL}
+  npx wrangler secret put GOOGLE_CLIENT_SECRET -c ${LOCAL}
+`);
+  }
+
   console.log(`
 Deployed: https://${host}
 
 Next, on each computer whose agents should publish:
 
-  npm i -g @keyhole-koro/article
-  article setup --host ${host}
+  npm i -g @keyhole-koro/artifacts
+  artifact setup --host ${host}
 `);
 }
 

@@ -1,5 +1,5 @@
 {
-  "name": "self-host-article",
+  "name": "self-host-artifacts",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.14.0",

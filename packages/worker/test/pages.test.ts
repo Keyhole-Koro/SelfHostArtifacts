@@ -14,7 +14,7 @@ describe("sign-in and roles", () => {
     const res = await browserGet("/auth/login?next=/settings");
     expect(res.headers.get("location")).toBe("/settings");
     const cookie = res.headers.get("set-cookie")!;
-    expect(cookie).toMatch(/^__Host-article_session=/);
+    expect(cookie).toMatch(/^__Host-artifact_session=/);
     expect(cookie).toContain("SameSite=Strict");
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("Secure");

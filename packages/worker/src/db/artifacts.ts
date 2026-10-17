@@ -1,4 +1,4 @@
-import type { VersionFile } from "@article/shared";
+import type { VersionFile } from "@artifact/shared";
 
 export interface ArtifactRow {
   id: string;

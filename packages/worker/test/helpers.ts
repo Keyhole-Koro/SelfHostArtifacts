@@ -1,4 +1,4 @@
-import { CONTENT_HASH_HEADER, canonicalRequest, formatSignatureHeader, type Manifest } from "@article/shared";
+import { CONTENT_HASH_HEADER, canonicalRequest, formatSignatureHeader, type Manifest } from "@artifact/shared";
 import { SELF, env } from "cloudflare:test";
 import { base64url, randomId, randomToken, sha256Hex, utf8 } from "../src/lib/encoding.ts";
 
@@ -83,7 +83,7 @@ export async function sessionCookie(email: string): Promise<{ cookie: string; cs
   await env.DB.prepare("insert into sessions (id, email, csrf, expires_at) values (?, ?, ?, ?)")
     .bind(id, email, csrf, new Date(Date.now() + 864e5).toISOString())
     .run();
-  return { cookie: `__Host-article_session=${id}`, csrf };
+  return { cookie: `__Host-artifact_session=${id}`, csrf };
 }
 
 export function browserGet(path: string, cookie?: string): Promise<Response> {

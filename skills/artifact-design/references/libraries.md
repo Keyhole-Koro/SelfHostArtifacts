@@ -26,4 +26,4 @@ and has nothing to break.
 
 Data for the page goes in its own files (`data.json`, `data.csv`) published with it, or inline
 in a `<script type="application/json">` block. Fetching data from other hosts needs
-`allow_connect` when publishing (see the article-publish skill) and should be rare.
+`allow_connect` when publishing (see the artifact-publish skill) and should be rare.

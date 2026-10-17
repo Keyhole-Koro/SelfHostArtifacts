@@ -7,7 +7,7 @@ import { randomToken, sha256Hex } from "../lib/encoding.ts";
 import { sign, verify } from "../lib/signed.ts";
 import { Page } from "../ui/layout.tsx";
 
-const OAUTH_COOKIE = "__Host-article_oauth";
+const OAUTH_COOKIE = "__Host-artifact_oauth";
 const OAUTH_SECONDS = 10 * 60;
 
 interface OAuthState {

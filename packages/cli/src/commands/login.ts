@@ -1,8 +1,8 @@
-import type { PairPollResponse, PairStartResponse } from "@article/shared";
+import type { PairPollResponse, PairStartResponse } from "@artifact/shared";
 import { spawn } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { hostname } from "node:os";
-import { ArticleError } from "../client.ts";
+import { ArtifactError } from "../client.ts";
 import { loadConfig, originFor, paths, saveConfig, writePrivateFile } from "../profile.ts";
 
 const POLL_MS = 2000;
@@ -31,7 +31,7 @@ export interface LoginOptions {
 export async function login(opts: LoginOptions = {}): Promise<{ deviceId: string; host: string }> {
   const log = opts.log ?? ((line: string) => console.log(line));
   const host = (opts.host ?? loadConfig()?.host)?.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  if (!host) throw new ArticleError("Which deployment? Run `article login --host article.example.com`.", "no_host");
+  if (!host) throw new ArtifactError("Which deployment? Run `artifact login --host artifacts.example.com`.", "no_host");
   const origin = originFor(host);
   const name = opts.name ?? hostname();
 
@@ -46,11 +46,11 @@ export async function login(opts: LoginOptions = {}): Promise<{ deviceId: string
       body: JSON.stringify({ name, public_key: rawPublic }),
     });
     const body = (await res.json()) as PairStartResponse & { error?: { message: string } };
-    if (!res.ok) throw new ArticleError(body.error?.message ?? `The server answered ${res.status}.`, "pair_failed");
+    if (!res.ok) throw new ArtifactError(body.error?.message ?? `The server answered ${res.status}.`, "pair_failed");
     start = body;
   } catch (e) {
-    if (e instanceof ArticleError) throw e;
-    throw new ArticleError(`Could not reach ${origin}: ${(e as Error).message}`, "network");
+    if (e instanceof ArtifactError) throw e;
+    throw new ArtifactError(`Could not reach ${origin}: ${(e as Error).message}`, "network");
   }
 
   log(`\nTo let "${name}" publish, open this page and approve it:\n\n  ${start.approve_url}\n`);
@@ -68,8 +68,8 @@ export async function login(opts: LoginOptions = {}): Promise<{ deviceId: string
       log(`Approved. This computer can now publish to ${origin}.`);
       return { deviceId: poll.device_id, host };
     }
-    if (poll.status === "denied") throw new ArticleError("The login request was denied.", "denied");
+    if (poll.status === "denied") throw new ArtifactError("The login request was denied.", "denied");
     if (poll.status === "expired") break;
   }
-  throw new ArticleError("The login request expired. Run `article login` again.", "expired");
+  throw new ArtifactError("The login request expired. Run `artifact login` again.", "expired");
 }

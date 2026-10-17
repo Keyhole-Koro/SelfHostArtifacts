@@ -49,13 +49,13 @@ pages.get("/", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
   const artifacts = await listArtifacts(c.env.DB, 200);
   return c.html(
-    <Page title="Articles" viewer={viewer}>
+    <Page title="Artifacts" viewer={viewer}>
       <div class="row" style="margin-bottom:16px">
-        <h1 class="grow" style="margin:0">Articles</h1>
+        <h1 class="grow" style="margin:0">Artifacts</h1>
       </div>
       {artifacts.length === 0 ? (
         <div class="card muted">
-          Nothing is published yet. Ask an agent to publish a page with the <code>article</code> tool.
+          Nothing is published yet. Ask an agent to publish a page with the <code>artifact</code> tool.
         </div>
       ) : (
         <>
@@ -139,7 +139,7 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
       </head>
       <body>
         <div class="bar">
-          <a href="/" class="optional" aria-label="All articles">
+          <a href="/" class="optional" aria-label="All artifacts">
             ←
           </a>
           <span class="title">{artifact.title}</span>
@@ -232,7 +232,7 @@ root.get("/settings", async (c) => {
       <h1>Settings</h1>
 
       <h2 id="viewers">Viewers</h2>
-      <p class="muted">People who can sign in with Google and read every article. You ({c.get("config").rootEmail}) are the owner.</p>
+      <p class="muted">People who can sign in with Google and read every artifact. You ({c.get("config").rootEmail}) are the owner.</p>
       <form method="post" action="/settings/members" class="row" style="margin-bottom:12px">
         <CsrfField token={viewer.csrf} />
         <input class="grow" type="email" name="email" required placeholder="name@gmail.com" aria-label="Email" />
@@ -256,7 +256,7 @@ root.get("/settings", async (c) => {
       </ul>
 
       <h2 id="devices">Devices</h2>
-      <p class="muted">Computers whose agents can publish. Add one with <code>article login</code>.</p>
+      <p class="muted">Computers whose agents can publish. Add one with <code>artifact login</code>.</p>
       <ul class="list">
         {devices.results.length === 0 && <li class="muted">No devices yet.</li>}
         {devices.results.map((d) => (
@@ -279,7 +279,7 @@ root.get("/settings", async (c) => {
       </ul>
 
       <h2 id="external">External access</h2>
-      <p class="muted">Articles that may send requests to other hosts. Removing access lasts until the article is published again with it.</p>
+      <p class="muted">Artifacts that may send requests to other hosts. Removing access lasts until the artifact is published again with it.</p>
       <ul class="list">
         {connecting.length === 0 && <li class="muted">None.</li>}
         {connecting.map((a) => (
@@ -301,7 +301,7 @@ root.get("/settings", async (c) => {
       </ul>
 
       <h2 id="trash">Trash</h2>
-      <p class="muted">Deleted articles are removed for good {trashDays} days after deletion.</p>
+      <p class="muted">Deleted artifacts are removed for good {trashDays} days after deletion.</p>
       <ul class="list">
         {trash.length === 0 && <li class="muted">Empty.</li>}
         {trash.map((a) => (
@@ -378,7 +378,7 @@ root.get("/pair/:code", async (c) => {
     return c.html(
       <Page title="Login request" viewer={viewer}>
         <h1>This login request is no longer valid</h1>
-        <p class="muted">It was already handled or has expired. Run <code>article login</code> again.</p>
+        <p class="muted">It was already handled or has expired. Run <code>artifact login</code> again.</p>
       </Page>,
       404,
     );
@@ -413,7 +413,7 @@ root.get("/pair/:code", async (c) => {
           </form>
         </div>
       </div>
-      <p class="muted">If you did not run <code>article login</code> just now, deny it.</p>
+      <p class="muted">If you did not run <code>artifact login</code> just now, deny it.</p>
     </Page>,
   );
 });

@@ -60,7 +60,7 @@ export function Page(props: { title: string; viewer?: PageViewer; children: Chil
       </head>
       <body>
         <header class="top">
-          <a class="brand" href="/">Articles</a>
+          <a class="brand" href="/">Artifacts</a>
           {viewer && (
             <nav>
               {viewer.role === "root" && <a href="/settings">Settings</a>}

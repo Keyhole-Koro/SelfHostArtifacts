@@ -15,7 +15,7 @@ import {
   type PairStartResponse,
   type PublishResponse,
   type VersionFile,
-} from "@article/shared";
+} from "@artifact/shared";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../app-env.ts";
@@ -266,7 +266,7 @@ signed.get("/artifacts/:id/files/*", async (c) => {
   if (!file) return apiError(c, 404, "not_found", `Version ${requested} has no file ${path}.`);
   const object = await c.env.BLOBS.get(blobKey(file.sha256));
   if (!object) return apiError(c, 500, "blob_missing", `The stored bytes of ${path} are missing.`);
-  return new Response(object.body, { headers: { "content-type": file.type, "x-article-version": String(version.version) } });
+  return new Response(object.body, { headers: { "content-type": file.type, "x-artifact-version": String(version.version) } });
 });
 
 signed.delete("/artifacts/:id", async (c) => {

@@ -4,9 +4,9 @@ import { dirname, join } from "node:path";
 
 /**
  * Everything the CLI keeps on disk, per profile:
- *   ~/.config/article/<profile>/config.json  host and device id
- *   ~/.config/article/<profile>/key.pem      the device's Ed25519 private key (0600)
- *   ~/.config/article/<profile>/state.json   which local file was published as which artifact
+ *   ~/.config/artifact/<profile>/config.json  host and device id
+ *   ~/.config/artifact/<profile>/key.pem      the device's Ed25519 private key (0600)
+ *   ~/.config/artifact/<profile>/state.json   which local file was published as which artifact
  */
 
 export interface ProfileConfig {
@@ -27,11 +27,11 @@ export interface State {
 
 export function configRoot(): string {
   const base = process.env["XDG_CONFIG_HOME"] || join(homedir(), ".config");
-  return join(base, "article");
+  return join(base, "artifact");
 }
 
 export function profileName(): string {
-  return process.env["ARTICLE_PROFILE"] || "default";
+  return process.env["ARTIFACT_PROFILE"] || "default";
 }
 
 export function profileDir(profile = profileName()): string {

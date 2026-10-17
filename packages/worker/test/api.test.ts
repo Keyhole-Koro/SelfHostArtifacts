@@ -7,7 +7,7 @@ describe("signed requests", () => {
   it("rejects a request without a signature", async () => {
     const res = await SELF.fetch(`${ORIGIN}/api/v1/artifacts`);
     expect(res.status).toBe(401);
-    expect(((await res.json()) as any).error.message).toContain("article login");
+    expect(((await res.json()) as any).error.message).toContain("artifact login");
   });
 
   it("rejects a signature from a different key", async () => {

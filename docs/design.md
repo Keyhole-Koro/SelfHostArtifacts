@@ -1,4 +1,4 @@
-# SelfHostArticle 設計
+# SelfHostArtifacts 設計
 
 Codex CLI・Gemini CLI（と将来ほかのエージェント）が、HTML のページを公開して非公開 URL で見られるようにする。Claude の Artifact の自前版。Cloudflare（Workers・D1・R2）だけで動き、ドメインは設定で自由に決められる。
 
@@ -19,10 +19,10 @@ v1 でやらないこと（後述のフェーズで検討）: 他人への共有
 [Codex / Gemini / Claude]
    │ stdio MCP（または CLI）＋ skill
    ▼
-[article（ローカルの npm パッケージ）] ── ローカルのファイルを読む・端末の秘密鍵で署名する
+[artifact（ローカルの npm パッケージ）] ── ローカルのファイルを読む・端末の秘密鍵で署名する
    │ HTTPS（署名付きリクエスト）
    ▼
-[Worker]  APP_HOST（例: article.keyhole.work）── D1（メタデータ）・R2（ファイル）
+[Worker]  APP_HOST（例: artifacts.keyhole.work）── D1（メタデータ）・R2（ファイル）
    ├ /api/v1/*        エージェント用 API（端末の鍵で認証）
    ├ /                一覧（Google ログイン）
    ├ /a/:id           閲覧の外枠（Google ログイン）
@@ -36,11 +36,11 @@ Worker は1つ、ホストも1つ。パスで振り分ける。
 
 Claude の Artifact ツールが `file_path` を受け取るのは、ツールがローカルで動いているから。リモート MCP にすると、エージェントは HTML の中身を丸ごとツール引数に載せることになり、大きいページでトークンを食うし、画像などのバイナリも送れない。
 
-そこで、ローカルで動く `article` パッケージを1つ作り、次の入口を持たせる:
+そこで、ローカルで動く `artifact` パッケージを1つ作り、次の入口を持たせる:
 
-- `article mcp` — stdio の MCP サーバー。Codex・Gemini・Claude Code のどれにも同じ形で登録できる
-- `article publish ./report.html` など — シェルから直接使う CLI。MCP を使わないエージェントや手作業用
-- `article setup` — 初期設定（ログイン、MCP の登録、skills の配置）。「インストール」の節を参照
+- `artifact mcp` — stdio の MCP サーバー。Codex・Gemini・Claude Code のどれにも同じ形で登録できる
+- `artifact publish ./report.html` など — シェルから直接使う CLI。MCP を使わないエージェントや手作業用
+- `artifact setup` — 初期設定（ログイン、MCP の登録、skills の配置）。「インストール」の節を参照
 
 ## 設定
 
@@ -48,7 +48,7 @@ Claude の Artifact ツールが `file_path` を受け取るのは、ツール�
 
 ```toml
 [vars]
-APP_HOST = "article.example.com"
+APP_HOST = "artifacts.example.com"
 ROOT_EMAIL = "you@example.com"   # 持ち主の Google アカウント。1つだけ
 KEEP_VERSIONS = "0"              # 残す版の数。0 なら全部残す
 TRASH_DAYS = "30"                # 削除してから本当に消すまでの日数
@@ -60,7 +60,7 @@ TRASH_DAYS = "30"                # 削除してから本当に消すまでの日
 - `wrangler.toml` では `APP_HOST` を Workers の Custom Domain にする（DNS と証明書は Cloudflare が用意する）
 - 個人の設定（実際のドメインやメールアドレス）は `wrangler.toml` に直接書かず、`wrangler.local.toml`（git 管理外）に分ける。リポジトリには例だけを置く
 
-keyhole.work なら `APP_HOST = "article.keyhole.work"`。
+keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 
 ## パス
 
@@ -70,7 +70,7 @@ keyhole.work なら `APP_HOST = "article.keyhole.work"`。
 | `/a/:id` | 閲覧の外枠（最新版） | root・viewer |
 | `/a/:id/v/:version` | 閲覧の外枠（過去の版） | root・viewer |
 | `/settings` | 閲覧者の追加と削除、端末の一覧と失効、外部通信を許可したページ、ゴミ箱 | root |
-| `/pair/:code` | `article login` の承認画面 | root |
+| `/pair/:code` | `artifact login` の承認画面 | root |
 | `/auth/login`, `/auth/callback`, `/auth/logout` | Google ログイン | — |
 | `/c/:token/*` | ページ本体の配信 | パスの中の署名付きトークン |
 | `/api/v1/*` | エージェント用 API | 端末の署名 |
@@ -142,7 +142,7 @@ Cloudflare Access は使わず、Worker の中で Google の OpenID Connect を�
 
 API トークンをコピーして貼る方式はやめる。`gh auth login` のように、ブラウザで承認したら端末の公開鍵が登録される方式にする。
 
-1. `article login --host article.keyhole.work` を実行すると、Ed25519 の鍵ペアを作り、秘密鍵を `~/.config/article/key`（パーミッション 600）に保存する
+1. `artifact login --host artifacts.keyhole.work` を実行すると、Ed25519 の鍵ペアを作り、秘密鍵を `~/.config/artifact/key`（パーミッション 600）に保存する
 2. CLI は公開鍵と端末名（`codex-laptop` など）を送り、短いコード（`ABCD-1234`）と承認 URL を受け取る
 3. ブラウザで承認 URL を開き、root でログインして、同じコードが表示されていることを確かめて承認する（viewer は端末を登録できない）
 4. サーバーは公開鍵を D1 に登録する。CLI はポーリングで承認を受け取る
@@ -150,7 +150,7 @@ API トークンをコピーして貼る方式はやめる。`gh auth login` の
 以降のリクエストは秘密鍵で署名する:
 
 ```
-Authorization: Article-Sig key=<keyId>, ts=<unix秒>, nonce=<ランダム>, sig=<base64>
+Authorization: Artifact-Sig key=<keyId>, ts=<unix秒>, nonce=<ランダム>, sig=<base64>
 署名対象: METHOD \n パス?クエリ \n ts \n nonce \n sha256(本文)
 ```
 
@@ -158,7 +158,7 @@ Authorization: Article-Sig key=<keyId>, ts=<unix秒>, nonce=<ランダム>, sig=
 - サーバーには秘密がない（漏れても公開鍵だけ）。端末ごとに管理画面から失効できる
 - どの端末が作った版かを `versions.created_by` に残す
 
-Codex と Gemini を同じ端末で使うなら、鍵は1つで共有する。分けたければ `article login --profile gemini` のようにプロファイルを分ける。
+Codex と Gemini を同じ端末で使うなら、鍵は1つで共有する。分けたければ `artifact login --profile gemini` のようにプロファイルを分ける。
 
 ## API
 
@@ -174,7 +174,7 @@ Codex と Gemini を同じ端末で使うなら、鍵は1つで共有する。�
 | `GET` | `/api/v1/artifacts/:id` | メタデータと版の一覧 |
 | `GET` | `/api/v1/artifacts/:id/files/*path` | ファイルを読む（`?version=` で過去の版） |
 | `DELETE` | `/api/v1/artifacts/:id` | ゴミ箱へ移す（`TRASH_DAYS` 日後に本当に消える） |
-| `POST` | `/api/v1/devices/pair` | `article login` の開始（これだけ署名なし。公開鍵を受け取りコードを返す） |
+| `POST` | `/api/v1/devices/pair` | `artifact login` の開始（これだけ署名なし。公開鍵を受け取りコードを返す） |
 | `GET` | `/api/v1/devices/pair/:code` | 承認待ちのポーリング |
 
 `manifest` の形:
@@ -243,7 +243,7 @@ create table devices (
   revoked_at text
 );
 
-create table pairings (         -- article login の承認待ち。10分で期限切れ
+create table pairings (         -- artifact login の承認待ち。10分で期限切れ
   code text primary key,
   name text not null,
   public_key text not null,
@@ -346,47 +346,47 @@ R2 は無料プランでも Paid でも無料枠が同じで、超えた分だ�
 
 ## インストール
 
-npm で配る。パッケージは `@keyhole-koro/article`、コマンドは `article`。Codex・Gemini・Claude Code はどれも Node 製なので、使う人の手元には必ず Node がある。
+npm で配る。パッケージは `@keyhole-koro/artifacts`、コマンドは `artifact`。Codex・Gemini・Claude Code はどれも Node 製なので、使う人の手元には必ず Node がある。
 
 ```bash
-npm i -g @keyhole-koro/article
-article setup --host article.keyhole.work
+npm i -g @keyhole-koro/artifacts
+artifact setup --host artifacts.keyhole.work
 ```
 
-- MCP の設定に `npx -y …` は書かない。起動のたびに最新版を取りに行って遅く、乗っ取られた版がそのまま動く。グローバルに入れた固定の版を使い、新しい版があれば `article` が知らせる
-- `article setup` がやること:
-  1. `article login`（ブラウザで承認して、端末の鍵を登録）
+- MCP の設定に `npx -y …` は書かない。起動のたびに最新版を取りに行って遅く、乗っ取られた版がそのまま動く。グローバルに入れた固定の版を使い、新しい版があれば `artifact` が知らせる
+- `artifact setup` がやること:
+  1. `artifact login`（ブラウザで承認して、端末の鍵を登録）
   2. インストールされているエージェントを探し、それぞれの公式コマンドで MCP を登録する（下記）。設定ファイルを直接は編集しない。形式が変わっても公式コマンドが吸収するため
   3. skills をそれぞれのフォルダにコピーする
-  4. 何をしたかを表示する。`article uninstall` で MCP の登録と skills を取り除ける
-- 余裕があれば、同じリポジトリを Gemini の extension と Claude Code の plugin としても使えるようにする（定義ファイルをルートに置き、`article mcp` と同じ skills を指す）
+  4. 何をしたかを表示する。`artifact uninstall` で MCP の登録と skills を取り除ける
+- 余裕があれば、同じリポジトリを Gemini の extension と Claude Code の plugin としても使えるようにする（定義ファイルをルートに置き、`artifact mcp` と同じ skills を指す）
 
 ### MCP の登録
 
-`article mcp` は stdio で話す MCP サーバーで、エージェントが子プロセスとして起動する。
+`artifact mcp` は stdio で話す MCP サーバーで、エージェントが子プロセスとして起動する。
 
 ```bash
 # Codex       → ~/.codex/config.toml
-codex mcp add article -- article mcp
+codex mcp add artifact -- artifact mcp
 
 # Gemini      → ~/.gemini/settings.json（--scope user で全プロジェクト共通）
-gemini mcp add --scope user article article mcp
+gemini mcp add --scope user artifact artifact mcp
 
 # Claude Code → ~/.claude.json
-claude mcp add --scope user article -- article mcp
+claude mcp add --scope user artifact -- artifact mcp
 ```
 
 書かれる中身は、たとえば Codex なら:
 
 ```toml
-[mcp_servers.article]
-command = "article"
+[mcp_servers.artifact]
+command = "artifact"
 args = ["mcp"]
 ```
 
 ## AI から見た使い方
 
-AI にとって `article` は、**MCP のツール4つ**と **skill 2つ**（`article-design`、`article-publish`）。
+AI にとって `artifact` は、**MCP のツール4つ**と **skill 2つ**（`artifact-design`、`artifact-publish`）。
 
 ### ツール
 
@@ -404,7 +404,7 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 ```jsonc
 {
   "name": "publish",
-  "description": "ローカルの HTML を非公開ページとして公開し、URL を返す。url を渡すと同じ URL のまま更新する。同じ file_path を再び公開すると自動で更新になる。書く前に article-design skill を読むこと。",
+  "description": "ローカルの HTML を非公開ページとして公開し、URL を返す。url を渡すと同じ URL のまま更新する。同じ file_path を再び公開すると自動で更新になる。書く前に artifact-design skill を読むこと。",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -420,18 +420,18 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 }
 ```
 
-`article` は「このファイルパスはどのページか」を `~/.config/article/state.json` に覚える。
+`artifact` は「このファイルパスはどのページか」を `~/.config/artifact/state.json` に覚える。
 
 ### 会話の流れ
 
 「この CSV をグラフのページにして」と頼まれたら:
 
-1. AI は skill の説明文から作業に合うと判断し、`article-design` を読む
+1. AI は skill の説明文から作業に合うと判断し、`artifact-design` を読む
 2. `./out/sales.html` を書く
 3. `publish({ file_path: "/home/…/out/sales.html", title: "売上の推移" })` を呼ぶ
 4. 結果が返る:
    ```
-   公開しました: https://article.keyhole.work/a/x7k2m9q4p1r8t3v6（版 1、非公開）
+   公開しました: https://artifacts.keyhole.work/a/x7k2m9q4p1r8t3v6（版 1、非公開）
    ```
 5. AI は URL をユーザーに伝える
 
@@ -443,7 +443,7 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 
 | 状況 | 返す文 |
 |---|---|
-| 未ログイン | 「ログインしていません。ユーザーに `article login` の実行を頼んでください」 |
+| 未ログイン | 「ログインしていません。ユーザーに `artifact login` の実行を頼んでください」 |
 | 別の端末が先に更新した（409） | 「版 3 が最新です。`read` で最新を確かめ、変更を合わせて公開し直してください」 |
 | 大きすぎる | 「1ファイル 25MB までです。sales.mp4 が 80MB あります」 |
 | 許可していない種類のファイル | 「.exe は公開できません。公開できる種類: html, css, js, …」 |
@@ -454,8 +454,8 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 同じ機能を CLI でも使える。`--json` で機械が読める形にする。
 
 ```bash
-article publish ./out/sales.html --title "売上の推移" --json
-article list --json
+artifact publish ./out/sales.html --title "売上の推移" --json
+artifact list --json
 ```
 
 ## skills
@@ -464,17 +464,17 @@ article list --json
 
 ```
 skills/
-  article-design/
+  artifact-design/
     SKILL.md            # 書く前の手順と守ること（短く）
     references/
       layout.md         # スマホ幅、余白、表やグラフの置き方
       theming.md        # 色のトークン、ダークモード
       libraries.md      # 使ってよい CDN とバージョンの固定（CSP の許可リストと一致させる）
-  article-publish/
+  artifact-publish/
     SKILL.md            # いつ公開するか、更新のしかた、秘密情報を載せない、delete はユーザーが頼んだときだけ
 ```
 
-`article-design/SKILL.md` に書くこと:
+`artifact-design/SKILL.md` に書くこと:
 
 - `<title>` は2〜4語の名前
 - 色は `:root` のトークンで定義し、`prefers-color-scheme: dark` で切り替える。`body` の背景を明示する
@@ -483,7 +483,7 @@ skills/
 - localStorage は try/catch で囲み、なくても動くようにする
 - 秘密情報・認証情報・個人データをページに書かない
 
-`article setup` が `~/.agents/skills/`（Codex と Gemini CLI の両方が読む）と `~/.claude/skills/`（Claude Code）にコピーする。コピーした skill のフォルダには印のファイルを置き、同じ名前の他人の skill は上書きしない。skills だけ入れ直すときは `article install-skills`（`--agent codex` のように対象を絞れる）。npm で `article` を更新したら、skills も新しい版に入れ直す。
+`artifact setup` が `~/.agents/skills/`（Codex と Gemini CLI の両方が読む）と `~/.claude/skills/`（Claude Code）にコピーする。コピーした skill のフォルダには印のファイルを置き、同じ名前の他人の skill は上書きしない。skills だけ入れ直すときは `artifact install-skills`（`--agent codex` のように対象を絞れる）。npm で `artifact` を更新したら、skills も新しい版に入れ直す。
 
 ## 画面
 
@@ -515,14 +515,14 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
 他の人が自分の Cloudflare に立てるときは:
 
 ```bash
-git clone https://github.com/Keyhole-Koro/SelfHostArticle.git
-cd SelfHostArticle && pnpm install
+git clone https://github.com/Keyhole-Koro/SelfHostArtifacts.git
+cd SelfHostArtifacts && pnpm install
 cd packages/worker && npx wrangler login && pnpm run deploy
 ```
 
 `scripts/deploy.mjs` が対話式で次をまとめて行う: ホスト名と `ROOT_EMAIL` の入力、D1 と R2 の作成（あれば再利用）、`wrangler.local.toml` の生成（`DEV_LOGIN_EMAIL` は消し、Custom Domain を足す）、マイグレーション、`wrangler deploy`、まだない secret の設定（`SESSION_SECRET` と `CONTENT_TOKEN_SECRET` は自動生成、Google の OAuth クライアントは入力）。何度実行してもよい。
 
-当初は npm の CLI に `article deploy` として入れる予定だったが、wrangler と Worker のソースを CLI に同梱すると重くなるのでやめた。デプロイする人はリポジトリを clone する。
+当初は npm の CLI に `artifact deploy` として入れる予定だったが、wrangler と Worker のソースを CLI に同梱すると重くなるのでやめた。デプロイする人はリポジトリを clone する。
 
 Cloudflare 側の設定（D1・R2 の binding、Custom Domain、Cron、Rate Limiting）はすべて `wrangler.toml` に書いてあり、これが IaC の代わりになる。Google の OAuth クライアントだけはコード化できないので手で作る。
 
@@ -535,14 +535,14 @@ Cloudflare 側の設定（D1・R2 の binding、Custom Domain、Cron、Rate Limi
 ## リポジトリ構成
 
 ```
-SelfHostArticle/
+SelfHostArtifacts/
   packages/
     worker/        # 管理画面・API・ページ本体を1つの Worker で（Hono）
-    cli/           # article（CLI + stdio MCP）
+    cli/           # artifact（CLI + stdio MCP）
     shared/        # manifest の zod スキーマ、API の型、署名の作り方
   skills/
-    article-design/
-    article-publish/
+    artifact-design/
+    artifact-publish/
   docs/
     design.md
   wrangler.example.toml
@@ -552,22 +552,22 @@ SelfHostArticle/
 
 使う技術: TypeScript、pnpm、Hono、zod、`@modelcontextprotocol/sdk`、wrangler、Web Crypto（Ed25519 の検証は Workers で使える）、vitest、Playwright。
 
-npm に公開するのは `packages/cli` だけ（`@keyhole-koro/article`）。skills はこのパッケージに同梱し、`article setup` が配る。
+npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）。skills はこのパッケージに同梱し、`artifact setup` が配る。
 
 ## フェーズ
 
-1. **v1（最小）**: Worker（Google ログイン、root と閲覧者、API、閲覧の外枠とページ本体）、D1・R2、`article setup/login/publish/list/read/delete`、stdio MCP、skills。Codex と Gemini の両方から1枚公開して開けるところまで
+1. **v1（最小）**: Worker（Google ログイン、root と閲覧者、API、閲覧の外枠とページ本体）、D1・R2、`artifact setup/login/publish/list/read/delete`、stdio MCP、skills。Codex と Gemini の両方から1枚公開して開けるところまで
 2. **v2**: 版の履歴と比較、ラベル、タイトル・説明の編集、端末の管理画面
 3. **v3（共有）**: Artifact ごとの共有リンク（署名付き、期限つき、失効できる）、Artifact ごとに見せる相手を絞る
 4. **v4（ページの機能）**: ページから使える共有 DB とページごとの保存領域（外枠が `postMessage` で受けて、Artifact ごとの Durable Object に読み書きする。sandbox のページは localStorage が使えないので、その代わり）、コメント
 
 ## 決定事項
 
-- 名前: npm パッケージ `@keyhole-koro/article`、コマンド `article`、リポジトリ `SelfHostArticle`
+- 名前: npm パッケージ `@keyhole-koro/artifacts`、コマンド `artifact`、リポジトリ `SelfHostArtifacts`
 - ライセンス: MIT（Keyhole-Koro）
-- ホスト: 1つ（keyhole.work では `article.keyhole.work`）。パスで振り分ける。ページ本体は opaque origin で隔離する
+- ホスト: 1つ（keyhole.work では `artifacts.keyhole.work`）。パスで振り分ける。ページ本体は opaque origin で隔離する
 - 認証: 人は Google ログイン（`ROOT_EMAIL` と、root が登録した閲覧者）、エージェントは端末ごとの Ed25519 鍵
-- 配布: npm。`article setup` が各エージェントの公式コマンドで MCP を登録し、skills を配る
+- 配布: npm。`artifact setup` が各エージェントの公式コマンドで MCP を登録し、skills を配る
 - 言語: UI・README・skills は英語
 - 外部通信: 既定で禁止、`allow_connect` でページごとに許可
 - 入口は HTML だけ（Markdown は受け付けない）

@@ -4,7 +4,7 @@ import type { AppEnv, Role, Viewer } from "../app-env.ts";
 import type { Config } from "../env.ts";
 import { randomToken } from "../lib/encoding.ts";
 
-export const SESSION_COOKIE = "__Host-article_session";
+export const SESSION_COOKIE = "__Host-artifact_session";
 const SESSION_DAYS = 30;
 
 export async function roleOf(db: D1Database, config: Config, email: string): Promise<Role | undefined> {

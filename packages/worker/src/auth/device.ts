@@ -5,7 +5,7 @@ import {
   SHA256_HEX,
   canonicalRequest,
   parseSignatureHeader,
-} from "@article/shared";
+} from "@artifact/shared";
 import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "../app-env.ts";
 import { apiError } from "../lib/api-error.ts";
@@ -23,7 +23,7 @@ const MAX_JSON_BODY_BYTES = 1024 * 1024;
 export function requireDevice(): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const params = parseSignatureHeader(c.req.header("authorization"));
-    if (!params) return apiError(c, 401, "unauthenticated", "This request is not signed. Run `article login` first.");
+    if (!params) return apiError(c, 401, "unauthenticated", "This request is not signed. Run `artifact login` first.");
 
     const now = Math.floor(Date.now() / 1000);
     if (Math.abs(now - params.ts) > MAX_CLOCK_SKEW_SECONDS) {
@@ -34,7 +34,7 @@ export function requireDevice(): MiddlewareHandler<AppEnv> {
       .bind(params.key)
       .first<{ id: string; name: string; public_key: string }>();
     if (!device) {
-      return apiError(c, 401, "unknown_device", "This device is not registered or was revoked. Run `article login` again.");
+      return apiError(c, 401, "unknown_device", "This device is not registered or was revoked. Run `artifact login` again.");
     }
 
     const declared = c.req.header(CONTENT_HASH_HEADER)?.toLowerCase() ?? EMPTY_SHA256;

@@ -18,7 +18,7 @@ export function readContentToken(secret: string, token: string): Promise<Content
   return verify<ContentToken>(token, secret);
 }
 
-/** Libraries that artifacts may load. Keep in sync with skills/article-design/references/libraries.md. */
+/** Libraries that artifacts may load. Keep in sync with skills/artifact-design/references/libraries.md. */
 export const SCRIPT_CDNS = ["https://cdnjs.cloudflare.com", "https://cdn.jsdelivr.net", "https://unpkg.com"];
 const STYLE_HOSTS = [...SCRIPT_CDNS, "https://fonts.googleapis.com"];
 const FONT_HOSTS = [...SCRIPT_CDNS, "https://fonts.gstatic.com"];

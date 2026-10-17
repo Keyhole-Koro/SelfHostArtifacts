@@ -1,20 +1,20 @@
-# SelfHostArticle
+# SelfHostArtifacts
 
 Private HTML pages for coding agents, on your own Cloudflare account. Codex CLI, Gemini CLI and
 Claude Code publish a page with one MCP tool call and get back a URL that only you (and the
 viewers you add) can open — like Claude's Artifacts, but self-hosted and for any agent.
 
 ```
-Agent ──stdio MCP──▶ article (CLI on your computer) ──signed HTTPS──▶ Worker ── D1 + R2
+Agent ──stdio MCP──▶ artifact (CLI on your computer) ──signed HTTPS──▶ Worker ── D1 + R2
                                                                         │
                        Browser ◀── Google sign-in, sandboxed viewer ────┘
 ```
 
-- **One hostname**, e.g. `article.example.com`: `/` lists pages, `/a/<id>` shows one,
+- **One hostname**, e.g. `artifacts.example.com`: `/` lists pages, `/a/<id>` shows one,
   `/settings` manages viewers and devices.
 - **People** sign in with Google. `ROOT_EMAIL` owns the deployment and adds viewers in Settings.
 - **Agents** never hold a password: each computer gets its own Ed25519 key, approved once in the
-  browser (`article login`), and signs every request.
+  browser (`artifact login`), and signs every request.
 - **Pages are isolated**: they run in a CSP sandbox with an opaque origin, so a page's scripts
   cannot read your session, call the API as you, or reach other hosts unless you allow it.
 - **Costs**: within Cloudflare's free tiers for personal use (estimate in [docs/design.md](docs/design.md)).
@@ -24,8 +24,8 @@ Agent ──stdio MCP──▶ article (CLI on your computer) ──signed HTTPS
 You need a Cloudflare account with a zone (domain) for the hostname, Node 20+ and pnpm.
 
 ```bash
-git clone https://github.com/Keyhole-Koro/SelfHostArticle.git
-cd SelfHostArticle && pnpm install
+git clone https://github.com/Keyhole-Koro/SelfHostArtifacts.git
+cd SelfHostArtifacts && pnpm install
 cd packages/worker
 npx wrangler login
 pnpm run deploy
@@ -47,13 +47,13 @@ secrets that are missing. All Cloudflare resources are declared in `wrangler.tom
 On each computer:
 
 ```bash
-npm i -g @keyhole-koro/article
-article setup --host article.example.com
+npm i -g @keyhole-koro/artifacts
+artifact setup --host artifacts.example.com
 ```
 
 `setup` pairs the computer (approve it in the browser as the owner), registers the MCP server with
 every agent it finds (`codex mcp add`, `gemini mcp add --scope user`, `claude mcp add --scope user`)
-and installs two skills, `article-design` (how to write a good page) and `article-publish` (when
+and installs two skills, `artifact-design` (how to write a good page) and `artifact-publish` (when
 and how to publish), into `~/.agents/skills` and `~/.claude/skills`. Restart the agents afterwards.
 
 Then ask an agent for a page — "turn this CSV into a dashboard page" — and it writes the HTML,
@@ -71,13 +71,13 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 ### CLI
 
 ```bash
-article publish ./report.html            # or a folder; prints the URL
-article publish ./site --allow-connect api.example.com
-article list
-article read https://article.example.com/a/<id> data.json
-article delete https://article.example.com/a/<id>
-article status
-article uninstall                        # remove the MCP registrations and skills
+artifact publish ./report.html            # or a folder; prints the URL
+artifact publish ./site --allow-connect api.example.com
+artifact list
+artifact read https://artifacts.example.com/a/<id> data.json
+artifact delete https://artifacts.example.com/a/<id>
+artifact status
+artifact uninstall                        # remove the MCP registrations and skills
 ```
 
 `--profile <name>` keeps a separate deployment or key; `--json` gives machine-readable output.
@@ -91,7 +91,7 @@ pnpm typecheck
 
 cd packages/worker
 cp .dev.vars.example .dev.vars
-npx wrangler d1 migrations apply article --local
+npx wrangler d1 migrations apply artifacts --local
 pnpm dev           # http://localhost:8787, signs you in as DEV_LOGIN_EMAIL
 
 cd ../cli

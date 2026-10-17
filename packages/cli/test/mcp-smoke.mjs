@@ -1,4 +1,4 @@
-// Manual smoke test: talks to `article mcp` over stdio like an agent does.
+// Manual smoke test: talks to `artifact mcp` over stdio like an agent does.
 // Usage: XDG_CONFIG_HOME=... node test/mcp-smoke.mjs /abs/page.html
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";

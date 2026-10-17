@@ -1,9 +1,9 @@
 ---
-name: article-design
-description: How to write an HTML page that will be published with the article tool (a report, dashboard, explainer, chart, comparison, notes or any page the user will open in a browser). Read before writing the page's HTML, CSS or scripts.
+name: artifact-design
+description: How to write an HTML page that will be published with the artifact tool (a report, dashboard, explainer, chart, comparison, notes or any page the user will open in a browser). Read before writing the page's HTML, CSS or scripts.
 ---
 
-# Writing a page for `article`
+# Writing a page for `artifact`
 
 The page is published privately and opened in a browser, on a desktop or a phone. It runs in a
 sandbox with no origin, so some browser features are missing (see "Sandbox" below).
@@ -15,7 +15,7 @@ sandbox with no origin, so some browser features are missing (see "Sandbox" belo
 2. Pick one layout: a document (headings and prose), a dashboard (a row of figures, then charts
    and tables), or a single tool (one interactive control area). Do not mix all three.
 3. Write the page to a file. Use one self-contained `.html` file unless the page needs data files
-   or images; then put them next to it and publish the folder (see the article-publish skill).
+   or images; then put them next to it and publish the folder (see the artifact-publish skill).
 
 ## Rules
 

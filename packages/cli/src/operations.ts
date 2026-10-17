@@ -7,11 +7,11 @@ import {
   type BlobCheckResponse,
   type ListResponse,
   type PublishResponse,
-} from "@article/shared";
+} from "@artifact/shared";
 import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { ArticleError, artifactIdFromUrl, expectOk, session, sha256Hex, signedFetch, signedJson, type Session } from "./client.ts";
+import { ArtifactError, artifactIdFromUrl, expectOk, session, sha256Hex, signedFetch, signedJson, type Session } from "./client.ts";
 import { forgetArtifact, loadState, rememberPublish } from "./profile.ts";
 
 export interface PublishInput {
@@ -55,18 +55,18 @@ function walk(dir: string): string[] {
 
 function readLocal(published: string, local: string): LocalFile {
   const reason = invalidPathReason(published);
-  if (reason) throw new ArticleError(`${published}: ${reason}`, "bad_path");
+  if (reason) throw new ArtifactError(`${published}: ${reason}`, "bad_path");
   let size: number;
   try {
     const stat = statSync(local);
-    if (!stat.isFile()) throw new ArticleError(`${local} is not a file.`, "not_found");
+    if (!stat.isFile()) throw new ArtifactError(`${local} is not a file.`, "not_found");
     size = stat.size;
   } catch (e) {
-    if (e instanceof ArticleError) throw e;
-    throw new ArticleError(`${local} does not exist.`, "not_found");
+    if (e instanceof ArtifactError) throw e;
+    throw new ArtifactError(`${local} does not exist.`, "not_found");
   }
   if (size > MAX_FILE_BYTES) {
-    throw new ArticleError(`A file may be at most 25MB; ${published} is ${Math.ceil(size / 1048576)}MB.`, "too_large");
+    throw new ArtifactError(`A file may be at most 25MB; ${published} is ${Math.ceil(size / 1048576)}MB.`, "too_large");
   }
   const bytes = readFileSync(local);
   return { published, local, bytes, sha256: sha256Hex(bytes) };
@@ -78,7 +78,7 @@ function collectFiles(input: PublishInput): { entry: string; entryLocal: string;
   try {
     stat = statSync(target);
   } catch {
-    throw new ArticleError(`${target} does not exist.`, "not_found");
+    throw new ArtifactError(`${target} does not exist.`, "not_found");
   }
   const files = new Map<string, LocalFile>();
   let entry: string;
@@ -90,9 +90,9 @@ function collectFiles(input: PublishInput): { entry: string; entryLocal: string;
       const published = relative(target, local).split(sep).join("/");
       files.set(published, readLocal(published, local));
     }
-    if (!files.has(entry)) throw new ArticleError(`${target} has no index.html to open first.`, "no_entry");
+    if (!files.has(entry)) throw new ArtifactError(`${target} has no index.html to open first.`, "no_entry");
   } else {
-    if (extensionOf(target) !== "html") throw new ArticleError(`The page must be an .html file; got ${basename(target)}.`, "not_html");
+    if (extensionOf(target) !== "html") throw new ArtifactError(`The page must be an .html file; got ${basename(target)}.`, "not_html");
     base = dirname(target);
     entry = basename(target);
     files.set(entry, readLocal(entry, target));
@@ -173,14 +173,14 @@ export async function read(url: string, path?: string, version?: number): Promis
   const id = artifactIdFromUrl(s, url);
   const detail = await signedJson<ArtifactDetail>(s, "GET", `/api/v1/artifacts/${id}`);
   const v = detail.versions.find((x) => x.version === (version ?? detail.version));
-  if (!v) throw new ArticleError(`Version ${version} does not exist.`, "not_found");
+  if (!v) throw new ArtifactError(`Version ${version} does not exist.`, "not_found");
   const filePath = path ?? v.entry;
   const res = await expectOk(
     await signedFetch(s, "GET", `/api/v1/artifacts/${id}/files/${filePath.split("/").map(encodeURIComponent).join("/")}?version=${v.version}`),
   );
   const type = res.headers.get("content-type") ?? "";
   if (TEXT_TYPES.test(type)) return { detail, path: filePath, version: v.version, text: await res.text() };
-  const dir = mkdtempSync(join(tmpdir(), "article-"));
+  const dir = mkdtempSync(join(tmpdir(), "artifact-"));
   const savedTo = join(dir, basename(filePath));
   writeFileSync(savedTo, Buffer.from(await res.arrayBuffer()));
   return { detail, path: filePath, version: v.version, savedTo };

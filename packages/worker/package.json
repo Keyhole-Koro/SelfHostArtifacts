@@ -1,5 +1,5 @@
 {
-  "name": "@article/worker",
+  "name": "@artifact/worker",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
-    "@article/shared": "workspace:*",
+    "@artifact/shared": "workspace:*",
     "hono": "4.13.12",
     "zod": "4.6.5"
   },

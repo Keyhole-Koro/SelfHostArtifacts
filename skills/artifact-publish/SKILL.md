@@ -1,12 +1,12 @@
 ---
-name: article-publish
-description: When and how to publish, update, read or delete pages with the article MCP tools (publish, read, list, delete) or the `article` CLI. Use when the user wants something as a web page, link or shareable page, or asks to change a page published earlier.
+name: artifact-publish
+description: When and how to publish, update, read or delete pages with the artifact MCP tools (publish, read, list, delete) or the `artifact` CLI. Use when the user wants something as a web page, link or shareable page, or asks to change a page published earlier.
 ---
 
-# Publishing with `article`
+# Publishing with `artifact`
 
-`article` publishes a local HTML page to the user's own private site and returns a URL such as
-`https://article.example.com/a/x7k2m9q4p1r8t3v6`. Only the owner and the viewers they added
+`artifact` publishes a local HTML page to the user's own private site and returns a URL such as
+`https://artifacts.example.com/a/x7k2m9q4p1r8t3v6`. Only the owner and the viewers they added
 can open it.
 
 ## When to publish
@@ -17,12 +17,12 @@ can open it.
   you can publish it if they did not ask.
 - Not for content the user marked as sensitive, and never for secrets or credentials.
 
-Read the article-design skill before writing the page.
+Read the artifact-design skill before writing the page.
 
 ## Publish
 
 MCP: `publish({ file_path, title?, description?, files?, url?, allow_connect? })`
-CLI: `article publish <file.html|folder> [--title …] [--description …]`
+CLI: `artifact publish <file.html|folder> [--title …] [--description …]`
 
 - `file_path` is the absolute path of the `.html` file. For a page with data files or images,
   put everything in one folder with an `index.html` and pass the folder.
@@ -55,5 +55,5 @@ having external access. Prefer saving the data into a file published with the pa
 
 ## Errors
 
-The error text says what to do. If it says the user must run `article login`, tell them to run
+The error text says what to do. If it says the user must run `artifact login`, tell them to run
 it in a terminal; you cannot log in for them.

@@ -1,15 +1,15 @@
 /**
  * Request signing for agents. The CLI signs every API request with the device's Ed25519 key:
  *
- *   Authorization: Article-Sig key=<deviceId>,ts=<unix seconds>,nonce=<random>,sig=<base64url>
- *   X-Article-Content-Sha256: <hex sha256 of the body>
+ *   Authorization: Artifact-Sig key=<deviceId>,ts=<unix seconds>,nonce=<random>,sig=<base64url>
+ *   X-Artifact-Content-Sha256: <hex sha256 of the body>
  *
  * The signature covers METHOD, path with query, ts, nonce and the body hash, one per line.
  * For a blob upload the body hash is the blob's own hash, which R2 verifies on write.
  */
 
-export const SIGNATURE_SCHEME = "Article-Sig";
-export const CONTENT_HASH_HEADER = "x-article-content-sha256";
+export const SIGNATURE_SCHEME = "Artifact-Sig";
+export const CONTENT_HASH_HEADER = "x-artifact-content-sha256";
 export const MAX_CLOCK_SKEW_SECONDS = 300;
 
 /** sha256 of the empty string, used for requests without a body. */
