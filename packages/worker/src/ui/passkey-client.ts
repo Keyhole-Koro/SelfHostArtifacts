@@ -120,7 +120,9 @@ async function run(button) {
     const name = e && e.name;
     const message =
       name === "NotAllowedError" || name === "AbortError"
-        ? "Cancelled. Try again when you are ready."
+        ? passkey === "login"
+          ? "No passkey was used. If you have none for this site yet, see below for how to get one."
+          : "Cancelled. Try again when you are ready."
         : name === "InvalidStateError"
           ? "This device or password manager already holds a passkey for you. Add one from another device instead."
           : e.message;

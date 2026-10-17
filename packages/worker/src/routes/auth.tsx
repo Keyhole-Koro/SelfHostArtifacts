@@ -134,7 +134,9 @@ auth.get("/login", async (c) => {
         )}
       </div>
       <p class="muted" style="margin-top:24px">
-        On a computer set up with <code>artifact</code>, run <code>artifact open</code> to sign in without a passkey.
+        No passkey here yet? Open the invite link you were sent; it creates one. If you already have an account, sign in
+        another way first{googleConfigured(c) ? " (Google, or " : " ("}<code>artifact open</code> on a computer set up with
+        <code>artifact</code>) and add a passkey under your name.
       </p>
     </Page>,
   );
