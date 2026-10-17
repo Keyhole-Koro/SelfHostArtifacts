@@ -29,7 +29,7 @@ import {
 import { randomId } from "../lib/encoding.ts";
 import { renderSVG } from "uqr";
 import { pageSecurity } from "../ui/security.ts";
-import { CsrfField, Page, formatTime } from "../ui/layout.tsx";
+import { CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
 
 export const pages = new Hono<AppEnv>();
 
@@ -42,39 +42,59 @@ pages.get("/", requireViewer(), async (c) => {
   const artifacts = await listArtifacts(c.env.DB, 200);
   return c.html(
     <Page title="Artifacts" viewer={viewer}>
-      <div class="row" style="margin-bottom:16px">
-        <h1 class="grow" style="margin:0">Artifacts</h1>
+      <div class="page-head">
+        <div>
+          <h1>Artifacts</h1>
+          <p class="lead">
+            {artifacts.length} {artifacts.length === 1 ? "page" : "pages"}, newest first
+          </p>
+        </div>
+        {artifacts.length > 0 && <input id="filter" class="search" type="search" placeholder="Search" aria-label="Search titles and descriptions" />}
       </div>
       {artifacts.length === 0 ? (
-        <div class="card muted">
-          Nothing is published yet. Ask an agent to publish a page with the <code>artifact</code> tool.
+        <div class="card">
+          <h2>Nothing published yet</h2>
+          <p class="muted small" style="margin:var(--space-2) 0 0">
+            Ask an agent for a page, for example “turn this CSV into a dashboard page”. It publishes with the <code>artifact</code> tool and
+            the page appears here.
+          </p>
         </div>
       ) : (
         <>
-          <input id="filter" type="search" placeholder="Filter by title or description" aria-label="Filter" style="margin-bottom:12px" />
-          <ul class="list" id="artifacts">
+          <ul class="rows links" id="artifacts">
             {artifacts.map((a) => (
               <li data-text={`${a.title} ${a.description ?? ""}`.toLowerCase()}>
-                <div class="row">
-                  <a class="title grow" href={`/a/${a.id}`}>
+                <div class="main">
+                  <a class="title" href={`/a/${a.id}`}>
                     {a.title}
-                  </a>
-                  {a.allow_connect.length > 0 && <span class="badge" title={a.allow_connect.join(", ")}>External access</span>}
+                  </a>{" "}
+                  {a.allow_connect.length > 0 && (
+                    <span class="badge warn" title={`May connect to ${a.allow_connect.join(", ")}`}>
+                      external
+                    </span>
+                  )}
+                  {a.description && <div class="desc">{a.description}</div>}
                 </div>
-                {a.description && <div>{a.description}</div>}
-                <div class="meta">
-                  v{a.current_version} · updated {formatTime(a.updated_at)}
+                <div class="side">
+                  <span>v{a.current_version}</span>
+                  <Time iso={a.updated_at} />
                 </div>
               </li>
             ))}
+            <li class="empty" id="no-match" hidden>
+              No page matches your search.
+            </li>
           </ul>
           <script nonce={c.get("nonce")}>
             {raw(`
 const input = document.getElementById("filter");
-const items = [...document.querySelectorAll("#artifacts li")];
+const items = [...document.querySelectorAll("#artifacts li[data-text]")];
+const none = document.getElementById("no-match");
 input.addEventListener("input", () => {
   const q = input.value.trim().toLowerCase();
-  for (const li of items) li.hidden = q !== "" && !li.dataset.text.includes(q);
+  let shown = 0;
+  for (const li of items) { li.hidden = q !== "" && !li.dataset.text.includes(q); if (!li.hidden) shown++; }
+  none.hidden = shown > 0;
 });`)}
           </script>
         </>
@@ -87,27 +107,32 @@ input.addEventListener("input", () => {
 
 const VIEWER_STYLES = `
 html, body { height: 100%; margin: 0; }
-body { display: flex; flex-direction: column; background: var(--bg, #fff); }
-.bar { display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-bottom: 1px solid #e7e5e4; font: 13px/1.4 system-ui, sans-serif; background: #fff; color: #1c1917; }
-.bar a { color: #2563eb; text-decoration: none; }
-.bar .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.bar .meta { color: #78716c; white-space: nowrap; }
-.bar .spacer { flex: 1; }
-.bar details { position: relative; }
-.bar summary { cursor: pointer; color: #2563eb; list-style: none; }
-.bar details ul { position: absolute; right: 0; top: 24px; z-index: 1; list-style: none; margin: 0; padding: 6px 0; background: #fff; border: 1px solid #e7e5e4; border-radius: 8px; min-width: 220px; max-height: 60vh; overflow: auto; }
-.bar details li a { display: block; padding: 4px 12px; color: #1c1917; }
-.bar details li a.current { font-weight: 600; }
-.badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: #fef3c7; color: #92400e; white-space: nowrap; }
+body { display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 400 var(--text-sm)/1.4 var(--font-sans); }
+a { color: inherit; text-decoration: none; }
+.bar { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-3); border-bottom: 1px solid var(--border); background: var(--bg); }
+.back { display: flex; align-items: center; gap: var(--space-1); color: var(--text-2); padding: 4px var(--space-2); border-radius: var(--radius-sm); }
+.back:hover { background: var(--surface-2); color: var(--text); }
+.divider { width: 1px; height: 18px; background: var(--border); }
+.title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.meta { color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.old { color: var(--warning); }
+.badge { font-size: var(--text-xs); font-weight: 600; padding: 1px var(--space-2); border-radius: 999px; background: color-mix(in srgb, var(--warning) 14%, var(--surface)); color: var(--warning); white-space: nowrap; }
+.spacer { flex: 1; }
+.tool { display: flex; align-items: center; gap: var(--space-1); color: var(--text-2); padding: 4px var(--space-2); border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; }
+.tool:hover { background: var(--surface-2); color: var(--text); }
+details { position: relative; }
+summary { list-style: none; }
+summary::-webkit-details-marker { display: none; }
+.panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 2; min-width: 240px; max-height: 60vh; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 4px 16px rgb(0 0 0 / 0.12); padding: var(--space-1); }
+.panel a { display: flex; justify-content: space-between; gap: var(--space-4); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); color: var(--text); font-variant-numeric: tabular-nums; }
+.panel a:hover { background: var(--surface-2); }
+.panel a.current { font-weight: 600; background: var(--accent-soft); color: var(--accent); }
+.panel span { color: var(--text-2); }
 iframe { flex: 1; width: 100%; border: 0; background: #fff; }
-@media (prefers-color-scheme: dark) {
-  .bar, .bar details ul { background: #1c1917; color: #f5f5f4; border-color: #292524; }
-  .bar details li a { color: #f5f5f4; }
-  .bar .meta { color: #a8a29e; }
-  .badge { background: #422006; color: #fcd34d; }
-}
+.short { display: none; }
 @media (max-width: 640px) {
-  .bar .meta, .bar .optional { display: none; }
+  .meta, .label, .divider { display: none; }
+  .short { display: inline; }
 }
 `;
 
@@ -121,45 +146,51 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, versionNumber);
   const src = `/c/${token}/${encodeURI(version.entry)}`;
   const nonce = c.get("nonce");
+  const isLatest = versionNumber === artifact.current_version;
   return c.html(
     <html lang="en">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{artifact.title}</title>
-        <style>{raw(VIEWER_STYLES)}</style>
+        <style>{raw(TOKENS + VIEWER_STYLES)}</style>
       </head>
       <body>
         <div class="bar">
-          <a href="/" class="optional" aria-label="All artifacts">
-            ←
+          <a href="/" class="back" aria-label="All artifacts">
+            ← <span class="label">Artifacts</span>
           </a>
+          <span class="divider" aria-hidden="true" />
           <span class="title">{artifact.title}</span>
           <span class="meta">
-            v{versionNumber}
-            {versionNumber !== artifact.current_version && ` (latest is v${artifact.current_version})`} ·{" "}
-            {formatTime(version.created_at)}
+            {isLatest ? `v${versionNumber}` : <span class="old">v{versionNumber} (latest is v{artifact.current_version})</span>} ·{" "}
+            <Time iso={version.created_at} />
           </span>
           {version.allow_connect.length > 0 && (
-            <span class="badge" title={version.allow_connect.join(", ")}>
-              External access
+            <span class="badge" title={`May connect to ${version.allow_connect.join(", ")}`}>
+              external
             </span>
           )}
           <span class="spacer" />
           <details>
-            <summary>Versions</summary>
-            <ul>
+            <summary class="tool">
+              <span class="label">Versions</span>
+              <span class="short">v{versionNumber}</span> ▾
+            </summary>
+            <div class="panel">
               {versions.map((v) => (
-                <li>
-                  <a href={v.version === artifact.current_version ? `/a/${id}` : `/a/${id}/v/${v.version}`} class={v.version === versionNumber ? "current" : ""}>
-                    v{v.version} · {formatTime(v.created_at)}
-                  </a>
-                </li>
+                <a href={v.version === artifact.current_version ? `/a/${id}` : `/a/${id}/v/${v.version}`} class={v.version === versionNumber ? "current" : ""}>
+                  v{v.version}
+                  {v.version === artifact.current_version && " · latest"}
+                  <span>
+                    <Time iso={v.created_at} />
+                  </span>
+                </a>
               ))}
-            </ul>
+            </div>
           </details>
-          <a id="open" href={src} target="_blank" rel="noopener noreferrer" class="optional">
-            Open in new tab
+          <a id="open" href={src} target="_blank" rel="noopener noreferrer" class="tool" title="Open in a new tab">
+            ↗ <span class="label">Open</span>
           </a>
         </div>
         <iframe id="frame" src={src} sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" title={artifact.title} />
@@ -210,50 +241,80 @@ account.get("/account", async (c) => {
   const passkeys = await listPasskeys(c.env.DB, viewer.userId);
   return c.html(
     <Page title="Account" viewer={viewer} passkeys>
-      <h1>{viewer.name}</h1>
-      <p class="muted">{viewer.role === "root" ? "Owner" : "Viewer"}</p>
+      <div class="page-head">
+        <div>
+          <h1>Account</h1>
+          <p class="lead">{viewer.role === "root" ? "Owner of this site" : "Viewer"}</p>
+        </div>
+      </div>
 
-      <h2 id="name">Name</h2>
-      <form method="post" action="/account/name" class="row">
-        <CsrfField token={viewer.csrf} />
-        <input class="grow" type="text" name="name" required maxlength={64} value={viewer.name} aria-label="Name" autocomplete="name" />
-        <button type="submit">Save</button>
-      </form>
+      <section class="section" id="name">
+        <div class="section-head">
+          <div>
+            <h2>Name</h2>
+            <p>Shown in the menu and to the owner in Settings.</p>
+          </div>
+        </div>
+        <form method="post" action="/account/name" class="field-row">
+          <CsrfField token={viewer.csrf} />
+          <input type="text" name="name" required maxlength={64} value={viewer.name} aria-label="Name" autocomplete="name" />
+          <button type="submit">Save</button>
+        </form>
+      </section>
 
-      <h2 id="passkeys">Passkeys</h2>
-      <p class="muted">Each passkey lets you sign in from the device or password manager that holds it. Add one per device you use.</p>
-      <ul class="list" style="margin-bottom:12px">
-        {passkeys.length === 0 && <li class="muted">No passkeys yet.</li>}
-        {passkeys.map((p) => (
-          <li class="row">
-            <span class="grow">
-              <strong>{p.label}</strong>
-              <div class="meta">
-                added {formatTime(p.created_at)}
-                {p.last_used_at && ` · last used ${formatTime(p.last_used_at)}`}
+      <section class="section" id="passkeys">
+        <div class="section-head">
+          <div>
+            <h2>Passkeys</h2>
+            <p>Each passkey signs you in from the device or password manager that holds it. Synced passkeys follow you to your other devices.</p>
+          </div>
+          <button type="button" data-passkey="register" data-options="/account/passkeys/options" data-verify="/account/passkeys/verify">
+            Add a passkey
+          </button>
+        </div>
+        <ul class="rows">
+          {passkeys.length === 0 && <li class="empty">No passkeys yet. Add one to sign in without the CLI.</li>}
+          {passkeys.map((p) => (
+            <li>
+              <div class="main">
+                <div class="title">{p.label}</div>
+                <div class="desc">
+                  Added <Time iso={p.created_at} />
+                  {p.last_used_at && (
+                    <>
+                      {" · last used "}
+                      <Time iso={p.last_used_at} />
+                    </>
+                  )}
+                </div>
               </div>
-            </span>
-            {passkeys.length > 1 && (
-              <form class="inline" method="post" action={`/account/passkeys/${encodeURIComponent(p.id)}/remove`}>
-                <CsrfField token={viewer.csrf} />
-                <button class="danger" type="submit">
-                  Remove
-                </button>
-              </form>
-            )}
-          </li>
-        ))}
-      </ul>
-      <button type="button" data-passkey="register" data-options="/account/passkeys/options" data-verify="/account/passkeys/verify">
-        Add a passkey
-      </button>
+              <div class="side">
+                {passkeys.length > 1 && (
+                  <form class="inline" method="post" action={`/account/passkeys/${encodeURIComponent(p.id)}/remove`}>
+                    <CsrfField token={viewer.csrf} />
+                    <button class="danger" type="submit">
+                      Remove
+                    </button>
+                  </form>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
 
-      <h2 id="phone">Sign in on your phone</h2>
-      <p class="muted">Shows a QR code that signs your phone in as you. It works once, for two minutes. Then add a passkey on the phone.</p>
-      <form method="post" action="/account/phone-link">
-        <CsrfField token={viewer.csrf} />
-        <button type="submit">Show QR code</button>
-      </form>
+      <section class="section" id="phone">
+        <div class="section-head">
+          <div>
+            <h2>Sign in on your phone</h2>
+            <p>Shows a QR code that signs your phone in as you. It works once, for two minutes; then add a passkey on the phone.</p>
+          </div>
+          <form method="post" action="/account/phone-link">
+            <CsrfField token={viewer.csrf} />
+            <button type="submit">Show QR code</button>
+          </form>
+        </div>
+      </section>
     </Page>,
   );
 });
@@ -291,18 +352,20 @@ account.post("/account/phone-link", requireSameOriginForm(), async (c) => {
   const qr = renderSVG(url, { border: 2, pixelSize: 6, whiteColor: "#ffffff", blackColor: "#000000" });
   return c.html(
     <Page title="Sign in on your phone" viewer={viewer}>
-      <h1>Scan with your phone</h1>
-      <p class="muted">Point the phone's camera at the code and open the link. It signs in as {viewer.name}, works once and expires in two minutes.</p>
-      <div class="qr" role="img" aria-label="QR code with a one-time sign-in link">
-        {raw(qr)}
+      <div class="narrow">
+        <h1>Scan with your phone</h1>
+        <p class="muted small">Point the camera at the code and open the link. It signs in as {viewer.name}, works once and expires in two minutes.</p>
+        <div class="qr" role="img" aria-label="QR code with a one-time sign-in link">
+          {raw(qr)}
+        </div>
+        <details>
+          <summary class="muted small">Show the link instead</summary>
+          <p class="link-box">{url}</p>
+        </details>
+        <p style="margin-top:var(--space-5)">
+          <a href="/account">← Back to your account</a>
+        </p>
       </div>
-      <details>
-        <summary class="muted">Show the link instead</summary>
-        <p class="link-box">{url}</p>
-      </details>
-      <p>
-        <a href="/account#passkeys">Back to your account</a>
-      </p>
     </Page>,
   );
 });
@@ -346,112 +409,163 @@ root.get("/settings", async (c) => {
   const trashDays = c.get("config").trashDays;
   return c.html(
     <Page title="Settings" viewer={viewer}>
-      <h1>Settings</h1>
-
-      <h2 id="people">People</h2>
-      <p class="muted">Viewers can open every artifact. Invite someone with a link; they create a passkey when they open it.</p>
-      <ul class="list" style="margin-bottom:12px">
-        {users.map((u) => (
-          <li class="row">
-            <span class="grow">
-              <strong>{u.name}</strong> <span class="badge">{u.role === "root" ? "Owner" : "Viewer"}</span>
-              <div class="meta">
-                {u.passkeys} passkey{u.passkeys === 1 ? "" : "s"}
-              </div>
-            </span>
-            {u.id !== viewer.userId && (
-              <form class="inline" method="post" action={`/settings/users/${u.id}/remove`}>
-                <CsrfField token={viewer.csrf} />
-                <button class="danger" type="submit">
-                  Remove
-                </button>
-              </form>
-            )}
-          </li>
-        ))}
-      </ul>
-      <div class="row">
-        <form class="inline" method="post" action="/settings/invites">
-          <CsrfField token={viewer.csrf} />
-          <button class="primary" type="submit">
-            Create invite link
-          </button>
-        </form>
+      <div class="page-head">
+        <div>
+          <h1>Settings</h1>
+          <p class="lead">Who can see this site, which computers can publish, and what was deleted.</p>
+        </div>
       </div>
-      {invitesOpen.length > 0 && (
-        <p class="muted">
-          {invitesOpen.length} invite link{invitesOpen.length === 1 ? "" : "s"} not used yet ·{" "}
-          <form class="inline" method="post" action="/settings/invites/revoke">
+
+      <section class="section" id="people">
+        <div class="section-head">
+          <div>
+            <h2>People</h2>
+            <p>Viewers can open every artifact. Invite someone with a link; they create a passkey when they open it.</p>
+          </div>
+          <form method="post" action="/settings/invites">
             <CsrfField token={viewer.csrf} />
-            <button type="submit">Cancel unused links</button>
+            <button class="primary" type="submit">
+              Create invite link
+            </button>
           </form>
-        </p>
-      )}
-
-      <h2 id="devices">Devices</h2>
-      <p class="muted">
-        Computers whose agents can publish. Add one with <code>artifact login</code>. A device can also sign you in here with <code>artifact open</code>.
-      </p>
-      <ul class="list">
-        {devices.results.length === 0 && <li class="muted">No devices yet.</li>}
-        {devices.results.map((d) => (
-          <li class="row">
-            <span class="grow">
-              <strong>{d.name}</strong>
-              <div class="meta">
-                added {formatTime(d.created_at)}
-                {d.last_used_at && ` · last used ${formatTime(d.last_used_at)}`}
+        </div>
+        <ul class="rows">
+          {users.map((u) => (
+            <li>
+              <div class="main">
+                <span class="title">{u.name}</span>
+                {u.id === viewer.userId && <span class="muted small"> (you)</span>}{" "}
+                <span class={`badge ${u.role === "root" ? "accent" : ""}`}>{u.role === "root" ? "Owner" : "Viewer"}</span>
+                <div class="desc">
+                  {u.passkeys} passkey{u.passkeys === 1 ? "" : "s"} · joined <Time iso={u.created_at} />
+                </div>
               </div>
+              <div class="side">
+                {u.id !== viewer.userId && (
+                  <form class="inline" method="post" action={`/settings/users/${u.id}/remove`}>
+                    <CsrfField token={viewer.csrf} />
+                    <button class="danger" type="submit">
+                      Remove
+                    </button>
+                  </form>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+        {invitesOpen.length > 0 && (
+          <div class="field-row" style="align-items:center;margin-top:var(--space-3)">
+            <span class="muted small" style="flex:1">
+              {invitesOpen.length} invite link{invitesOpen.length === 1 ? " is" : "s are"} not used yet.
             </span>
-            <form class="inline" method="post" action={`/settings/devices/${d.id}/revoke`}>
+            <form class="inline" method="post" action="/settings/invites/revoke">
               <CsrfField token={viewer.csrf} />
-              <button class="danger" type="submit">
-                Revoke
+              <button class="quiet" type="submit">
+                Cancel unused links
               </button>
             </form>
-          </li>
-        ))}
-      </ul>
+          </div>
+        )}
+      </section>
 
-      <h2 id="external">External access</h2>
-      <p class="muted">Artifacts that may send requests to other hosts. Removing access lasts until the artifact is published again with it.</p>
-      <ul class="list">
-        {connecting.length === 0 && <li class="muted">None.</li>}
-        {connecting.map((a) => (
-          <li class="row">
-            <span class="grow">
-              <a class="title" href={`/a/${a.id}`}>
-                {a.title}
-              </a>
-              <div class="meta">{a.allow_connect.join(", ")}</div>
-            </span>
-            <form class="inline" method="post" action={`/settings/connect/${a.id}/revoke`}>
-              <CsrfField token={viewer.csrf} />
-              <button class="danger" type="submit">
-                Remove access
-              </button>
-            </form>
-          </li>
-        ))}
-      </ul>
+      <section class="section" id="devices">
+        <div class="section-head">
+          <div>
+            <h2>Devices</h2>
+            <p>
+              Computers whose agents can publish. Add one with <code>artifact login</code>. A device can also sign you in here with{" "}
+              <code>artifact open</code>, so revoke any you no longer use.
+            </p>
+          </div>
+        </div>
+        <ul class="rows">
+          {devices.results.length === 0 && <li class="empty">No devices yet.</li>}
+          {devices.results.map((d) => (
+            <li>
+              <div class="main">
+                <div class="title">{d.name}</div>
+                <div class="desc">
+                  Added <Time iso={d.created_at} />
+                  {d.last_used_at && (
+                    <>
+                      {" · last used "}
+                      <Time iso={d.last_used_at} />
+                    </>
+                  )}
+                </div>
+              </div>
+              <div class="side">
+                <form class="inline" method="post" action={`/settings/devices/${d.id}/revoke`}>
+                  <CsrfField token={viewer.csrf} />
+                  <button class="danger" type="submit">
+                    Revoke
+                  </button>
+                </form>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
 
-      <h2 id="trash">Trash</h2>
-      <p class="muted">Deleted artifacts are removed for good {trashDays} days after deletion.</p>
-      <ul class="list">
-        {trash.length === 0 && <li class="muted">Empty.</li>}
-        {trash.map((a) => (
-          <li class="row">
-            <span class="grow">
-              <strong>{a.title}</strong>
-              <div class="meta">deleted {formatTime(a.deleted_at!)}</div>
-            </span>
-            <form class="inline" method="post" action={`/settings/trash/${a.id}/restore`}>
-              <CsrfField token={viewer.csrf} />
-              <button type="submit">Restore</button>
-            </form>
-          </li>
-        ))}
-      </ul>
+      <section class="section" id="external">
+        <div class="section-head">
+          <div>
+            <h2>External access</h2>
+            <p>Artifacts that may send requests to other hosts. Removing access lasts until the artifact is published again with it.</p>
+          </div>
+        </div>
+        <ul class="rows">
+          {connecting.length === 0 && <li class="empty">No artifact talks to other hosts.</li>}
+          {connecting.map((a) => (
+            <li>
+              <div class="main">
+                <a class="title" href={`/a/${a.id}`}>
+                  {a.title}
+                </a>
+                <div class="desc">{a.allow_connect.join(", ")}</div>
+              </div>
+              <div class="side">
+                <form class="inline" method="post" action={`/settings/connect/${a.id}/revoke`}>
+                  <CsrfField token={viewer.csrf} />
+                  <button class="danger" type="submit">
+                    Remove access
+                  </button>
+                </form>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section class="section" id="trash">
+        <div class="section-head">
+          <div>
+            <h2>Trash</h2>
+            <p>Deleted artifacts are removed for good {trashDays} days after deletion.</p>
+          </div>
+        </div>
+        <ul class="rows">
+          {trash.length === 0 && <li class="empty">The trash is empty.</li>}
+          {trash.map((a) => (
+            <li>
+              <div class="main">
+                <div class="title">{a.title}</div>
+                <div class="desc">
+                  Deleted <Time iso={a.deleted_at!} />
+                </div>
+              </div>
+              <div class="side">
+                <form class="inline" method="post" action={`/settings/trash/${a.id}/restore`}>
+                  <CsrfField token={viewer.csrf} />
+                  <button class="quiet" type="submit">
+                    Restore
+                  </button>
+                </form>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
     </Page>,
   );
 });
@@ -462,13 +576,15 @@ root.post("/settings/invites", requireSameOriginForm(), async (c) => {
   const url = `${c.get("config").origin}/invite/${token}`;
   return c.html(
     <Page title="Invite link" viewer={viewer}>
-      <h1>Invite link</h1>
-      <p>Send this link to the person you want to add. It works once and expires in {INVITE_DAYS} days.</p>
-      <p class="link-box">{url}</p>
-      <p class="muted">The link is shown only now. Anyone who opens it first becomes a viewer.</p>
-      <p>
-        <a href="/settings#people">Back to settings</a>
-      </p>
+      <div class="narrow">
+        <h1>Invite link</h1>
+        <p class="muted small">Send this to the person you want to add. It works once and expires in {INVITE_DAYS} days.</p>
+        <p class="link-box">{url}</p>
+        <p class="muted small">The link is shown only now. Whoever opens it first becomes a viewer.</p>
+        <p style="margin-top:var(--space-5)">
+          <a href="/settings#people">← Back to settings</a>
+        </p>
+      </div>
     </Page>,
   );
 });
@@ -541,7 +657,7 @@ root.get("/pair/:code", async (c) => {
   if (!isPending(row)) {
     const closed = closedPairing(row);
     return c.html(
-      <Page title="Login request" viewer={viewer}>
+      <Page title="Login request" viewer={viewer} narrow>
         <h1>{closed.title}</h1>
         <p class="muted">{closed.body}</p>
       </Page>,
@@ -550,7 +666,7 @@ root.get("/pair/:code", async (c) => {
   }
   const pairing = row;
   return c.html(
-    <Page title="Approve device" viewer={viewer}>
+    <Page title="Approve device" viewer={viewer} narrow>
       <h1>Let this device publish?</h1>
       <div class="card">
         <p>Check that the terminal shows the same code:</p>
@@ -605,7 +721,7 @@ root.post("/pair/:code", requireSameOriginForm(), async (c) => {
     await c.env.DB.prepare("update pairings set status = 'denied' where code = ?").bind(pairing.code).run();
   }
   return c.html(
-    <Page title="Device" viewer={viewer}>
+    <Page title="Device" viewer={viewer} narrow>
       <h1>{decision === "approve" ? `${pairing.name} can now publish` : "Denied"}</h1>
       <p class="muted">You can close this tab and go back to the terminal.</p>
     </Page>,

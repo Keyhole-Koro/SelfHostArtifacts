@@ -34,7 +34,7 @@ export function safeNext(next: string | undefined): string {
 
 function message(c: Context<AppEnv>, title: string, body: string, status: 400 | 403 | 404 | 500) {
   return c.html(
-    <Page title={title}>
+    <Page title={title} narrow>
       <h1>{title}</h1>
       <p>{body}</p>
       <p>
@@ -90,7 +90,7 @@ auth.get("/login", async (c) => {
   }
   const hasOwner = Boolean(await firstRoot(c.env.DB));
   return c.html(
-    <Page title="Sign in" passkeys>
+    <Page title="Sign in" passkeys narrow>
       <h1>Sign in</h1>
       {!hasOwner && (
         <p class="card">
@@ -141,7 +141,7 @@ auth.get("/link/:token", async (c) => {
 auth.post("/logout", requireViewer(), requireSameOriginForm(), async (c) => {
   await endSession(c);
   return c.html(
-    <Page title="Signed out">
+    <Page title="Signed out" narrow>
       <h1>Signed out</h1>
       <p>
         <a href="/auth/login">Sign in again</a>
@@ -161,7 +161,7 @@ invites.get("/:token", async (c) => {
   if (!invite) return message(c, "This invite link has expired", "Invite links work once and expire after 7 days. Ask for a new one.", 404);
   const owner = invite.role === "root";
   return c.html(
-    <Page title="Create your passkey" passkeys>
+    <Page title="Create your passkey" passkeys narrow>
       <h1>{owner ? "Become the owner" : "You're invited to view Artifacts"}</h1>
       <p class="muted">
         {owner

@@ -4,7 +4,7 @@ Private HTML pages for coding agents, on your own Cloudflare account. Codex CLI,
 Claude Code publish a page with one MCP tool call and get back a URL that only you (and the
 viewers you add) can open — like Claude's Artifacts, but self-hosted and for any agent.
 
-![An artifact open in the viewer: a cost dashboard with stat tiles and a chart](docs/images/viewer.png)
+![An artifact open in the viewer: a cost estimate with stat tiles and a chart](docs/images/viewer.png)
 
 ```
 Agent ──stdio MCP──▶ artifact (CLI on your computer) ──signed HTTPS──▶ Worker ── D1 + R2
@@ -55,9 +55,9 @@ Ask for a change and it republishes to the same URL as version 2; older versions
 
 | Your pages | Settings |
 |---|---|
-| ![The list of published artifacts with titles, descriptions and versions](docs/images/list.png) | ![Settings: viewers, devices, external access and trash](docs/images/settings.png) |
+| ![The list of published artifacts with titles, descriptions, versions and search](docs/images/list.png) | ![Settings: people with their passkeys, invite links and devices](docs/images/settings.png) |
 
-Both sample pages are in [`examples/`](examples); publish one yourself with
+The sample pages are in [`examples/`](examples); publish one yourself with
 `artifact publish examples/cost-estimate`.
 
 ## Deploy

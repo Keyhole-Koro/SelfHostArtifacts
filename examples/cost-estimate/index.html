@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>料金の見積もり</title>
+<title>Cost Estimate</title>
 <style>
 /* ---- Tokens (theming.md, typography.md, layout.md) ---- */
 :root {
@@ -85,58 +85,58 @@ table.data tr:last-child td { border-bottom: 0; }
 </head>
 <body>
 <main>
-  <h1>個人利用なら月 $0、多めに使っても月 $1 未満</h1>
-  <p class="lead">SelfHostArtifacts を Cloudflare の Workers・D1・R2 で動かしたときの月額の見積もり。お金がかかるのは R2 の保存量だけ。</p>
+  <h1>$0 a month for personal use, under $1 for heavy use</h1>
+  <p class="lead">What SelfHostArtifacts costs on Cloudflare Workers, D1 and R2. The only thing that is ever billed is R2 storage.</p>
 
   <div class="grid">
     <div class="stat">
-      <div class="stat-label">個人で使う場合</div>
-      <div class="stat-value">$0 / 月</div>
-      <div class="stat-delta">どの項目も無料枠の 0.5% 未満</div>
+      <div class="stat-label">Personal use</div>
+      <div class="stat-value">$0 / mo</div>
+      <div class="stat-delta">Every item under 0.5% of the free tier</div>
     </div>
     <div class="stat">
-      <div class="stat-label">多めに使う場合（1年後）</div>
-      <div class="stat-value">$0.93 / 月</div>
-      <div class="stat-delta">R2 の保存 72GB のうち、無料枠を超えた 62GB 分</div>
+      <div class="stat-label">Heavy use, after a year</div>
+      <div class="stat-value">$0.93 / mo</div>
+      <div class="stat-delta">62 GB of 72 GB stored is above the free 10 GB</div>
     </div>
     <div class="stat">
-      <div class="stat-label">有料プラン（月 $5）が要るのは</div>
-      <div class="stat-value">1.6万 回/日</div>
-      <div class="stat-delta">の閲覧を超えたとき</div>
+      <div class="stat-label">Paid plan ($5/mo) needed above</div>
+      <div class="stat-value">16,000 / day</div>
+      <div class="stat-delta">page views</div>
     </div>
   </div>
 
-  <h2>保存量の伸びと料金</h2>
+  <h2>Storage over time</h2>
   <figure class="figure">
-    <h3>保存量は2か月目に無料枠を超えるが、1年たっても月 $1 に届かない</h3>
-    <div class="chart"><canvas id="storage" role="img" aria-label="R2 の保存量は毎月 6GB ずつ増え、12か月で 72GB。無料枠の 10GB を2か月目に超える"></canvas></div>
-    <figcaption>多めに使う場合（1回の公開で 1MB 増え、1日 200回公開）。版をすべて残す設定。料金は (保存量 − 10GB) × $0.015/GB・月。</figcaption>
+    <h3>Storage passes the free tier in month 2, yet costs under $1 a month after a year</h3>
+    <div class="chart"><canvas id="storage" role="img" aria-label="R2 storage grows by 6 GB a month to 72 GB after 12 months, passing the free 10 GB in month 2"></canvas></div>
+    <figcaption>Heavy use: 200 publishes a day, 1 MB new per publish, every version kept. Cost = (storage − 10 GB) × $0.015 per GB-month.</figcaption>
   </figure>
 
-  <div class="callout"><strong>減らすには</strong><code>KEEP_VERSIONS</code> を設定すると、古い版を毎日の Cron が消すので保存量の伸びが止まる。</div>
+  <div class="callout"><strong>To pay less</strong>Set <code>KEEP_VERSIONS</code>: the daily cron then deletes old versions and storage stops growing.</div>
 
-  <h2>無料枠に対する使用量</h2>
+  <h2>Usage against the free tier</h2>
   <div class="scroll-x table-box">
     <table class="data">
-      <thead><tr><th>項目</th><th class="num">無料枠</th><th class="num">個人</th><th class="num">多め</th></tr></thead>
+      <thead><tr><th>Item</th><th class="num">Free tier</th><th class="num">Personal</th><th class="num">Heavy</th></tr></thead>
       <tbody>
-        <tr><td>Workers リクエスト</td><td class="num">10万 / 日</td><td class="num">約 400 / 日</td><td class="num">約 7,000 / 日</td></tr>
-        <tr><td>D1 書き込み</td><td class="num">10万行 / 日</td><td class="num">約 250 行 / 日</td><td class="num">約 2,500 行 / 日</td></tr>
-        <tr><td>R2 保存</td><td class="num">10GB</td><td class="num">月 +180MB</td><td class="num">月 +6GB <span class="badge">超過</span></td></tr>
-        <tr><td>R2 書き込み系（Class A）</td><td class="num">100万回 / 月</td><td class="num">約 1,200 回</td><td class="num">約 2万 回</td></tr>
-        <tr><td>R2 読み取り系（Class B）</td><td class="num">1,000万回 / 月</td><td class="num">約 1万 回</td><td class="num">約 20万 回</td></tr>
-        <tr><td>R2 転送量</td><td class="num">無料</td><td class="num">—</td><td class="num">—</td></tr>
+        <tr><td>Workers requests</td><td class="num">100,000 / day</td><td class="num">~400 / day</td><td class="num">~7,000 / day</td></tr>
+        <tr><td>D1 rows written</td><td class="num">100,000 / day</td><td class="num">~250 / day</td><td class="num">~2,500 / day</td></tr>
+        <tr><td>R2 storage</td><td class="num">10 GB</td><td class="num">+180 MB / mo</td><td class="num">+6 GB / mo <span class="badge">over</span></td></tr>
+        <tr><td>R2 writes (Class A)</td><td class="num">1M / mo</td><td class="num">~1,200</td><td class="num">~20,000</td></tr>
+        <tr><td>R2 reads (Class B)</td><td class="num">10M / mo</td><td class="num">~10,000</td><td class="num">~200,000</td></tr>
+        <tr><td>R2 egress</td><td class="num">Free</td><td class="num">—</td><td class="num">—</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="muted small" style="margin-top: var(--space-3)">個人: 公開 20回/日・閲覧 50回/日。多め: 閲覧者 10人、公開 200回/日・閲覧 1,000回/日。</p>
+  <p class="muted small" style="margin-top: var(--space-3)">Personal: 20 publishes and 50 views a day. Heavy: 10 viewers, 200 publishes and 1,000 views a day.</p>
 
-  <footer>出典: Cloudflare の料金ページ（Workers・R2、2026-10-16 確認）と docs/design.md の見積もり。このページは selfhost-artifact-design の雛形から作った見本（examples/cost-estimate）。</footer>
+  <footer>Sources: Cloudflare pricing for Workers and R2 (checked 2026-10-16) and the estimate in docs/design.md. Built from the selfhost-artifact-design starter (examples/cost-estimate).</footer>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const months = Array.from({ length: 12 }, (_, i) => `${i + 1}か月`);
+const months = Array.from({ length: 12 }, (_, i) => `M${i + 1}`);
 const stored = months.map((_, i) => (i + 1) * 6);
 const cost = stored.map((gb) => Math.max(0, gb - 10) * 0.015);
 let chart;
@@ -147,8 +147,8 @@ function draw() {
     data: {
       labels: months,
       datasets: [
-        { label: "保存量", data: stored, borderColor: css("--series-1"), backgroundColor: css("--series-1"), borderWidth: 2, pointRadius: 0, tension: 0 },
-        { label: "無料枠 10GB", data: months.map(() => 10), borderColor: css("--border-strong"), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0 },
+        { label: "Stored", data: stored, borderColor: css("--series-1"), backgroundColor: css("--series-1"), borderWidth: 2, pointRadius: 0, tension: 0 },
+        { label: "Free tier 10 GB", data: months.map(() => 10), borderColor: css("--border-strong"), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0 },
       ],
     },
     options: {
@@ -156,7 +156,7 @@ function draw() {
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { labels: { color: css("--text-2"), boxHeight: 2, boxWidth: 16 } },
-        tooltip: { callbacks: { label: (c) => c.datasetIndex === 0 ? `保存量 ${c.parsed.y}GB（月 $${cost[c.dataIndex].toFixed(2)}）` : "無料枠 10GB" } },
+        tooltip: { callbacks: { label: (c) => c.datasetIndex === 0 ? `Stored ${c.parsed.y} GB ($${cost[c.dataIndex].toFixed(2)} / mo)` : "Free tier 10 GB" } },
       },
       scales: {
         x: { grid: { display: false }, ticks: { color: css("--text-2"), maxRotation: 0, autoSkip: true }, border: { color: css("--border") } },
