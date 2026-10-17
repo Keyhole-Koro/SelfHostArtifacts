@@ -11,9 +11,9 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { LOCAL, renderConfig } from "./config.mjs";
 
 const DRY_RUN = process.argv.includes("--dry-run");
-const LOCAL = "wrangler.local.toml";
 const DB_NAME = "artifacts";
 const BUCKET = "artifacts-blobs";
 
@@ -37,22 +37,6 @@ function previous() {
   const text = readFileSync(LOCAL, "utf8");
   const get = (key) => new RegExp(`^${key} = "([^"]*)"`, "m").exec(text)?.[1];
   return { host: get("APP_HOST"), rootEmail: get("ROOT_EMAIL"), keep: get("KEEP_VERSIONS"), trash: get("TRASH_DAYS"), dbId: get("database_id") };
-}
-
-function localToml({ host, rootEmail, keep, trash, dbId }) {
-  const base = readFileSync("wrangler.toml", "utf8")
-    .replace(/^APP_HOST = .*$/m, `APP_HOST = "${host}"`)
-    .replace(/^ROOT_EMAIL = .*$/m, `ROOT_EMAIL = "${rootEmail}"`)
-    .replace(/^KEEP_VERSIONS = .*$/m, `KEEP_VERSIONS = "${keep}"`)
-    .replace(/^TRASH_DAYS = .*$/m, `TRASH_DAYS = "${trash}"`)
-    .replace(/^# Skips Google sign-in.*\n.*\n/m, "") // comment line + DEV_LOGIN_EMAIL: never in a deployment
-    .replace(/^database_id = .*$/m, `database_id = "${dbId}"`)
-    .replace(/^# Development defaults[\s\S]*?\n(?=name = )/m, "");
-  return `# Written by scripts/deploy.mjs. Not committed: it holds your hostname and account's resource ids.\n${base}
-[[routes]]
-pattern = "${host}"
-custom_domain = true
-`;
 }
 
 async function main() {
@@ -88,7 +72,7 @@ async function main() {
     console.log(`D1 database ${DB_NAME}: ${dbId}`);
   }
 
-  const toml = localToml({ host, rootEmail, keep, trash, dbId });
+  const toml = renderConfig({ host, rootEmail, keep, trash, dbId });
   if (DRY_RUN) {
     console.log(`\n--- ${LOCAL} ---\n${toml}`);
     return;

@@ -1,0 +1,71 @@
+# Deploys the Worker when main changes it. Configure once in the repository settings
+# (Settings → Secrets and variables → Actions):
+#   Secrets:   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, ROOT_EMAIL
+#   Variables: APP_HOST, D1_DATABASE_ID (optional: KEEP_VERSIONS, TRASH_DAYS)
+# ROOT_EMAIL is a secret only so that it is masked: wrangler prints the Worker's vars, and the
+# logs of a public repository are public.
+# The Worker's own secrets (Google OAuth, session keys) stay in Cloudflare and are not touched.
+# Without APP_HOST (e.g. in a fork) the deploy job is skipped.
+name: Deploy Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packages/worker/**
+      - packages/shared/**
+      - pnpm-lock.yaml
+      - .github/workflows/deploy-worker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    if: vars.APP_HOST != ''
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://${{ vars.APP_HOST }}
+    defaults:
+      run:
+        working-directory: packages/worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Write wrangler.local.toml
+        run: node scripts/write-config.mjs
+        env:
+          APP_HOST: ${{ vars.APP_HOST }}
+          ROOT_EMAIL: ${{ secrets.ROOT_EMAIL }}
+          D1_DATABASE_ID: ${{ vars.D1_DATABASE_ID }}
+          KEEP_VERSIONS: ${{ vars.KEEP_VERSIONS }}
+          TRASH_DAYS: ${{ vars.TRASH_DAYS }}
+      - name: Apply D1 migrations
+        run: pnpm exec wrangler d1 migrations apply artifacts --remote -c wrangler.local.toml
+      - name: Deploy
+        run: pnpm exec wrangler deploy -c wrangler.local.toml
+      - name: Check health
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ vars.APP_HOST }}/health") && [ "$code" = 200 ] && exit 0
+            sleep 10
+          done
+          echo "https://${{ vars.APP_HOST }}/health did not answer 200 after deploying" && exit 1
