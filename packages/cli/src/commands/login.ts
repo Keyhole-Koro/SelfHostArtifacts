@@ -1,5 +1,5 @@
 import type { PairPollResponse, PairStartResponse } from "@artifact/shared";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { hostname } from "node:os";
 import { ArtifactError } from "../client.ts";
@@ -7,11 +7,57 @@ import { loadConfig, originFor, paths, saveConfig, writePrivateFile } from "../p
 
 const POLL_MS = 2000;
 
-export function openBrowser(url: string): void {
-  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+/**
+ * Short names for `--browser` / ARTIFACT_BROWSER. On Linux each lists candidates in order:
+ * a command on PATH, or a Flatpak app (Fedora and others ship browsers as Flatpaks).
+ */
+const BROWSER_ALIASES: Record<string, { linux?: string[][]; darwin?: string[]; win32?: string[] }> = {
+  chrome: {
+    linux: [["google-chrome"], ["google-chrome-stable"], ["chromium"], ["chromium-browser"], ["flatpak", "run", "com.google.Chrome"], ["flatpak", "run", "org.chromium.Chromium"]],
+    darwin: ["open", "-a", "Google Chrome"],
+    win32: ["cmd", "/c", "start", "", "chrome"],
+  },
+  firefox: {
+    linux: [["firefox"], ["flatpak", "run", "org.mozilla.firefox"]],
+    darwin: ["open", "-a", "Firefox"],
+    win32: ["cmd", "/c", "start", "", "firefox"],
+  },
+  edge: {
+    linux: [["microsoft-edge"], ["microsoft-edge-stable"], ["flatpak", "run", "com.microsoft.Edge"]],
+    darwin: ["open", "-a", "Microsoft Edge"],
+    win32: ["cmd", "/c", "start", "", "msedge"],
+  },
+  safari: { darwin: ["open", "-a", "Safari"] },
+};
+
+function available(candidate: string[]): boolean {
+  const [command, , app] = candidate;
+  if (command === "flatpak") return spawnSync("flatpak", ["info", app!], { stdio: "ignore" }).status === 0;
+  return spawnSync("sh", ["-c", `command -v ${command}`], { stdio: "ignore" }).status === 0;
+}
+
+/** The command line that opens a URL: the chosen browser, or the system default. */
+export function browserCommand(choice: string | undefined): string[] {
+  if (choice) {
+    const alias = BROWSER_ALIASES[choice.toLowerCase()];
+    if (alias && process.platform === "linux" && alias.linux) return alias.linux.find(available) ?? alias.linux[0]!;
+    if (alias && process.platform === "darwin" && alias.darwin) return alias.darwin;
+    if (alias && process.platform === "win32" && alias.win32) return alias.win32;
+    return choice.split(/\s+/); // a command such as "google-chrome" or "flatpak run com.brave.Browser"
+  }
+  if (process.platform === "darwin") return ["open"];
+  if (process.platform === "win32") return ["cmd", "/c", "start", ""];
+  return ["xdg-open"];
+}
+
+/**
+ * Opens the URL in the browser given by `choice`, else ARTIFACT_BROWSER, else BROWSER, else the
+ * system default. `choice` may be a short name (chrome, firefox, edge, safari) or a command.
+ */
+export function openBrowser(url: string, choice?: string): void {
+  const [command, ...args] = browserCommand(choice || process.env["ARTIFACT_BROWSER"] || process.env["BROWSER"] || undefined);
   try {
-    spawn(command, args, { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+    spawn(command!, [...args, url], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
   } catch {
     // The URL is printed as well.
   }
@@ -21,6 +67,8 @@ export interface LoginOptions {
   host?: string;
   name?: string;
   browser?: boolean;
+  /** Which browser to open; see openBrowser. */
+  browserChoice?: string;
   log?: (line: string) => void;
 }
 
@@ -55,7 +103,7 @@ export async function login(opts: LoginOptions = {}): Promise<{ deviceId: string
 
   log(`\nTo let "${name}" publish, open this page and approve it:\n\n  ${start.approve_url}\n`);
   log(`Check that the page shows the same code:  ${start.code}\n`);
-  if (opts.browser !== false) openBrowser(start.approve_url);
+  if (opts.browser !== false) openBrowser(start.approve_url, opts.browserChoice);
   log("Waiting for approval…");
 
   const deadline = Date.parse(start.expires_at);

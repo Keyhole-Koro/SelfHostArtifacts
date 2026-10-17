@@ -165,7 +165,9 @@ artifact open [url]                       # sign the browser in with this comput
 artifact uninstall                        # remove the MCP registrations and skills
 ```
 
-`--profile <name>` keeps a separate deployment or key; `--json` gives machine-readable output.
+`--profile <name>` keeps a separate deployment or key; `--json` gives machine-readable output;
+`--browser chrome` (or `ARTIFACT_BROWSER=chrome`) picks the browser for `login` and `open`, Flatpak
+browsers included.
 
 ## Development
 

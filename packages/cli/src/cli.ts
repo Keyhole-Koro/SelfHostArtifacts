@@ -41,6 +41,9 @@ Options
   --profile <name>   Use another profile (separate deployment or device key)
   --agent <a,b>      Limit setup/install-skills/uninstall to codex, gemini, claude
   --json             Machine-readable output
+  --browser <name>   Browser for login and open: chrome, firefox, edge, safari or a command
+                     (default: $ARTIFACT_BROWSER, then $BROWSER, then the system default)
+  --no-browser       Only print the URL
 `;
 
 function parse() {
@@ -60,6 +63,7 @@ function parse() {
       version: { type: "string" },
       json: { type: "boolean" },
       "no-browser": { type: "boolean" },
+      browser: { type: "string" },
       "skip-login": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -105,11 +109,11 @@ async function main(): Promise<void> {
       return;
 
     case "login":
-      await login({ host: o.host, name: o.name, browser: !o["no-browser"] });
+      await login({ host: o.host, name: o.name, browser: !o["no-browser"], browserChoice: o.browser });
       return;
 
     case "setup": {
-      if (!o["skip-login"]) await login({ host: o.host, name: o.name, browser: !o["no-browser"] });
+      if (!o["skip-login"]) await login({ host: o.host, name: o.name, browser: !o["no-browser"], browserChoice: o.browser });
       const agents = agentsFrom(o.agent, detectAgents());
       if (agents.length === 0) {
         console.log("\nNo Codex, Gemini CLI or Claude Code found on PATH. Install one and run `artifact setup --skip-login` again.");
@@ -156,7 +160,7 @@ async function main(): Promise<void> {
 
     case "open": {
       const link = await loginLink(rest[0]);
-      if (!o["no-browser"]) openBrowser(link);
+      if (!o["no-browser"]) openBrowser(link, o.browser);
       out(`Opening ${link}\n(works once, for two minutes)`, { url: link });
       return;
     }
