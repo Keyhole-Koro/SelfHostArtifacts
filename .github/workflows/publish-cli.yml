@@ -55,10 +55,12 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          # Trusted publishing needs npm 11.5.1 or later, which ships with Node 24.
           node-version: 24
           cache: pnpm
-          registry-url: https://registry.npmjs.org
+          # No registry-url: it writes an .npmrc with _authToken=${NODE_AUTH_TOKEN}, and npm then
+          # tries that (empty) token instead of trusted publishing.
+      - name: Use npm 11 (trusted publishing needs 11.5.1 or later)
+        run: npm install -g npm@11 && npm --version
       - run: pnpm install --frozen-lockfile
       - run: npm publish --access public
       - name: Tag the release
