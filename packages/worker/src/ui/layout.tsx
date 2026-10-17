@@ -43,6 +43,8 @@ code { font-size: 13px; }
 .code { font: 600 28px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; }
 .stack { display: grid; gap: 12px; max-width: 420px; }
 .passkey-error { color: var(--danger); margin: 8px 0 0; }
+.qr { background: #ffffff; padding: 12px; border-radius: 12px; width: min(280px, 100%); margin: 16px 0; }
+.qr svg { display: block; width: 100%; height: auto; }
 .link-box { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 `;
 

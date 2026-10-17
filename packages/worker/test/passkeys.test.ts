@@ -139,6 +139,27 @@ describe("signing in with a passkey", () => {
   });
 });
 
+describe("signing in on a phone from the account page", () => {
+  it("shows a QR code for a one-time link that signs in as the same user", async () => {
+    const viewer = await sessionCookie("viewer");
+    const page = await (await browserPost("/account/phone-link", viewer.cookie, { csrf: viewer.csrf })).text();
+    expect(page).toContain("<svg");
+    const url = new RegExp(`${ORIGIN}/auth/link/[A-Za-z0-9_-]+`).exec(page)![0];
+    const res = await SELF.fetch(url, { redirect: "manual" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("url=/account#passkeys");
+    const session = cookieFrom(res, "__Host-artifact_session").split("=")[1];
+    const row = await env.DB.prepare("select user_id from sessions where id = ?").bind(session).first<{ user_id: string }>();
+    expect(row?.user_id).toBe(viewer.userId);
+    expect((await SELF.fetch(url, { redirect: "manual" })).status).toBe(403);
+  });
+
+  it("needs the CSRF token", async () => {
+    const viewer = await sessionCookie("viewer");
+    expect((await browserPost("/account/phone-link", viewer.cookie, { csrf: "wrong" })).status).toBe(403);
+  });
+});
+
 describe("login links from the CLI", () => {
   async function approvedDevice() {
     const device = await createDevice();

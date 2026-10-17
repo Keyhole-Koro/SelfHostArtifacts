@@ -19,6 +19,7 @@ import {
 import {
   INVITE_DAYS,
   createInvite,
+  createLoginLink,
   createUser,
   deleteUser,
   insertPasskey,
@@ -28,6 +29,7 @@ import {
   userByEmail,
 } from "../db/users.ts";
 import { randomId } from "../lib/encoding.ts";
+import { renderSVG } from "uqr";
 import { pageSecurity } from "../ui/security.ts";
 import { CsrfField, Page, formatTime } from "../ui/layout.tsx";
 
@@ -247,6 +249,13 @@ account.get("/account", async (c) => {
       <button type="button" data-passkey="register" data-options="/account/passkeys/options" data-verify="/account/passkeys/verify">
         Add a passkey
       </button>
+
+      <h2 id="phone">Sign in on your phone</h2>
+      <p class="muted">Shows a QR code that signs your phone in as you. It works once, for two minutes. Then add a passkey on the phone.</p>
+      <form method="post" action="/account/phone-link">
+        <CsrfField token={viewer.csrf} />
+        <button type="submit">Show QR code</button>
+      </form>
     </Page>,
   );
 });
@@ -274,6 +283,30 @@ account.post("/account/passkeys/verify", requireSameOriginJson(), async (c) => {
     label: passkeyLabel(c.req.header("user-agent")),
   }).run();
   return c.json({ next: "/account#passkeys" });
+});
+
+account.post("/account/phone-link", requireSameOriginForm(), async (c) => {
+  const viewer = c.get("viewer");
+  const token = await createLoginLink(c.env.DB, viewer.userId, "/account#passkeys");
+  const url = `${c.get("config").origin}/auth/link/${token}`;
+  // Dark modules on white whatever the theme: phone cameras read that most reliably.
+  const qr = renderSVG(url, { border: 2, pixelSize: 6, whiteColor: "#ffffff", blackColor: "#000000" });
+  return c.html(
+    <Page title="Sign in on your phone" viewer={viewer}>
+      <h1>Scan with your phone</h1>
+      <p class="muted">Point the phone's camera at the code and open the link. It signs in as {viewer.name}, works once and expires in two minutes.</p>
+      <div class="qr" role="img" aria-label="QR code with a one-time sign-in link">
+        {raw(qr)}
+      </div>
+      <details>
+        <summary class="muted">Show the link instead</summary>
+        <p class="link-box">{url}</p>
+      </details>
+      <p>
+        <a href="/account#passkeys">Back to your account</a>
+      </p>
+    </Page>,
+  );
 });
 
 account.post("/account/name", requireSameOriginForm(), async (c) => {
