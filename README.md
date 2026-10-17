@@ -42,6 +42,22 @@ OAuth client:
 Run `pnpm run deploy` again to update. It reuses `wrangler.local.toml` (git-ignored) and only sets
 secrets that are missing. All Cloudflare resources are declared in `wrangler.toml`.
 
+### Deploy from GitHub Actions
+
+After the first deploy, `.github/workflows/deploy-worker.yml` can deploy every change to the
+Worker that lands on `main` (tests first, then migrations, deploy and a health check). In your
+fork, add under Settings → Secrets and variables → Actions:
+
+| Kind | Name | Value |
+|---|---|---|
+| Secret | `CLOUDFLARE_API_TOKEN` | API token from the "Edit Cloudflare Workers" template, plus **D1: Edit** |
+| Secret | `CLOUDFLARE_ACCOUNT_ID` | Your account id (`npx wrangler whoami`) |
+| Secret | `ROOT_EMAIL` | The owner's Google account (a secret so it is masked in public logs) |
+| Variable | `APP_HOST` | Your hostname |
+| Variable | `D1_DATABASE_ID` | `database_id` from `wrangler.local.toml` |
+
+Without `APP_HOST` the deploy job is skipped, so forks do not try to deploy.
+
 ## Use it from your agents
 
 On each computer:
