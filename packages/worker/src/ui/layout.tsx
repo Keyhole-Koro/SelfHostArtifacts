@@ -46,7 +46,6 @@ code { font: var(--text-sm)/1.5 var(--font-mono); background: var(--surface-2); 
 .top-inner { max-width: 960px; margin: 0 auto; padding: 0 var(--space-4); height: 56px; display: flex; align-items: center; gap: var(--space-4); }
 .brand { display: flex; align-items: center; gap: var(--space-2); font-weight: 650; color: var(--text); }
 .brand:hover { text-decoration: none; }
-.brand-mark { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); display: grid; place-items: center; color: var(--accent-text); font-size: 13px; font-weight: 700; }
 .menu { margin-left: auto; position: relative; }
 .menu > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); color: var(--text-2); font-size: var(--text-sm); }
 .menu > summary::-webkit-details-marker { display: none; }
@@ -152,7 +151,6 @@ export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boo
         <header class="top">
           <div class="top-inner">
             <a class="brand" href="/">
-              <span class="brand-mark" aria-hidden="true">A</span>
               Artifacts
             </a>
             {viewer && (

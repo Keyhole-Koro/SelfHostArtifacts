@@ -5,9 +5,11 @@
   "packageManager": "pnpm@12.14.0",
   "scripts": {
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "screenshots": "node scripts/screenshots.mjs"
   },
   "devDependencies": {
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "playwright": "1.63.0"
   }
 }

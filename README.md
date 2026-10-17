@@ -178,6 +178,17 @@ node src/cli.ts login --host localhost:8787
 
 `DEV_LOGIN` skips sign-in (you become the owner) and is refused unless `APP_HOST` is localhost.
 
+To retake the screenshots in this README after changing the UI:
+
+```bash
+npx playwright install chromium   # once
+pnpm screenshots                  # or: pnpm screenshots list settings
+```
+
+It starts a throwaway local deployment, adds sample people, publishes the pages in `examples/`
+through the real CLI and writes `docs/images/*.png`. The shots are listed at the top of
+`scripts/screenshots.mjs`.
+
 The design (in Japanese) is in [docs/design.md](docs/design.md).
 
 ## License
