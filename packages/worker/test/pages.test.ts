@@ -56,6 +56,17 @@ describe("settings", () => {
     expect(sessions?.n).toBe(0);
   });
 
+  it("lets anyone change their own name", async () => {
+    const viewer = await sessionCookie("viewer");
+    const res = await browserPost("/account/name", viewer.cookie, { csrf: viewer.csrf, name: "  Aiko   Tanaka " });
+    expect(res.status).toBe(303);
+    const row = await env.DB.prepare("select name from users where id = ?").bind(viewer.userId).first<{ name: string }>();
+    expect(row?.name).toBe("Aiko Tanaka");
+    expect(await (await browserGet("/account", viewer.cookie)).text()).toContain("Aiko Tanaka");
+    expect((await browserPost("/account/name", viewer.cookie, { csrf: viewer.csrf, name: "   " })).status).toBe(400);
+    expect((await browserPost("/account/name", viewer.cookie, { csrf: "wrong", name: "x" })).status).toBe(403);
+  });
+
   it("does not let the owner remove themselves", async () => {
     const root = await sessionCookie(ROOT);
     expect((await browserPost(`/settings/users/${root.userId}/remove`, root.cookie, { csrf: root.csrf })).status).toBe(400);

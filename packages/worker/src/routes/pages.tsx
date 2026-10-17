@@ -213,6 +213,13 @@ account.get("/account", async (c) => {
       <h1>{viewer.name}</h1>
       <p class="muted">{viewer.role === "root" ? "Owner" : "Viewer"}</p>
 
+      <h2 id="name">Name</h2>
+      <form method="post" action="/account/name" class="row">
+        <CsrfField token={viewer.csrf} />
+        <input class="grow" type="text" name="name" required maxlength={64} value={viewer.name} aria-label="Name" autocomplete="name" />
+        <button type="submit">Save</button>
+      </form>
+
       <h2 id="passkeys">Passkeys</h2>
       <p class="muted">Each passkey lets you sign in from the device or password manager that holds it. Add one per device you use.</p>
       <ul class="list" style="margin-bottom:12px">
@@ -267,6 +274,13 @@ account.post("/account/passkeys/verify", requireSameOriginJson(), async (c) => {
     label: passkeyLabel(c.req.header("user-agent")),
   }).run();
   return c.json({ next: "/account#passkeys" });
+});
+
+account.post("/account/name", requireSameOriginForm(), async (c) => {
+  const name = String((await c.req.parseBody())["name"] ?? "").trim().replace(/\s+/g, " ");
+  if (name.length < 1 || name.length > 64) return c.text("A name is 1 to 64 characters.", 400);
+  await c.env.DB.prepare("update users set name = ? where id = ?").bind(name, c.get("viewer").userId).run();
+  return c.redirect("/account", 303);
 });
 
 account.post("/account/passkeys/:id/remove", requireSameOriginForm(), async (c) => {
