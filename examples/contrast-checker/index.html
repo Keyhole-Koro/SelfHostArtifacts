@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>色のコントラスト</title>
+<style>
+/* ---- Tokens (theming.md, typography.md, layout.md) ---- */
+:root {
+  color-scheme: light;
+  --bg: #f8f8f7; --surface: #ffffff; --surface-2: #f1f1ef;
+  --text: #1a1a19; --text-2: #5f5e5a; --text-3: #8b8a85;
+  --border: #e4e3df; --border-strong: #cfcdc7;
+  --accent: #2f5bd3; --accent-text: #ffffff; --accent-soft: #e8eefc;
+  --positive: #1d7a46; --negative: #c0362c; --warning: #8f5407;
+  --series-1: #2f5bd3; --series-2: #d9822b; --series-3: #2a9d8f;
+  --series-4: #b5487a; --series-5: #7a6fd0; --series-6: #8a8a85;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", "Noto Sans CJK JP", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans Mono", monospace;
+  --text-xs: 0.75rem; --text-sm: 0.875rem; --text-md: 1rem;
+  --text-lg: 1.25rem; --text-xl: 1.5rem; --text-2xl: 2rem;
+
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px; --space-8: 64px;
+  --radius: 10px; --radius-sm: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #141413; --surface: #1c1c1b; --surface-2: #262624;
+    --text: #ecebe8; --text-2: #a9a8a2; --text-3: #75746f;
+    --border: #2f2f2c; --border-strong: #42413d;
+    --accent: #7c9dff; --accent-text: #0e1220; --accent-soft: #1d2540;
+    --positive: #4cc27e; --negative: #f0756a; --warning: #e3a447;
+    --series-1: #7c9dff; --series-2: #f0a35e; --series-3: #4fc3b4;
+    --series-4: #e07aa8; --series-5: #a99cff; --series-6: #a9a8a2;
+  }
+}
+@media (max-width: 640px) {
+  :root { --text-xl: 1.375rem; --text-2xl: 1.625rem; }
+}
+
+/* ---- Base ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 400 var(--text-md)/1.7 var(--font-sans); }
+main { max-width: 960px; margin: 0 auto; padding: var(--space-6) var(--space-4) var(--space-8); }
+h1 { font-size: var(--text-2xl); line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 var(--space-3); }
+h2 { font-size: var(--text-lg); line-height: 1.45; font-weight: 650; margin: var(--space-7) 0 var(--space-3); }
+h3 { font-size: var(--text-md); font-weight: 650; margin: var(--space-5) 0 var(--space-2); }
+p { margin: 0 0 1em; max-width: 70ch; }
+.lead { font-size: var(--text-lg); color: var(--text-2); max-width: 60ch; margin-bottom: var(--space-6); }
+.muted { color: var(--text-2); }
+small, .small { font-size: var(--text-sm); }
+a { color: var(--accent); }
+code { font: var(--text-sm)/1.5 var(--font-mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+pre { font: var(--text-sm)/1.6 var(--font-mono); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3) var(--space-4); overflow-x: auto; }
+pre code { background: none; padding: 0; }
+img, svg, canvas, video { max-width: 100%; height: auto; }
+.scroll-x { overflow-x: auto; }
+.grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+footer { margin-top: var(--space-7); font-size: var(--text-sm); color: var(--text-2); }
+
+/* ---- Components this page uses (components.md) ---- */
+.tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border); margin-bottom: var(--space-5); }
+.tabs [role=tab] { font: inherit; font-size: var(--text-sm); font-weight: 600; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-2); padding: var(--space-2) var(--space-3); cursor: pointer; }
+.tabs [role=tab][aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); }
+table.data { width: 100%; border-collapse: collapse; font-size: var(--text-sm); background: var(--surface); }
+table.data th, table.data td { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+table.data th { font-weight: 600; color: var(--text-2); background: var(--surface-2); }
+table.data .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.data tr:last-child td { border-bottom: 0; }
+.scroll-x > table.data { min-width: 560px; }
+.table-box { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.swatch { display: inline-block; width: 18px; height: 18px; border-radius: 4px; border: 1px solid var(--border-strong); vertical-align: -4px; margin-right: var(--space-2); }
+.sample { font-weight: 600; padding: 2px var(--space-2); border-radius: var(--radius-sm); }
+.badge { display: inline-block; font-size: var(--text-xs); font-weight: 600; padding: 2px var(--space-2); border-radius: 999px; }
+.badge.pass { background: color-mix(in srgb, var(--positive) 16%, var(--surface)); color: var(--positive); }
+.badge.fail { background: color-mix(in srgb, var(--negative) 16%, var(--surface)); color: var(--negative); }
+.badge.note { background: var(--surface-2); color: var(--text-2); }
+</style>
+</head>
+<body>
+<main>
+  <h1>色のトークンはすべて 4.5:1 を満たす</h1>
+  <p class="lead">selfhost-artifact-design の色を、背景3種との組み合わせで計算したコントラスト比。<code>--text-3</code> だけは入力欄のプレースホルダー専用なので基準の対象外。</p>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-mode="light">ライト</button>
+    <button role="tab" aria-selected="false" data-mode="dark">ダーク</button>
+  </div>
+
+  <div class="scroll-x table-box">
+    <table class="data">
+      <thead><tr><th>文字の色</th><th class="num">--bg の上</th><th class="num">--surface の上</th><th class="num">--surface-2 の上</th><th>判定</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <p class="muted small" style="margin-top: var(--space-3)">WCAG 2.x の相対輝度による計算。本文サイズの文字は 4.5:1 以上が基準。</p>
+
+  <h2>読み方</h2>
+  <p>「Aa」はその組み合わせで実際に描いた見本。ページ自体の配色はブラウザのモードに従い、表はタブで選んだ側の値を計算する。</p>
+
+  <footer>出典: SelfHostArtifacts の skills/selfhost-artifact-design/references/theming.md。</footer>
+</main>
+<script>
+const PALETTES = {
+  light: { bg: "#f8f8f7", surface: "#ffffff", "surface-2": "#f1f1ef", text: "#1a1a19", "text-2": "#5f5e5a", "text-3": "#8b8a85", accent: "#2f5bd3", positive: "#1d7a46", negative: "#c0362c", warning: "#8f5407" },
+  dark: { bg: "#141413", surface: "#1c1c1b", "surface-2": "#262624", text: "#ecebe8", "text-2": "#a9a8a2", "text-3": "#75746f", accent: "#7c9dff", positive: "#4cc27e", negative: "#f0756a", warning: "#e3a447" },
+};
+const FOREGROUNDS = ["text", "text-2", "accent", "positive", "negative", "warning", "text-3"];
+const BACKGROUNDS = ["bg", "surface", "surface-2"];
+
+function luminance(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrast(a, b) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function render(mode) {
+  const p = PALETTES[mode];
+  const rows = FOREGROUNDS.map((fg) => {
+    const ratios = BACKGROUNDS.map((bg) => contrast(p[fg], p[bg]));
+    const min = Math.min(...ratios);
+    const verdict = fg === "text-3"
+      ? '<span class="badge note">対象外</span>'
+      : min >= 4.5 ? '<span class="badge pass">合格</span>' : '<span class="badge fail">不足</span>';
+    const cells = BACKGROUNDS.map((bg, i) =>
+      `<td class="num"><span class="sample" style="color:${p[fg]};background:${p[bg]}">Aa</span> ${ratios[i].toFixed(2)}</td>`).join("");
+    return `<tr><td><span class="swatch" style="background:${p[fg]}"></span><code>--${fg}</code></td>${cells}<td>${verdict}</td></tr>`;
+  });
+  document.getElementById("rows").innerHTML = rows.join("");
+}
+
+document.querySelectorAll("[role=tab]").forEach((tab) => tab.addEventListener("click", () => {
+  document.querySelectorAll("[role=tab]").forEach((t) => t.setAttribute("aria-selected", String(t === tab)));
+  render(tab.dataset.mode);
+}));
+render("light");
+</script>
+</body>
+</html>

@@ -4,6 +4,8 @@ Private HTML pages for coding agents, on your own Cloudflare account. Codex CLI,
 Claude Code publish a page with one MCP tool call and get back a URL that only you (and the
 viewers you add) can open — like Claude's Artifacts, but self-hosted and for any agent.
 
+![An artifact open in the viewer: a cost dashboard with stat tiles and a chart](docs/images/viewer.png)
+
 ```
 Agent ──stdio MCP──▶ artifact (CLI on your computer) ──signed HTTPS──▶ Worker ── D1 + R2
                                                                         │
@@ -18,6 +20,43 @@ Agent ──stdio MCP──▶ artifact (CLI on your computer) ──signed HTTP
 - **Pages are isolated**: they run in a CSP sandbox with an opaque origin, so a page's scripts
   cannot read your session, call the API as you, or reach other hosts unless you allow it.
 - **Costs**: within Cloudflare's free tiers for personal use (estimate in [docs/design.md](docs/design.md)).
+
+## What it looks like
+
+You ask an agent for a page; it writes the HTML following the bundled design skill and publishes it.
+Roughly, in Claude Code:
+
+```text
+> Make a page comparing our Cloudflare costs for personal and heavier use.
+
+● selfhost-artifact-design (skill)
+● Write examples/cost-estimate/index.html
+● artifact.publish({ file_path: ".../cost-estimate/index.html" })
+  ⎿ Published: https://artifacts.example.com/a/kfrxazsjwefc1xnf (version 1, private)
+
+The page is at https://artifacts.example.com/a/kfrxazsjwefc1xnf
+```
+
+Ask for a change and it republishes to the same URL as version 2; older versions stay under
+**Versions**.
+
+<table>
+<tr>
+<td width="32%"><img src="docs/images/phone-dark.png" alt="The same page on a phone in dark mode"></td>
+<td><img src="docs/images/tool-dark.png" alt="An interactive page: a contrast checker with tabs and a table, in dark mode"></td>
+</tr>
+<tr>
+<td align="center">Phone, dark mode</td>
+<td align="center">Interactive pages work too (scripts run in the sandbox)</td>
+</tr>
+</table>
+
+| Your pages | Settings |
+|---|---|
+| ![The list of published artifacts with titles, descriptions and versions](docs/images/list.png) | ![Settings: viewers, devices, external access and trash](docs/images/settings.png) |
+
+Both sample pages are in [`examples/`](examples); publish one yourself with
+`artifact publish examples/cost-estimate`.
 
 ## Deploy
 
