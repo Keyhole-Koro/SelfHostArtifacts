@@ -78,7 +78,7 @@ artifact setup --host artifacts.example.com
 
 `setup` pairs the computer (approve it in the browser as the owner), registers the MCP server with
 every agent it finds (`codex mcp add`, `gemini mcp add --scope user`, `claude mcp add --scope user`)
-and installs two skills, `artifact-design` (how to write a good page) and `artifact-publish` (when
+and installs two skills, `selfhost-artifact-design` (how to write a good page) and `selfhost-artifact-publish` (when
 and how to publish), into `~/.agents/skills` and `~/.claude/skills`. Restart the agents afterwards.
 
 Then ask an agent for a page — "turn this CSV into a dashboard page" — and it writes the HTML,

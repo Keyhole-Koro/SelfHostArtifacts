@@ -9,8 +9,8 @@ artifact setup --host artifacts.example.com
 ```
 
 `setup` pairs this computer with the deployment (you approve it in the browser), registers the
-`artifact` MCP server with every agent it finds, and installs the `artifact-design` and
-`artifact-publish` skills. Restart your agents, then ask one for a page.
+`artifact` MCP server with every agent it finds, and installs the `selfhost-artifact-design` and
+`selfhost-artifact-publish` skills. Restart your agents, then ask one for a page.
 
 ## MCP tools
 

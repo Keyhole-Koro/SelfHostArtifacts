@@ -1,5 +1,5 @@
 ---
-name: artifact-publish
+name: selfhost-artifact-publish
 description: When and how to publish, update, read or delete pages with the artifact MCP tools (publish, read, list, delete) or the `artifact` CLI. Use when the user wants something as a web page, link or shareable page, or asks to change a page published earlier.
 ---
 
@@ -17,7 +17,7 @@ can open it.
   you can publish it if they did not ask.
 - Not for content the user marked as sensitive, and never for secrets or credentials.
 
-Read the artifact-design skill before writing the page.
+Read the selfhost-artifact-design skill before writing the page.
 
 ## Publish
 

@@ -386,7 +386,7 @@ args = ["mcp"]
 
 ## AI から見た使い方
 
-AI にとって `artifact` は、**MCP のツール4つ**と **skill 2つ**（`artifact-design`、`artifact-publish`）。
+AI にとって `artifact` は、**MCP のツール4つ**と **skill 2つ**（`selfhost-artifact-design`、`selfhost-artifact-publish`）。
 
 ### ツール
 
@@ -404,7 +404,7 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 ```jsonc
 {
   "name": "publish",
-  "description": "ローカルの HTML を非公開ページとして公開し、URL を返す。url を渡すと同じ URL のまま更新する。同じ file_path を再び公開すると自動で更新になる。書く前に artifact-design skill を読むこと。",
+  "description": "ローカルの HTML を非公開ページとして公開し、URL を返す。url を渡すと同じ URL のまま更新する。同じ file_path を再び公開すると自動で更新になる。書く前に selfhost-artifact-design skill を読むこと。",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -426,7 +426,7 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 
 「この CSV をグラフのページにして」と頼まれたら:
 
-1. AI は skill の説明文から作業に合うと判断し、`artifact-design` を読む
+1. AI は skill の説明文から作業に合うと判断し、`selfhost-artifact-design` を読む
 2. `./out/sales.html` を書く
 3. `publish({ file_path: "/home/…/out/sales.html", title: "売上の推移" })` を呼ぶ
 4. 結果が返る:
@@ -464,17 +464,17 @@ artifact list --json
 
 ```
 skills/
-  artifact-design/
+  selfhost-artifact-design/
     SKILL.md            # 書く前の手順と守ること（短く）
     references/
       layout.md         # スマホ幅、余白、表やグラフの置き方
       theming.md        # 色のトークン、ダークモード
       libraries.md      # 使ってよい CDN とバージョンの固定（CSP の許可リストと一致させる）
-  artifact-publish/
+  selfhost-artifact-publish/
     SKILL.md            # いつ公開するか、更新のしかた、秘密情報を載せない、delete はユーザーが頼んだときだけ
 ```
 
-`artifact-design/SKILL.md` に書くこと:
+`selfhost-artifact-design/SKILL.md` に書くこと:
 
 - `<title>` は2〜4語の名前
 - 色は `:root` のトークンで定義し、`prefers-color-scheme: dark` で切り替える。`body` の背景を明示する
@@ -541,8 +541,8 @@ SelfHostArtifacts/
     cli/           # artifact（CLI + stdio MCP）
     shared/        # manifest の zod スキーマ、API の型、署名の作り方
   skills/
-    artifact-design/
-    artifact-publish/
+    selfhost-artifact-design/
+    selfhost-artifact-publish/
   docs/
     design.md
   wrangler.example.toml

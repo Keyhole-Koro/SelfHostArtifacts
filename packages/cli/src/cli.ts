@@ -121,6 +121,7 @@ async function main(): Promise<void> {
       }
       for (const dir of skillDirsFor(agents)) {
         const r = installSkills(dir);
+        if (r.removedLegacy.length) console.log(`✓ removed old skill names ${r.removedLegacy.join(", ")} from ${dir}`);
         if (r.installed.length) console.log(`✓ skills ${r.installed.join(", ")} → ${dir}`);
         for (const s of r.skipped) console.log(`! ${dir}/${s} exists and was not installed by artifact; left as is`);
       }
@@ -131,6 +132,7 @@ async function main(): Promise<void> {
     case "install-skills": {
       for (const dir of skillDirsFor(agentsFrom(o.agent, AGENTS))) {
         const r = installSkills(dir);
+        if (r.removedLegacy.length) console.log(`✓ removed old skill names ${r.removedLegacy.join(", ")} from ${dir}`);
         console.log(`✓ ${r.installed.join(", ") || "nothing"} → ${dir}`);
         for (const s of r.skipped) console.log(`! ${dir}/${s} exists and was not installed by artifact; left as is`);
       }

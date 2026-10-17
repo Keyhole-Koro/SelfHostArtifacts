@@ -41,19 +41,33 @@ describe("state", () => {
 });
 
 describe("skills", () => {
-  it("installs, reinstalls and removes only its own skill folders", () => {
+  it("removes our skills installed under the old names, and only ours", () => {
     const dir = mkdtempSync(join(tmpdir(), "skills-"));
     mkdirSync(join(dir, "artifact-design"));
-    writeFileSync(join(dir, "artifact-design", "SKILL.md"), "someone else's");
+    writeFileSync(join(dir, "artifact-design", ".installed-by-artifact"), "");
+    mkdirSync(join(dir, "artifact-publish"));
+    writeFileSync(join(dir, "artifact-publish", "SKILL.md"), "not ours");
+
+    const r = installSkills(dir);
+    expect(r.removedLegacy).toEqual(["artifact-design"]);
+    expect(existsSync(join(dir, "artifact-design"))).toBe(false);
+    expect(existsSync(join(dir, "artifact-publish", "SKILL.md"))).toBe(true);
+    expect(r.installed).toEqual(["selfhost-artifact-design", "selfhost-artifact-publish"]);
+  });
+
+  it("installs, reinstalls and removes only its own skill folders", () => {
+    const dir = mkdtempSync(join(tmpdir(), "skills-"));
+    mkdirSync(join(dir, "selfhost-artifact-design"));
+    writeFileSync(join(dir, "selfhost-artifact-design", "SKILL.md"), "someone else's");
 
     const first = installSkills(dir);
-    expect(first.skipped).toEqual(["artifact-design"]);
-    expect(first.installed).toEqual(["artifact-publish"]);
-    expect(readFileSync(join(dir, "artifact-design", "SKILL.md"), "utf8")).toBe("someone else's");
+    expect(first.skipped).toEqual(["selfhost-artifact-design"]);
+    expect(first.installed).toEqual(["selfhost-artifact-publish"]);
+    expect(readFileSync(join(dir, "selfhost-artifact-design", "SKILL.md"), "utf8")).toBe("someone else's");
 
-    expect(installSkills(dir).installed).toEqual(["artifact-publish"]);
-    expect(uninstallSkills(dir)).toEqual(["artifact-publish"]);
-    expect(existsSync(join(dir, "artifact-publish"))).toBe(false);
-    expect(existsSync(join(dir, "artifact-design", "SKILL.md"))).toBe(true);
+    expect(installSkills(dir).installed).toEqual(["selfhost-artifact-publish"]);
+    expect(uninstallSkills(dir)).toEqual(["selfhost-artifact-publish"]);
+    expect(existsSync(join(dir, "selfhost-artifact-publish"))).toBe(false);
+    expect(existsSync(join(dir, "selfhost-artifact-design", "SKILL.md"))).toBe(true);
   });
 });

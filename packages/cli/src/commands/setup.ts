@@ -8,6 +8,24 @@ import { profileName } from "../profile.ts";
 /** Marks a skill folder as installed by `artifact`, so we only ever replace or remove our own. */
 const MARKER = ".installed-by-artifact";
 
+/**
+ * Names our skills had in 0.1.0. They collided with Claude Code's own artifact-design skill and
+ * hid it, so they are removed (when they carry our marker) whenever skills are installed.
+ */
+const LEGACY_SKILLS = ["artifact-design", "artifact-publish"];
+
+function removeOwn(targetDir: string, names: string[]): string[] {
+  const removed: string[] = [];
+  for (const name of names) {
+    const dest = join(targetDir, name);
+    if (existsSync(join(dest, MARKER))) {
+      rmSync(dest, { recursive: true, force: true });
+      removed.push(name);
+    }
+  }
+  return removed;
+}
+
 export type Agent = "codex" | "gemini" | "claude";
 export const AGENTS: Agent[] = ["codex", "gemini", "claude"];
 
@@ -78,7 +96,7 @@ export function skillDirsFor(agents: Agent[]): string[] {
 export function bundledSkillsDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   for (const candidate of [join(here, "..", "skills"), join(here, "..", "..", "..", "skills"), join(here, "..", "..", "..", "..", "skills")]) {
-    if (existsSync(join(candidate, "artifact-design", "SKILL.md"))) return candidate;
+    if (existsSync(join(candidate, "selfhost-artifact-design", "SKILL.md"))) return candidate;
   }
   throw new Error("The bundled skills are missing from this installation.");
 }
@@ -87,11 +105,13 @@ export interface SkillInstall {
   dir: string;
   installed: string[];
   skipped: string[];
+  /** Skills installed under an old name and removed. */
+  removedLegacy: string[];
 }
 
 export function installSkills(targetDir: string): SkillInstall {
   const source = bundledSkillsDir();
-  const result: SkillInstall = { dir: targetDir, installed: [], skipped: [] };
+  const result: SkillInstall = { dir: targetDir, installed: [], skipped: [], removedLegacy: removeOwn(targetDir, LEGACY_SKILLS) };
   mkdirSync(targetDir, { recursive: true });
   for (const skill of readdirSync(source)) {
     const dest = join(targetDir, skill);
@@ -109,13 +129,5 @@ export function installSkills(targetDir: string): SkillInstall {
 
 export function uninstallSkills(targetDir: string): string[] {
   if (!existsSync(targetDir)) return [];
-  const removed: string[] = [];
-  for (const skill of readdirSync(bundledSkillsDir())) {
-    const dest = join(targetDir, skill);
-    if (existsSync(join(dest, MARKER))) {
-      rmSync(dest, { recursive: true, force: true });
-      removed.push(skill);
-    }
-  }
-  return removed;
+  return removeOwn(targetDir, [...readdirSync(bundledSkillsDir()), ...LEGACY_SKILLS]);
 }

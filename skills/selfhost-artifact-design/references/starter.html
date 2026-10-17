@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page Name</title>
+<style>
+/* ---- Tokens (theming.md, typography.md, layout.md) ---- */
+:root {
+  color-scheme: light;
+  --bg: #f8f8f7; --surface: #ffffff; --surface-2: #f1f1ef;
+  --text: #1a1a19; --text-2: #5f5e5a; --text-3: #8b8a85;
+  --border: #e4e3df; --border-strong: #cfcdc7;
+  --accent: #2f5bd3; --accent-text: #ffffff; --accent-soft: #e8eefc;
+  --positive: #1d7a46; --negative: #c0362c; --warning: #8f5407;
+  --series-1: #2f5bd3; --series-2: #d9822b; --series-3: #2a9d8f;
+  --series-4: #b5487a; --series-5: #7a6fd0; --series-6: #8a8a85;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", "Noto Sans CJK JP", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans Mono", monospace;
+  --text-xs: 0.75rem; --text-sm: 0.875rem; --text-md: 1rem;
+  --text-lg: 1.25rem; --text-xl: 1.5rem; --text-2xl: 2rem;
+
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 24px; --space-6: 32px; --space-7: 48px; --space-8: 64px;
+  --radius: 10px; --radius-sm: 6px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #141413; --surface: #1c1c1b; --surface-2: #262624;
+    --text: #ecebe8; --text-2: #a9a8a2; --text-3: #75746f;
+    --border: #2f2f2c; --border-strong: #42413d;
+    --accent: #7c9dff; --accent-text: #0e1220; --accent-soft: #1d2540;
+    --positive: #4cc27e; --negative: #f0756a; --warning: #e3a447;
+    --series-1: #7c9dff; --series-2: #f0a35e; --series-3: #4fc3b4;
+    --series-4: #e07aa8; --series-5: #a99cff; --series-6: #a9a8a2;
+  }
+}
+@media (max-width: 640px) {
+  :root { --text-xl: 1.375rem; --text-2xl: 1.625rem; }
+}
+
+/* ---- Base ---- */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 400 var(--text-md)/1.7 var(--font-sans); }
+main { max-width: 960px; margin: 0 auto; padding: var(--space-6) var(--space-4) var(--space-8); }
+h1 { font-size: var(--text-2xl); line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 var(--space-3); }
+h2 { font-size: var(--text-lg); line-height: 1.45; font-weight: 650; margin: var(--space-7) 0 var(--space-3); }
+h3 { font-size: var(--text-md); font-weight: 650; margin: var(--space-5) 0 var(--space-2); }
+p { margin: 0 0 1em; max-width: 70ch; }
+.lead { font-size: var(--text-lg); color: var(--text-2); max-width: 60ch; margin-bottom: var(--space-6); }
+.muted { color: var(--text-2); }
+small, .small { font-size: var(--text-sm); }
+a { color: var(--accent); }
+code { font: var(--text-sm)/1.5 var(--font-mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+pre { font: var(--text-sm)/1.6 var(--font-mono); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3) var(--space-4); overflow-x: auto; }
+pre code { background: none; padding: 0; }
+img, svg, canvas, video { max-width: 100%; height: auto; }
+.scroll-x { overflow-x: auto; }
+.grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+footer { margin-top: var(--space-7); font-size: var(--text-sm); color: var(--text-2); }
+
+/* ---- Components this page uses (components.md) ---- */
+</style>
+</head>
+<body>
+<main>
+  <h1>The main finding, in one line</h1>
+  <p class="lead">One or two sentences of context: what this is about and why it matters.</p>
+
+  <h2>First section</h2>
+  <p>Content.</p>
+
+  <footer>Sources: …</footer>
+</main>
+</body>
+</html>
