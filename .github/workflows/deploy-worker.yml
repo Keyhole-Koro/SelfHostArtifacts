@@ -1,4 +1,4 @@
-# Deploys the Worker when main changes it. Configure once in the repository settings
+# Deploys the Worker when the publish branch is pushed. Configure once in the repository settings
 # (Settings → Secrets and variables → Actions):
 #   Secrets:   CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, ROOT_EMAIL
 #   Variables: APP_HOST, D1_DATABASE_ID (optional: KEEP_VERSIONS, TRASH_DAYS)
@@ -10,12 +10,7 @@ name: Deploy Worker
 
 on:
   push:
-    branches: [main]
-    paths:
-      - packages/worker/**
-      - packages/shared/**
-      - pnpm-lock.yaml
-      - .github/workflows/deploy-worker.yml
+    branches: [publish]
   workflow_dispatch:
 
 permissions:

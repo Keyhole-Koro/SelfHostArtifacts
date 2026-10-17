@@ -44,9 +44,16 @@ secrets that are missing. All Cloudflare resources are declared in `wrangler.tom
 
 ### Deploy from GitHub Actions
 
-After the first deploy, `.github/workflows/deploy-worker.yml` can deploy every change to the
-Worker that lands on `main` (tests first, then migrations, deploy and a health check). In your
-fork, add under Settings → Secrets and variables → Actions:
+After the first deploy, pushing the `publish` branch releases from GitHub Actions:
+`deploy-worker.yml` deploys the Worker (tests first, then migrations, deploy and a health check),
+and `publish-cli.yml` publishes the CLI to npm when `packages/cli/package.json` has a version that
+is not on npm yet. `main` only runs the tests. To release, push `main` into `publish`:
+
+```bash
+git push origin main:publish
+```
+
+In your fork, add under Settings → Secrets and variables → Actions:
 
 | Kind | Name | Value |
 |---|---|---|
@@ -56,7 +63,9 @@ fork, add under Settings → Secrets and variables → Actions:
 | Variable | `APP_HOST` | Your hostname |
 | Variable | `D1_DATABASE_ID` | `database_id` from `wrangler.local.toml` |
 
-Without `APP_HOST` the deploy job is skipped, so forks do not try to deploy.
+Without `APP_HOST` the deploy job is skipped, so forks do not try to deploy. The CLI is published
+with npm trusted publishing, so no npm token is stored; register `publish-cli.yml` as the
+package's trusted publisher on npmjs.com.
 
 ## Use it from your agents
 

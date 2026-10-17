@@ -1,29 +1,51 @@
-# Publishes @keyhole-koro/artifacts to npm when a tag like cli-v0.1.1 is pushed.
+# Publishes @keyhole-koro/artifacts to npm when the publish branch is pushed and its
+# packages/cli/package.json has a version that is not on npm yet. Otherwise it does nothing.
 #
 # Uses npm trusted publishing (OIDC): no npm token is stored anywhere, and the package gets a
 # provenance attestation. Set it up once on npmjs.com → the package → Settings → Trusted
 # publishing → GitHub Actions: this repository, workflow file "publish-cli.yml".
 #
-# To release: bump "version" in packages/cli/package.json, commit, then
-#   git tag cli-v<version> && git push origin cli-v<version>
+# To release: bump "version" in packages/cli/package.json, merge into publish and push it.
+# The workflow tags the release as cli-v<version>.
 name: Publish CLI
 
 on:
   push:
-    tags: ["cli-v*"]
+    branches: [publish]
 
 permissions:
   contents: read
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      new: ${{ steps.version.outputs.new }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: version
+        name: Is this version on npm yet?
+        run: |
+          version=$(node -p "require('./packages/cli/package.json').version")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if npm view "@keyhole-koro/artifacts@${version}" version >/dev/null 2>&1; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "${version} is already on npm; nothing to publish."
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: check
+    if: needs.check.outputs.new == 'true'
     uses: ./.github/workflows/ci.yml
 
   publish:
-    needs: test
+    needs: [check, test]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # to push the cli-v<version> tag
       id-token: write
     defaults:
       run:
@@ -38,10 +60,8 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
-      - name: Check the tag matches package.json
-        run: |
-          version=$(node -p "require('./package.json').version")
-          if [ "${GITHUB_REF_NAME}" != "cli-v${version}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${version}" && exit 1
-          fi
       - run: npm publish --access public
+      - name: Tag the release
+        run: |
+          git tag "cli-v${{ needs.check.outputs.version }}"
+          git push origin "cli-v${{ needs.check.outputs.version }}"
