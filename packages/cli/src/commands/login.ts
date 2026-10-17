@@ -7,7 +7,7 @@ import { loadConfig, originFor, paths, saveConfig, writePrivateFile } from "../p
 
 const POLL_MS = 2000;
 
-function openBrowser(url: string): void {
+export function openBrowser(url: string): void {
   const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
   try {

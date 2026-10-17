@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { cleanup } from "../src/cron.ts";
 import { loadConfig } from "../src/env.ts";
-import { createDevice, publish } from "./helpers.ts";
+import { createDevice, createTestUser, publish } from "./helpers.ts";
 
 const DAY = 864e5;
 
@@ -48,7 +48,8 @@ describe("daily cleanup", () => {
   it("removes expired nonces and sessions", async () => {
     const past = new Date(Date.now() - 1000).toISOString();
     await env.DB.prepare("insert into nonces (nonce, expires_at) values ('n1', ?)").bind(past).run();
-    await env.DB.prepare("insert into sessions (id, email, csrf, expires_at) values ('s1', 'a@example.com', 'c', ?)").bind(past).run();
+    const userId = await createTestUser();
+    await env.DB.prepare("insert into sessions (id, user_id, csrf, expires_at) values ('s1', ?, 'c', ?)").bind(userId, past).run();
     const report = await cleanup(env, loadConfig(env));
     expect(report.expired).toBeGreaterThanOrEqual(2);
   });

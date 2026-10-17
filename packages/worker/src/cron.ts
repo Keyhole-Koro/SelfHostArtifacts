@@ -20,6 +20,8 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
     db.prepare("delete from nonces where expires_at <= ?").bind(iso),
     db.prepare("delete from sessions where expires_at <= ?").bind(iso),
     db.prepare("delete from pairings where expires_at <= ?").bind(new Date(now.getTime() - 864e5).toISOString()),
+    db.prepare("delete from login_links where expires_at <= ?").bind(iso),
+    db.prepare("delete from invites where expires_at <= ?").bind(iso),
   ]);
   const expired = expiredResults.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 

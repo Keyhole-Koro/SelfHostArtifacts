@@ -9,12 +9,13 @@ viewers you add) can open — like Claude's Artifacts, but self-hosted and for a
 ```
 Agent ──stdio MCP──▶ artifact (CLI on your computer) ──signed HTTPS──▶ Worker ── D1 + R2
                                                                         │
-                       Browser ◀── Google sign-in, sandboxed viewer ────┘
+                       Browser ◀── passkey sign-in, sandboxed viewer ───┘
 ```
 
 - **One hostname**, e.g. `artifacts.example.com`: `/` lists pages, `/a/<id>` shows one,
   `/settings` manages viewers and devices.
-- **People** sign in with Google. `ROOT_EMAIL` owns the deployment and adds viewers in Settings.
+- **People** sign in with a passkey (fingerprint, face or screen lock). No OAuth app, no
+  passwords. The owner invites viewers with single-use links; Google sign-in is optional.
 - **Agents** never hold a password: each computer gets its own Ed25519 key, approved once in the
   browser (`artifact login`), and signs every request.
 - **Pages are isolated**: they run in a CSP sandbox with an opaque origin, so a page's scripts
@@ -70,16 +71,35 @@ npx wrangler login
 pnpm run deploy
 ```
 
-The script asks for the hostname and the owner's Google account, creates the D1 database and the
-R2 bucket, applies migrations, deploys, and sets the secrets. For Google sign-in it asks for an
-OAuth client:
+The script asks for the hostname, creates the D1 database and the R2 bucket, applies migrations,
+deploys and generates the secrets. Nothing outside Cloudflare is needed. At the end it prints a
+**one-time owner link**: open it and create a passkey, and you own the deployment.
 
-1. Google Cloud console → APIs & Services → Credentials → **Create credentials → OAuth client ID**
-2. Application type **Web application**, authorized redirect URI `https://<your host>/auth/callback`
-3. Paste the client ID and secret when the script asks.
+```
+Open this link to create the owner's passkey (works once, for 1 day):
+
+  https://artifacts.example.com/invite/…
+```
+
+Then, in **Settings → People → Create invite link**, invite viewers. Each link works once; the
+person opening it creates their own passkey. Add a passkey for each of your devices under
+**Account** (passkeys synced by iCloud Keychain or Google Password Manager follow you anyway).
+
+Lost every passkey? On a computer set up with `artifact`, run `artifact open`: it signs the
+browser in with that computer's key. Or run `pnpm run deploy --owner-link` for a new owner link.
 
 Run `pnpm run deploy` again to update. It reuses `wrangler.local.toml` (git-ignored) and only sets
 secrets that are missing. All Cloudflare resources are declared in `wrangler.toml`.
+
+<details>
+<summary>Optional: Google sign-in as well</summary>
+
+Answer "y" when the script asks about Google. It then asks for the owner's Google account
+(`ROOT_EMAIL`) and an OAuth client: Google Cloud console → APIs & Services → Credentials →
+Create credentials → OAuth client ID → Web application, with the redirect URI
+`https://<your host>/auth/callback`. People added in Settings by Google account can then sign in
+with Google too.
+</details>
 
 ### Deploy from GitHub Actions
 
@@ -98,7 +118,7 @@ In your fork, add under Settings → Secrets and variables → Actions:
 |---|---|---|
 | Secret | `CLOUDFLARE_API_TOKEN` | API token from the "Edit Cloudflare Workers" template, plus **D1: Edit** |
 | Secret | `CLOUDFLARE_ACCOUNT_ID` | Your account id (`npx wrangler whoami`) |
-| Secret | `ROOT_EMAIL` | The owner's Google account (a secret so it is masked in public logs) |
+| Secret | `ROOT_EMAIL` | Only with Google sign-in: the owner's Google account (a secret so it is masked in public logs) |
 | Variable | `APP_HOST` | Your hostname |
 | Variable | `D1_DATABASE_ID` | `database_id` from `wrangler.local.toml` |
 
@@ -141,6 +161,7 @@ artifact list
 artifact read https://artifacts.example.com/a/<id> data.json
 artifact delete https://artifacts.example.com/a/<id>
 artifact status
+artifact open [url]                       # sign the browser in with this computer's key
 artifact uninstall                        # remove the MCP registrations and skills
 ```
 
@@ -162,7 +183,7 @@ cd ../cli
 node src/cli.ts login --host localhost:8787
 ```
 
-`DEV_LOGIN_EMAIL` skips Google sign-in and is refused unless `APP_HOST` is localhost.
+`DEV_LOGIN_EMAIL` skips sign-in (you become the owner) and is refused unless `APP_HOST` is localhost.
 
 The design (in Japanese) is in [docs/design.md](docs/design.md).
 

@@ -26,15 +26,16 @@ describe("sign-in and roles", () => {
   });
 
   it("lets a viewer read but not open settings", async () => {
-    await env.DB.prepare("insert into members (email, added_at) values (?, ?)").bind("viewer@example.com", "2026-01-01").run();
-    const { cookie } = await sessionCookie("viewer@example.com");
+    const { cookie } = await sessionCookie("viewer");
     expect((await browserGet("/", cookie)).status).toBe(200);
+    expect((await browserGet("/account", cookie)).status).toBe(200);
     expect((await browserGet("/settings", cookie)).status).toBe(403);
   });
 
-  it("drops a session whose email is not root or a viewer", async () => {
-    const { cookie } = await sessionCookie("stranger@example.com");
-    expect((await browserGet("/", cookie)).status).toBe(302);
+  it("drops a session whose user was removed", async () => {
+    const viewer = await sessionCookie("viewer");
+    await env.DB.prepare("delete from users where id = ?").bind(viewer.userId).run();
+    expect((await browserGet("/", viewer.cookie)).status).toBe(302);
   });
 
   it("refuses requests for another host", async () => {
@@ -44,28 +45,31 @@ describe("sign-in and roles", () => {
 });
 
 describe("settings", () => {
-  it("adds a viewer, and removing them ends their sessions", async () => {
+  it("removing a person ends their sessions", async () => {
     const root = await sessionCookie(ROOT);
-    const add = await browserPost("/settings/members", root.cookie, { csrf: root.csrf, email: "Friend@Example.com" });
-    expect(add.status).toBe(303);
-    const friend = await sessionCookie("friend@example.com");
+    const friend = await sessionCookie("viewer");
     expect((await browserGet("/", friend.cookie)).status).toBe(200);
-
-    await browserPost("/settings/members/remove", root.cookie, { csrf: root.csrf, email: "friend@example.com" });
+    const res = await browserPost(`/settings/users/${friend.userId}/remove`, root.cookie, { csrf: root.csrf });
+    expect(res.status).toBe(303);
     expect((await browserGet("/", friend.cookie)).status).toBe(302);
-    const sessions = await env.DB.prepare("select count(*) as n from sessions where email = ?").bind("friend@example.com").first<{ n: number }>();
+    const sessions = await env.DB.prepare("select count(*) as n from sessions where user_id = ?").bind(friend.userId).first<{ n: number }>();
     expect(sessions?.n).toBe(0);
+  });
+
+  it("does not let the owner remove themselves", async () => {
+    const root = await sessionCookie(ROOT);
+    expect((await browserPost(`/settings/users/${root.userId}/remove`, root.cookie, { csrf: root.csrf })).status).toBe(400);
   });
 
   it("refuses a form from a sandboxed page (Origin: null)", async () => {
     const root = await sessionCookie(ROOT);
-    const res = await browserPost("/settings/members", root.cookie, { csrf: root.csrf, email: "x@example.com" }, "null");
+    const res = await browserPost("/settings/invites", root.cookie, { csrf: root.csrf }, "null");
     expect(res.status).toBe(403);
   });
 
   it("refuses a form without the CSRF token", async () => {
     const root = await sessionCookie(ROOT);
-    const res = await browserPost("/settings/members", root.cookie, { csrf: "wrong", email: "x@example.com" });
+    const res = await browserPost("/settings/invites", root.cookie, { csrf: "wrong" });
     expect(res.status).toBe(403);
   });
 
@@ -120,8 +124,7 @@ describe("device pairing", () => {
 
   it("does not let a viewer approve", async () => {
     const { code } = await startPairing();
-    await env.DB.prepare("insert into members (email, added_at) values (?, ?)").bind("viewer2@example.com", "2026-01-01").run();
-    const viewer = await sessionCookie("viewer2@example.com");
+    const viewer = await sessionCookie("viewer");
     const res = await browserPost(`/pair/${code}`, viewer.cookie, { csrf: viewer.csrf, decision: "approve" });
     expect(res.status).toBe(403);
     expect((await poll(code)).status).toBe("pending");

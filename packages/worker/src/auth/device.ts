@@ -30,9 +30,9 @@ export function requireDevice(): MiddlewareHandler<AppEnv> {
       return apiError(c, 401, "clock_skew", "The request timestamp is more than 5 minutes off. Check this computer's clock.");
     }
 
-    const device = await c.env.DB.prepare("select id, name, public_key from devices where id = ? and revoked_at is null")
+    const device = await c.env.DB.prepare("select id, name, public_key, user_id from devices where id = ? and revoked_at is null")
       .bind(params.key)
-      .first<{ id: string; name: string; public_key: string }>();
+      .first<{ id: string; name: string; public_key: string; user_id: string | null }>();
     if (!device) {
       return apiError(c, 401, "unknown_device", "This device is not registered or was revoked. Run `artifact login` again.");
     }
@@ -74,7 +74,7 @@ export function requireDevice(): MiddlewareHandler<AppEnv> {
     c.executionCtx.waitUntil(
       c.env.DB.prepare("update devices set last_used_at = ? where id = ?").bind(new Date().toISOString(), device.id).run(),
     );
-    c.set("device", { id: device.id, name: device.name });
+    c.set("device", { id: device.id, name: device.name, userId: device.user_id });
     await next();
   };
 }

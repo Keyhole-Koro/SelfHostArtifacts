@@ -29,6 +29,7 @@ artifact list
 artifact read <url> [path]
 artifact delete <url>
 artifact status
+artifact open [url]                # sign the browser in with this computer's key
 artifact uninstall                 # remove the MCP registrations and skills
 ```
 

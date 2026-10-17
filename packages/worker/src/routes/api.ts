@@ -30,6 +30,7 @@ import {
   trashArtifact,
   type ArtifactRow,
 } from "../db/artifacts.ts";
+import { createLoginLink, createUser, firstRoot, getUser, LOGIN_LINK_SECONDS } from "../db/users.ts";
 import { apiError } from "../lib/api-error.ts";
 import { pairingCode, randomId } from "../lib/encoding.ts";
 
@@ -273,6 +274,26 @@ signed.delete("/artifacts/:id", async (c) => {
   const trashed = await trashArtifact(c.env.DB, c.req.param("id"));
   if (!trashed) return apiError(c, 404, "not_found", "No artifact has this id (or it is already in the trash).");
   return c.json({ trashed: true, restore: `${c.get("config").origin}/settings#trash` });
+});
+
+const loginLinkSchema = z.object({ next: z.string().max(2000).optional() });
+
+/**
+ * A single-use sign-in link for the browser, for `artifact open`. It signs in as the user who
+ * approved this device. Devices approved before users existed sign in as the owner (who is
+ * created here if nobody has signed in yet).
+ */
+signed.post("/login-links", async (c) => {
+  const parsed = await readJson(c, loginLinkSchema);
+  if (!parsed.ok) return parsed.res;
+  const device = c.get("device");
+  const user =
+    (device.userId && (await getUser(c.env.DB, device.userId))) ||
+    (await firstRoot(c.env.DB)) ||
+    (await createUser(c.env.DB, { name: "Owner", role: "root" }));
+  const next = parsed.value.next?.startsWith("/") && !parsed.value.next.startsWith("//") ? parsed.value.next : "/";
+  const token = await createLoginLink(c.env.DB, user.id, next);
+  return c.json({ url: `${c.get("config").origin}/auth/link/${token}`, expires_in: LOGIN_LINK_SECONDS }, 201);
 });
 
 api.route("/", signed);

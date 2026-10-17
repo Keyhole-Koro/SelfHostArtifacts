@@ -193,3 +193,19 @@ export async function remove(url: string): Promise<{ restore: string }> {
   forgetArtifact(id);
   return result;
 }
+
+/**
+ * A single-use link that signs the browser in (as the person who approved this computer) and
+ * then shows `url`, or the list of artifacts.
+ */
+export async function loginLink(url?: string): Promise<string> {
+  const s = session();
+  let next = "/";
+  if (url) {
+    const target = new URL(url, s.origin);
+    if (target.host !== new URL(s.origin).host) throw new ArtifactError(`Not a page of ${s.origin}: ${url}`, "bad_url");
+    next = target.pathname + target.search;
+  }
+  const { url: link } = await signedJson<{ url: string }>(s, "POST", "/api/v1/login-links", { next });
+  return link;
+}

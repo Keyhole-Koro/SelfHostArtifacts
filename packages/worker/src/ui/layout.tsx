@@ -35,19 +35,24 @@ h2 { font-size: 17px; margin: 32px 0 12px; }
 input[type=text], input[type=email], input[type=search] { width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
 button { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+a.button { display: inline-block; text-align: center; text-decoration: none; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+button:disabled { opacity: 0.6; cursor: default; }
 button.danger { color: var(--danger); }
 form.inline { display: inline; }
 code { font-size: 13px; }
 .code { font: 600 28px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; }
+.stack { display: grid; gap: 12px; max-width: 420px; }
+.passkey-error { color: var(--danger); margin: 8px 0 0; }
+.link-box { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 `;
 
 export interface PageViewer {
-  email: string;
+  name: string;
   role: "root" | "viewer";
   csrf: string;
 }
 
-export function Page(props: { title: string; viewer?: PageViewer; children: Child }) {
+export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boolean; children: Child }) {
   const viewer = props.viewer;
   return (
     <html lang="en">
@@ -55,8 +60,10 @@ export function Page(props: { title: string; viewer?: PageViewer; children: Chil
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="referrer" content="same-origin" />
+        {viewer && <meta name="csrf" content={viewer.csrf} />}
         <title>{props.title}</title>
         <style>{raw(STYLES)}</style>
+        {props.passkeys && <script src="/assets/passkey.js" defer></script>}
       </head>
       <body>
         <header class="top">
@@ -64,7 +71,7 @@ export function Page(props: { title: string; viewer?: PageViewer; children: Chil
           {viewer && (
             <nav>
               {viewer.role === "root" && <a href="/settings">Settings</a>}
-              <span class="muted">{viewer.email}</span>
+              <a href="/account" class="muted">{viewer.name}</a>
               <form class="inline" method="post" action="/auth/logout">
                 <CsrfField token={viewer.csrf} />
                 <button type="submit">Sign out</button>

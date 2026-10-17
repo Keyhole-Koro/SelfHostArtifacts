@@ -4,7 +4,8 @@ export interface Env {
   PAIR_LIMITER?: RateLimit;
 
   APP_HOST: string;
-  ROOT_EMAIL: string;
+  /** Optional: the owner's Google account, only used when Google sign-in is configured. */
+  ROOT_EMAIL?: string;
   KEEP_VERSIONS?: string;
   TRASH_DAYS?: string;
   DEV_LOGIN_EMAIL?: string;
@@ -18,7 +19,9 @@ export interface Env {
 export interface Config {
   host: string;
   origin: string;
-  rootEmail: string;
+  /** Host name without the port: the WebAuthn relying party id. */
+  rpId: string;
+  rootEmail: string | undefined;
   keepVersions: number;
   trashDays: number;
   devLoginEmail: string | undefined;
@@ -39,8 +42,8 @@ function nonNegativeInt(value: string | undefined, fallback: number, name: strin
 export function loadConfig(env: Env): Config {
   const host = env.APP_HOST?.trim().toLowerCase();
   if (!host) throw new Error("APP_HOST is not set");
-  const rootEmail = env.ROOT_EMAIL?.trim().toLowerCase();
-  if (!rootEmail?.includes("@")) throw new Error("ROOT_EMAIL is not set");
+  const rootEmail = env.ROOT_EMAIL?.trim().toLowerCase() || undefined;
+  if (rootEmail && !rootEmail.includes("@")) throw new Error(`ROOT_EMAIL is not an email address: "${rootEmail}"`);
   const local = isLocalHost(host);
   const devLoginEmail = env.DEV_LOGIN_EMAIL?.trim().toLowerCase() || undefined;
   if (devLoginEmail && !local) {
@@ -52,6 +55,7 @@ export function loadConfig(env: Env): Config {
   return {
     host,
     origin: `${local ? "http" : "https"}://${host}`,
+    rpId: host.replace(/:\d+$/, ""),
     rootEmail,
     keepVersions: nonNegativeInt(env.KEEP_VERSIONS, 0, "KEEP_VERSIONS"),
     trashDays: nonNegativeInt(env.TRASH_DAYS, 30, "TRASH_DAYS"),

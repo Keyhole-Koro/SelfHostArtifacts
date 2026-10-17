@@ -3,7 +3,8 @@ import type { Config, Env } from "./env.ts";
 export type Role = "root" | "viewer";
 
 export interface Viewer {
-  email: string;
+  userId: string;
+  name: string;
   role: Role;
   sessionId: string;
   csrf: string;
@@ -12,6 +13,8 @@ export interface Viewer {
 export interface Device {
   id: string;
   name: string;
+  /** The user who approved this device; `artifact open` signs in as them. */
+  userId: string | null;
 }
 
 export interface AppEnv {

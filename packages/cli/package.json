@@ -1,6 +1,6 @@
 {
   "name": "@keyhole-koro/artifacts",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Publish private HTML pages from Codex, Gemini CLI and Claude Code to your own Cloudflare deployment",
   "license": "MIT",
   "author": "Keyhole-Koro",

@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { ArtifactError } from "./client.ts";
-import { login } from "./commands/login.ts";
+import { login, openBrowser } from "./commands/login.ts";
 import {
   AGENTS,
   detectAgents,
@@ -13,7 +13,7 @@ import {
   type Agent,
 } from "./commands/setup.ts";
 import { serveMcp } from "./mcp.ts";
-import { list, publish, read, remove } from "./operations.ts";
+import { list, loginLink, publish, read, remove } from "./operations.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
 
@@ -23,6 +23,7 @@ Setup
   artifact setup --host <host>      Log in, register the MCP server with Codex / Gemini CLI / Claude Code, install skills
   artifact login --host <host>      Pair this computer (opens the browser for approval)
   artifact status                   Show the deployment and device of this profile
+  artifact open [url]               Sign the browser in with this computer's key and open the site (or a page)
   artifact install-skills           (Re)install the skills
   artifact uninstall                Remove the MCP registrations and skills
 
@@ -150,6 +151,13 @@ async function main(): Promise<void> {
         if (removed.length) console.log(`✓ removed ${removed.join(", ")} from ${dir}`);
       }
       console.log(`Your device key is still in ${profileDir()}. Revoke the device in Settings and delete that folder to remove it.`);
+      return;
+    }
+
+    case "open": {
+      const link = await loginLink(rest[0]);
+      if (!o["no-browser"]) openBrowser(link);
+      out(`Opening ${link}\n(works once, for two minutes)`, { url: link });
       return;
     }
 

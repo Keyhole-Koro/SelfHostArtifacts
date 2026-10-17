@@ -24,9 +24,11 @@ v1 でやらないこと（後述のフェーズで検討）: 他人への共有
    ▼
 [Worker]  APP_HOST（例: artifacts.keyhole.work）── D1（メタデータ）・R2（ファイル）
    ├ /api/v1/*        エージェント用 API（端末の鍵で認証）
-   ├ /                一覧（Google ログイン）
-   ├ /a/:id           閲覧の外枠（Google ログイン）
-   ├ /settings        端末の管理など（Google ログイン）
+   ├ /                一覧（パスキーでログイン）
+   ├ /a/:id           閲覧の外枠
+   ├ /settings        人・端末の管理（持ち主のみ）
+   ├ /account         自分のパスキー
+   ├ /invite/:token   招待リンク
    └ /c/:token/*      ページ本体。外枠の sandbox iframe から読む
 ```
 
@@ -49,7 +51,7 @@ Claude の Artifact ツールが `file_path` を受け取るのは、ツール�
 ```toml
 [vars]
 APP_HOST = "artifacts.example.com"
-ROOT_EMAIL = "you@example.com"   # 持ち主の Google アカウント。1つだけ
+ROOT_EMAIL = "you@example.com"   # 任意。Google ログインも使うときだけ
 KEEP_VERSIONS = "0"              # 残す版の数。0 なら全部残す
 TRASH_DAYS = "30"                # 削除してから本当に消すまでの日数
 
@@ -116,27 +118,40 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 
 ## 認証
 
-### 人（ブラウザ）: Google ログイン
+### 人（ブラウザ）: パスキー
 
-Cloudflare Access は使わず、Worker の中で Google の OpenID Connect を実装する。デプロイする人は Google Cloud で OAuth クライアントを作り、ID と secret を入れるだけで済む（Zero Trust の設定が要らない）。
+2026-10-17 に Google ログインからパスキーへ切り替えた。デプロイする人が Google Cloud で OAuth クライアントを作る手間をなくすため。外部サービスの登録は一切要らない。
 
-- Authorization Code + PKCE。`state` と `nonce` を検証する
-- ID トークンの `email_verified` が true で、`email` が root か閲覧者（下の表）のときだけ通す
+- 人は D1 の `users`（名前と役割）で表し、ログインはその人のパスキー（`passkeys`）で行う。メールアドレスは使わない
+- 検証は `@simplewebauthn/server`（Workers で動く）。attestation は `none`、discoverable credential（`residentKey: required`）なので、ログインでユーザー名を聞かない。user verification は `preferred`
+- challenge は D1 に置かず、署名付きの短命 cookie（5分、1回で消費）に入れる
+- パスキーの JSON 処理は外部ライブラリなしで自前（`/assets/passkey.js`）。CDN を読まないので、管理画面の CSP は `script-src 'self' 'nonce-…'` のまま
+- 1台の端末（またはパスワードマネージャー）に同じ人のパスキーは1つ（`excludeCredentials`）。別の端末からは `/account` で追加する
+
+### 人が増える経路
+
+| 経路 | 使う場面 |
+|---|---|
+| 持ち主の招待リンク | 最初の持ち主。デプロイスクリプトが owner がいないとき（または `--owner-link`）に D1 へ直接作り、URL を表示する。1日・1回限り |
+| 閲覧者の招待リンク | 持ち主が `/settings` で作る。7日・1回限り。開いた人が名前を入れてパスキーを作る |
+| `artifact open` | 登録済みの PC から、端末の鍵で署名した使い捨てのログインリンク（2分・1回）を開く。承認した人としてログインする。パスキーをなくしたときの復旧にもなる |
+| Google（任意） | `GOOGLE_CLIENT_ID` を設定したときだけ。`ROOT_EMAIL` の Google アカウントは持ち主として、`/settings` で Google アカウントを登録した人は閲覧者としてログインできる |
+
+招待リンクとログインリンクは、トークンそのものではなく sha256 だけを D1 に保存する。招待の受け付けは「招待を使用済みにする → ユーザーを作る（その招待を自分が使った場合だけ）→ パスキーを登録する」を1トランザクションで行い、同時に開かれても1人しか作られない。
 
 ### 役割
 
-| 役割 | 誰か | できること |
-|---|---|---|
-| root | `ROOT_EMAIL` の1人 | すべて。閲覧者の管理、端末の承認と失効、Artifact の削除 |
-| viewer | root が `/settings` で登録したメールアドレス | 一覧と閲覧だけ |
+| 役割 | できること |
+|---|---|
+| root（Owner） | すべて。人の招待と削除、端末の承認と失効、外部通信の許可の取り消し、ゴミ箱 |
+| viewer | 一覧と閲覧、自分のパスキーの管理（`/account`） |
 
-- 閲覧者は D1 の `members` に入る。環境変数を編集して再デプロイする必要はない
-- root は環境変数でだけ決まり、画面からは消せない。設定を壊しても締め出されない。持ち主を変えるときは `ROOT_EMAIL` を変えて再デプロイする
-- 閲覧者を削除したら、その人のセッションも D1 から消す（次のリクエストから見えなくなる）
-- メールアドレスは小文字にそろえて比べる。Gmail のドットや `+` の扱いは正規化しない（Google が返した `email` をそのまま使う）
-- v1 の閲覧者はすべての Artifact を見られる。Artifact ごとに見せる相手を絞るのは v3
+- 自分自身は削除できないので、持ち主が0人になることはない
+- 人を削除すると、その人のパスキーとセッションも消え、次のリクエストから見えなくなる
+- 最後の1つのパスキーは削除できない（先に別のパスキーを足す）
 - セッションは D1 に保存し、`APP_HOST` 限定の cookie（`HttpOnly; Secure; SameSite=Strict; __Host-` プレフィックス）を発行する。有効期限は30日
-  - `Strict` にするのは、sandbox のページからのリクエストに確実に付かないようにするため。Google からのリダイレクト直後はクロスサイト扱いで cookie が付かないので、`/auth/callback` は cookie を発行したあと同じサイト内のページへ一度リダイレクトする
+  - `Strict` にするのは、sandbox のページからのリクエストに確実に付かないようにするため。Google や CLI が開いたリンクから来た直後はクロスサイト扱いで cookie が付かないので、ログイン直後は同じサイト内のページへ一度移ってから表示する
+- 端末の鍵で管理画面にもログインできる（`artifact open`）ので、端末の承認は持ち主の権限を渡すのと同じ重さになる。承認画面でコードと要求元の IP を必ず確かめる
 
 ### エージェント（CLI / MCP）: 端末ごとの公開鍵
 
@@ -251,14 +266,46 @@ create table pairings (         -- artifact login の承認待ち。10分で期�
   expires_at text not null
 );
 
-create table members (          -- 閲覧者。root はここに入れない（ROOT_EMAIL で決まる）
-  email text primary key,       -- 小文字
-  added_at text not null
+create table users (            -- 人。2026-10-17 に members（メールアドレス）から移行
+  id text primary key,
+  name text not null,
+  role text not null,           -- root | viewer
+  email text unique,            -- Google ログインを使うときだけ
+  created_at text not null
+);
+
+create table passkeys (         -- WebAuthn の公開鍵。1人に複数
+  id text primary key,          -- credential id
+  user_id text not null references users(id),
+  public_key text not null,     -- COSE
+  counter integer not null,
+  transports text,
+  label text not null,          -- "Mac · Safari" など
+  created_at text not null,
+  last_used_at text
+);
+
+create table invites (          -- 招待リンク（sha256 のみ保存）
+  token_hash text primary key,
+  role text not null,
+  created_by text,
+  expires_at text not null,
+  used_at text,
+  used_by text
+);
+
+create table login_links (      -- artifact open の使い捨てリンク（2分）
+  token_hash text primary key,
+  user_id text not null references users(id),
+  next text not null,
+  expires_at text not null,
+  used_at text
 );
 
 create table sessions (
   id text primary key,
-  email text not null,
+  user_id text not null references users(id),
+  csrf text not null,
   expires_at text not null
 );
 
@@ -341,7 +388,7 @@ R2 は無料プランでも Paid でも無料枠が同じで、超えた分だ�
 ### そのほか
 
 - ドメイン: 手持ちのドメインのサブドメインなので追加費用なし。証明書も Cloudflare の無料のもの
-- Google ログイン（OAuth クライアント）: 無料
+- パスキー: 外部サービスなし。Google ログインを足す場合も無料
 - GitHub と npm への公開: 無料
 
 ## インストール
@@ -566,7 +613,7 @@ npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）�
 - 名前: npm パッケージ `@keyhole-koro/artifacts`、コマンド `artifact`、リポジトリ `SelfHostArtifacts`
 - ライセンス: MIT（Keyhole-Koro）
 - ホスト: 1つ（keyhole.work では `artifacts.keyhole.work`）。パスで振り分ける。ページ本体は opaque origin で隔離する
-- 認証: 人は Google ログイン（`ROOT_EMAIL` と、root が登録した閲覧者）、エージェントは端末ごとの Ed25519 鍵
+- 認証: 人はパスキー（招待リンクで登録、Google は任意）、エージェントは端末ごとの Ed25519 鍵
 - 配布: npm。`artifact setup` が各エージェントの公式コマンドで MCP を登録し、skills を配る
 - 言語: UI・README・skills は英語
 - 外部通信: 既定で禁止、`allow_connect` でページごとに許可

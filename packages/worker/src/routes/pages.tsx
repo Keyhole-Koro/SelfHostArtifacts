@@ -1,8 +1,10 @@
-import { Hono, type Context, type MiddlewareHandler } from "hono";
+import { Hono, type Context } from "hono";
 import { raw } from "hono/html";
 import type { Child } from "hono/jsx";
 import type { AppEnv } from "../app-env.ts";
-import { requireSameOriginForm, requireViewer } from "../auth/session.ts";
+import type { RegistrationResponseJSON } from "@simplewebauthn/server";
+import { passkeyLabel, registrationOptions, takeCeremony, verifyRegistration } from "../auth/passkeys.ts";
+import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../auth/session.ts";
 import { mintContentToken } from "../content.ts";
 import {
   getArtifact,
@@ -14,33 +16,22 @@ import {
   restoreArtifact,
   revokeConnect,
 } from "../db/artifacts.ts";
-import { randomId, randomToken } from "../lib/encoding.ts";
+import {
+  INVITE_DAYS,
+  createInvite,
+  createUser,
+  deleteUser,
+  insertPasskey,
+  listOpenInvites,
+  listPasskeys,
+  listUsers,
+  userByEmail,
+} from "../db/users.ts";
+import { randomId } from "../lib/encoding.ts";
+import { pageSecurity } from "../ui/security.ts";
 import { CsrfField, Page, formatTime } from "../ui/layout.tsx";
 
 export const pages = new Hono<AppEnv>();
-
-/** Our own pages: no framing by others, scripts only with this response's nonce. */
-const pageSecurity: MiddlewareHandler<AppEnv> = async (c, next) => {
-  const nonce = randomToken();
-  c.set("nonce", nonce);
-  await next();
-  c.header(
-    "content-security-policy",
-    [
-      "default-src 'self'",
-      `script-src 'nonce-${nonce}'`,
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data:",
-      "frame-src 'self'",
-      "form-action 'self'",
-      "frame-ancestors 'none'",
-      "base-uri 'none'",
-    ].join("; "),
-  );
-  c.header("x-frame-options", "DENY");
-  c.header("referrer-policy", "same-origin");
-  c.header("cache-control", "private, no-store");
-};
 
 pages.use(pageSecurity);
 
@@ -209,6 +200,85 @@ pages.get("/a/:id/token", requireViewer(), async (c) => {
   return c.json({ src: `/c/${token}/${encodeURI(version.entry)}`, exp });
 });
 
+// --- Account (everyone): your passkeys ---
+
+const account = new Hono<AppEnv>();
+account.use(requireViewer());
+
+account.get("/account", async (c) => {
+  const viewer = c.get("viewer");
+  const passkeys = await listPasskeys(c.env.DB, viewer.userId);
+  return c.html(
+    <Page title="Account" viewer={viewer} passkeys>
+      <h1>{viewer.name}</h1>
+      <p class="muted">{viewer.role === "root" ? "Owner" : "Viewer"}</p>
+
+      <h2 id="passkeys">Passkeys</h2>
+      <p class="muted">Each passkey lets you sign in from the device or password manager that holds it. Add one per device you use.</p>
+      <ul class="list" style="margin-bottom:12px">
+        {passkeys.length === 0 && <li class="muted">No passkeys yet.</li>}
+        {passkeys.map((p) => (
+          <li class="row">
+            <span class="grow">
+              <strong>{p.label}</strong>
+              <div class="meta">
+                added {formatTime(p.created_at)}
+                {p.last_used_at && ` · last used ${formatTime(p.last_used_at)}`}
+              </div>
+            </span>
+            {passkeys.length > 1 && (
+              <form class="inline" method="post" action={`/account/passkeys/${encodeURIComponent(p.id)}/remove`}>
+                <CsrfField token={viewer.csrf} />
+                <button class="danger" type="submit">
+                  Remove
+                </button>
+              </form>
+            )}
+          </li>
+        ))}
+      </ul>
+      <button type="button" data-passkey="register" data-options="/account/passkeys/options" data-verify="/account/passkeys/verify">
+        Add a passkey
+      </button>
+    </Page>,
+  );
+});
+
+account.post("/account/passkeys/options", requireSameOriginJson(), async (c) => {
+  const viewer = c.get("viewer");
+  return c.json(await registrationOptions(c, { id: viewer.userId, name: viewer.name }));
+});
+
+account.post("/account/passkeys/verify", requireSameOriginJson(), async (c) => {
+  const viewer = c.get("viewer");
+  const ceremony = await takeCeremony(c);
+  if (ceremony?.kind !== "register" || ceremony.userId !== viewer.userId || ceremony.inviteHash) {
+    return c.json({ error: "The request took too long. Try again." }, 400);
+  }
+  const { response } = (await c.req.json()) as { response: RegistrationResponseJSON };
+  const passkey = await verifyRegistration(c, ceremony, response);
+  if (!passkey) return c.json({ error: "The passkey could not be verified." }, 400);
+  await insertPasskey(c.env.DB, {
+    id: passkey.id,
+    userId: viewer.userId,
+    publicKey: passkey.publicKey,
+    counter: passkey.counter,
+    transports: passkey.transports,
+    label: passkeyLabel(c.req.header("user-agent")),
+  }).run();
+  return c.json({ next: "/account#passkeys" });
+});
+
+account.post("/account/passkeys/:id/remove", requireSameOriginForm(), async (c) => {
+  const viewer = c.get("viewer");
+  const passkeys = await listPasskeys(c.env.DB, viewer.userId);
+  if (passkeys.length <= 1) return c.text("Add another passkey before removing your last one.", 400);
+  await c.env.DB.prepare("delete from passkeys where id = ? and user_id = ?").bind(c.req.param("id"), viewer.userId).run();
+  return c.redirect("/account#passkeys", 303);
+});
+
+pages.route("/", account);
+
 // --- Settings (root only) ---
 
 const root = new Hono<AppEnv>();
@@ -216,8 +286,9 @@ root.use(requireViewer("root"));
 
 root.get("/settings", async (c) => {
   const viewer = c.get("viewer");
-  const [members, devices, connecting, trash] = await Promise.all([
-    c.env.DB.prepare("select email, added_at from members order by email").all<{ email: string; added_at: string }>(),
+  const [users, invitesOpen, devices, connecting, trash] = await Promise.all([
+    listUsers(c.env.DB),
+    listOpenInvites(c.env.DB),
     c.env.DB.prepare("select id, name, created_at, last_used_at from devices where revoked_at is null order by created_at desc").all<{
       id: string;
       name: string;
@@ -228,36 +299,63 @@ root.get("/settings", async (c) => {
     listTrash(c.env.DB),
   ]);
   const trashDays = c.get("config").trashDays;
+  const google = Boolean(c.env.GOOGLE_CLIENT_ID && c.env.GOOGLE_CLIENT_SECRET);
   return c.html(
     <Page title="Settings" viewer={viewer}>
       <h1>Settings</h1>
 
-      <h2 id="viewers">Viewers</h2>
-      <p class="muted">People who can sign in with Google and read every artifact. You ({c.get("config").rootEmail}) are the owner.</p>
-      <form method="post" action="/settings/members" class="row" style="margin-bottom:12px">
-        <CsrfField token={viewer.csrf} />
-        <input class="grow" type="email" name="email" required placeholder="name@gmail.com" aria-label="Email" />
-        <button class="primary" type="submit">
-          Add viewer
-        </button>
-      </form>
-      <ul class="list">
-        {members.results.map((m) => (
+      <h2 id="people">People</h2>
+      <p class="muted">Viewers can open every artifact. Invite someone with a link; they create a passkey when they open it.</p>
+      <ul class="list" style="margin-bottom:12px">
+        {users.map((u) => (
           <li class="row">
-            <span class="grow">{m.email}</span>
-            <form class="inline" method="post" action="/settings/members/remove">
-              <CsrfField token={viewer.csrf} />
-              <input type="hidden" name="email" value={m.email} />
-              <button class="danger" type="submit">
-                Remove
-              </button>
-            </form>
+            <span class="grow">
+              <strong>{u.name}</strong> <span class="badge">{u.role === "root" ? "Owner" : "Viewer"}</span>
+              <div class="meta">
+                {u.passkeys} passkey{u.passkeys === 1 ? "" : "s"}
+                {u.email && ` · Google: ${u.email}`}
+              </div>
+            </span>
+            {u.id !== viewer.userId && (
+              <form class="inline" method="post" action={`/settings/users/${u.id}/remove`}>
+                <CsrfField token={viewer.csrf} />
+                <button class="danger" type="submit">
+                  Remove
+                </button>
+              </form>
+            )}
           </li>
         ))}
       </ul>
+      <div class="row">
+        <form class="inline" method="post" action="/settings/invites">
+          <CsrfField token={viewer.csrf} />
+          <button class="primary" type="submit">
+            Create invite link
+          </button>
+        </form>
+      </div>
+      {invitesOpen.length > 0 && (
+        <p class="muted">
+          {invitesOpen.length} invite link{invitesOpen.length === 1 ? "" : "s"} not used yet ·{" "}
+          <form class="inline" method="post" action="/settings/invites/revoke">
+            <CsrfField token={viewer.csrf} />
+            <button type="submit">Cancel unused links</button>
+          </form>
+        </p>
+      )}
+      {google && (
+        <form method="post" action="/settings/google" class="row" style="margin-top:12px">
+          <CsrfField token={viewer.csrf} />
+          <input class="grow" type="email" name="email" required placeholder="name@gmail.com" aria-label="Google account" />
+          <button type="submit">Add by Google account</button>
+        </form>
+      )}
 
       <h2 id="devices">Devices</h2>
-      <p class="muted">Computers whose agents can publish. Add one with <code>artifact login</code>.</p>
+      <p class="muted">
+        Computers whose agents can publish. Add one with <code>artifact login</code>. A device can also sign you in here with <code>artifact open</code>.
+      </p>
       <ul class="list">
         {devices.results.length === 0 && <li class="muted">No devices yet.</li>}
         {devices.results.map((d) => (
@@ -322,22 +420,40 @@ root.get("/settings", async (c) => {
   );
 });
 
-root.post("/settings/members", requireSameOriginForm(), async (c) => {
-  const email = String((await c.req.parseBody())["email"] ?? "").trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.text("That is not an email address.", 400);
-  if (email !== c.get("config").rootEmail) {
-    await c.env.DB.prepare("insert or ignore into members (email, added_at) values (?, ?)").bind(email, new Date().toISOString()).run();
-  }
-  return c.redirect("/settings#viewers", 303);
+root.post("/settings/invites", requireSameOriginForm(), async (c) => {
+  const viewer = c.get("viewer");
+  const token = await createInvite(c.env.DB, "viewer", viewer.userId);
+  const url = `${c.get("config").origin}/invite/${token}`;
+  return c.html(
+    <Page title="Invite link" viewer={viewer}>
+      <h1>Invite link</h1>
+      <p>Send this link to the person you want to add. It works once and expires in {INVITE_DAYS} days.</p>
+      <p class="link-box">{url}</p>
+      <p class="muted">The link is shown only now. Anyone who opens it first becomes a viewer.</p>
+      <p>
+        <a href="/settings#people">Back to settings</a>
+      </p>
+    </Page>,
+  );
 });
 
-root.post("/settings/members/remove", requireSameOriginForm(), async (c) => {
-  const email = String((await c.req.parseBody())["email"] ?? "").toLowerCase();
-  await c.env.DB.batch([
-    c.env.DB.prepare("delete from members where email = ?").bind(email),
-    c.env.DB.prepare("delete from sessions where email = ?").bind(email),
-  ]);
-  return c.redirect("/settings#viewers", 303);
+root.post("/settings/invites/revoke", requireSameOriginForm(), async (c) => {
+  await c.env.DB.prepare("delete from invites where used_at is null").run();
+  return c.redirect("/settings#people", 303);
+});
+
+root.post("/settings/google", requireSameOriginForm(), async (c) => {
+  const email = String((await c.req.parseBody())["email"] ?? "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return c.text("That is not an email address.", 400);
+  if (!(await userByEmail(c.env.DB, email))) await createUser(c.env.DB, { name: email, role: "viewer", email });
+  return c.redirect("/settings#people", 303);
+});
+
+root.post("/settings/users/:id/remove", requireSameOriginForm(), async (c) => {
+  const id = c.req.param("id");
+  if (id === c.get("viewer").userId) return c.text("You cannot remove yourself.", 400);
+  await deleteUser(c.env.DB, id);
+  return c.redirect("/settings#people", 303);
 });
 
 root.post("/settings/devices/:id/revoke", requireSameOriginForm(), async (c) => {
@@ -447,11 +563,12 @@ root.post("/pair/:code", requireSameOriginForm(), async (c) => {
   if (decision === "approve") {
     const deviceId = randomId();
     await c.env.DB.batch([
-      c.env.DB.prepare("insert into devices (id, name, public_key, created_at) values (?, ?, ?, ?)").bind(
+      c.env.DB.prepare("insert into devices (id, name, public_key, created_at, user_id) values (?, ?, ?, ?, ?)").bind(
         deviceId,
         pairing.name,
         pairing.public_key,
         new Date().toISOString(),
+        viewer.userId,
       ),
       c.env.DB.prepare("update pairings set status = 'approved', device_id = ? where code = ? and status = 'pending'").bind(deviceId, pairing.code),
     ]);

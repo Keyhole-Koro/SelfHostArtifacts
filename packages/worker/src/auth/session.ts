@@ -1,24 +1,16 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import type { AppEnv, Role, Viewer } from "../app-env.ts";
-import type { Config } from "../env.ts";
 import { randomToken } from "../lib/encoding.ts";
 
 export const SESSION_COOKIE = "__Host-artifact_session";
 const SESSION_DAYS = 30;
 
-export async function roleOf(db: D1Database, config: Config, email: string): Promise<Role | undefined> {
-  const normalized = email.trim().toLowerCase();
-  if (normalized === config.rootEmail) return "root";
-  const member = await db.prepare("select 1 from members where email = ?").bind(normalized).first();
-  return member ? "viewer" : undefined;
-}
-
-export async function startSession(c: Context<AppEnv>, email: string): Promise<void> {
+export async function startSession(c: Context<AppEnv>, userId: string): Promise<void> {
   const id = randomToken();
   const expires = new Date(Date.now() + SESSION_DAYS * 864e5);
-  await c.env.DB.prepare("insert into sessions (id, email, csrf, expires_at) values (?, ?, ?, ?)")
-    .bind(id, email.toLowerCase(), randomToken(), expires.toISOString())
+  await c.env.DB.prepare("insert into sessions (id, user_id, csrf, expires_at) values (?, ?, ?, ?)")
+    .bind(id, userId, randomToken(), expires.toISOString())
     .run();
   // Strict keeps the cookie off every request a sandboxed artifact can make.
   setCookie(c, SESSION_COOKIE, id, {
@@ -36,17 +28,18 @@ export async function endSession(c: Context<AppEnv>): Promise<void> {
   deleteCookie(c, SESSION_COOKIE, { path: "/", secure: true });
 }
 
-async function currentViewer(c: Context<AppEnv>): Promise<Viewer | undefined> {
+/** The signed-in user. Removing a user deletes their sessions, so access ends at once. */
+export async function currentViewer(c: Context<AppEnv>): Promise<Viewer | undefined> {
   const id = getCookie(c, SESSION_COOKIE);
   if (!id) return undefined;
-  const row = await c.env.DB.prepare("select email, csrf, expires_at from sessions where id = ?")
+  const row = await c.env.DB.prepare(
+    `select s.csrf, s.expires_at, u.id as user_id, u.name, u.role
+     from sessions s join users u on u.id = s.user_id where s.id = ?`,
+  )
     .bind(id)
-    .first<{ email: string; csrf: string; expires_at: string }>();
+    .first<{ csrf: string; expires_at: string; user_id: string; name: string; role: Role }>();
   if (!row || Date.parse(row.expires_at) <= Date.now()) return undefined;
-  // Re-check the role on every request so a removed viewer loses access immediately.
-  const role = await roleOf(c.env.DB, c.get("config"), row.email);
-  if (!role) return undefined;
-  return { email: row.email, role, sessionId: id, csrf: row.csrf };
+  return { userId: row.user_id, name: row.name, role: row.role, sessionId: id, csrf: row.csrf };
 }
 
 function loginRedirect(c: Context<AppEnv>) {
@@ -74,6 +67,15 @@ export function requireSameOriginForm(): MiddlewareHandler<AppEnv> {
     if (c.req.header("origin") !== c.get("config").origin) return c.text("Cross-origin form submission refused.", 403);
     const body = await c.req.parseBody();
     if (body["csrf"] !== c.get("viewer").csrf) return c.text("The form expired. Go back and reload the page.", 403);
+    await next();
+  };
+}
+
+/** The same check for JSON requests sent by our pages' scripts (CSRF token in a header). */
+export function requireSameOriginJson(): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    if (c.req.header("origin") !== c.get("config").origin) return c.json({ error: "Cross-origin request refused." }, 403);
+    if (c.req.header("x-csrf") !== c.get("viewer").csrf) return c.json({ error: "Reload the page and try again." }, 403);
     await next();
   };
 }

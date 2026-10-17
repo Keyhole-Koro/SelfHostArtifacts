@@ -3,9 +3,10 @@ import type { AppEnv } from "./app-env.ts";
 import { cleanup } from "./cron.ts";
 import { loadConfig, type Env } from "./env.ts";
 import { api } from "./routes/api.ts";
-import { auth } from "./routes/auth.tsx";
+import { auth, invites } from "./routes/auth.tsx";
 import { content } from "./routes/content.ts";
 import { pages } from "./routes/pages.tsx";
+import { PASSKEY_CLIENT_JS } from "./ui/passkey-client.ts";
 
 export const app = new Hono<AppEnv>();
 
@@ -27,7 +28,11 @@ app.onError((err, c) => {
 app.get("/health", (c) => c.text("ok"));
 app.route("/api/v1", api);
 app.route("/c", content);
+app.get("/assets/passkey.js", (c) =>
+  c.body(PASSKEY_CLIENT_JS, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=300" }),
+);
 app.route("/auth", auth);
+app.route("/invite", invites);
 app.route("/", pages);
 
 export default {

@@ -3,7 +3,7 @@ import { SELF, env } from "cloudflare:test";
 import { base64url, randomId, randomToken, sha256Hex, utf8 } from "../src/lib/encoding.ts";
 
 export const ORIGIN = "http://localhost:8787";
-export const ROOT = "root@example.com";
+export const ROOT = "root" as const;
 
 export interface TestDevice {
   id: string;
@@ -76,14 +76,22 @@ export async function publish(
   return { status: res.status, body: await res.json() };
 }
 
-/** A signed-in browser session for `email`, as a Cookie header value. */
-export async function sessionCookie(email: string): Promise<{ cookie: string; csrf: string }> {
+/** Creates a user. */
+export async function createTestUser(role: "root" | "viewer" = "viewer", name = role === "root" ? "Owner" : "Viewer"): Promise<string> {
+  const id = randomId();
+  await env.DB.prepare("insert into users (id, name, role, created_at) values (?, ?, ?, ?)").bind(id, name, role, new Date().toISOString()).run();
+  return id;
+}
+
+/** A signed-in browser session, for a new user with `role` or for an existing user id. */
+export async function sessionCookie(who: "root" | "viewer" | { userId: string } = "root"): Promise<{ cookie: string; csrf: string; userId: string }> {
+  const userId = typeof who === "string" ? await createTestUser(who) : who.userId;
   const id = randomToken();
   const csrf = randomToken();
-  await env.DB.prepare("insert into sessions (id, email, csrf, expires_at) values (?, ?, ?, ?)")
-    .bind(id, email, csrf, new Date(Date.now() + 864e5).toISOString())
+  await env.DB.prepare("insert into sessions (id, user_id, csrf, expires_at) values (?, ?, ?, ?)")
+    .bind(id, userId, csrf, new Date(Date.now() + 864e5).toISOString())
     .run();
-  return { cookie: `__Host-artifact_session=${id}`, csrf };
+  return { cookie: `__Host-artifact_session=${id}`, csrf, userId };
 }
 
 export function browserGet(path: string, cookie?: string): Promise<Response> {
