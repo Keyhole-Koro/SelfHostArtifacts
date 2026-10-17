@@ -16,3 +16,4 @@ await build({
 });
 rmSync("skills", { recursive: true, force: true });
 cpSync("../../skills", "skills", { recursive: true });
+cpSync("../../LICENSE", "LICENSE");
