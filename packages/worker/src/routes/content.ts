@@ -3,6 +3,7 @@ import type { AppEnv } from "../app-env.ts";
 import { contentHeaders, readContentToken } from "../content.ts";
 import { getArtifact, getVersion } from "../db/artifacts.ts";
 import { blobKey } from "./api.ts";
+import { shareActive } from "../share.ts";
 
 /**
  * Serves an artifact's files at /c/:token/<path>. The token (from the viewer page) says which
@@ -23,6 +24,10 @@ content.on(["GET", "HEAD"], "/:token/*", async (c) => {
   if (!claims) return plain(403, "This link has expired. Reopen the artifact from its page.");
   const artifact = await getArtifact(c.env.DB, claims.a);
   if (!artifact) return plain(404, "This artifact was deleted.");
+  // A token from a public link dies with the link: turned off, replaced or expired.
+  if (claims.s !== undefined && !(shareActive(artifact) && artifact.share_nonce === claims.s)) {
+    return plain(403, "This public link was turned off or has expired.");
+  }
   const version = await getVersion(c.env.DB, claims.a, claims.v);
   if (!version) return plain(404, "This version no longer exists.");
 

@@ -86,6 +86,10 @@ Then, in **Settings → People → Create invite link**, invite viewers. Each li
 person opening it creates their own passkey. Add a passkey for each of your devices under
 **Account** (passkeys synced by iCloud Keychain or Google Password Manager follow you anyway).
 
+To show a page to someone without an account, open it and choose **Share → Create public link**:
+anyone with that link can view the latest version, without signing in, for 30 days. You can extend
+it, replace it with a new link or turn it off; agents cannot make pages public.
+
 Lost every passkey? Run `pnpm run deploy --owner-link` for a new owner link. `artifact open`
 creates a view-only browser session and cannot change passkeys, people or devices.
 

@@ -8,6 +8,8 @@ export interface ArtifactRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  share_nonce: string | null; // public link; see share.ts
+  share_expires_at: string | null;
 }
 
 export interface VersionRow {
@@ -134,9 +136,10 @@ export async function addVersion(db: D1Database, id: string, expected: number, v
   }
 }
 
+/** Moving to the trash also turns the public link off, so restoring does not reopen it. */
 export async function trashArtifact(db: D1Database, id: string): Promise<boolean> {
   const r = await db
-    .prepare("update artifacts set deleted_at = ? where id = ? and deleted_at is null")
+    .prepare("update artifacts set deleted_at = ?, share_nonce = null, share_expires_at = null where id = ? and deleted_at is null")
     .bind(new Date().toISOString(), id)
     .run();
   return r.meta.changes === 1;
@@ -149,4 +152,13 @@ export async function restoreArtifact(db: D1Database, id: string): Promise<void>
 /** Removes outbound access from every version, until the next publish asks for it again. */
 export async function revokeConnect(db: D1Database, id: string): Promise<void> {
   await db.prepare("update versions set allow_connect = null where artifact_id = ?").bind(id).run();
+}
+
+/** Opens (or extends) the public link with `nonce` until `expiresAt`. */
+export async function setShare(db: D1Database, id: string, nonce: string, expiresAt: string): Promise<void> {
+  await db.prepare("update artifacts set share_nonce = ?, share_expires_at = ? where id = ? and deleted_at is null").bind(nonce, expiresAt, id).run();
+}
+
+export async function clearShare(db: D1Database, id: string): Promise<void> {
+  await db.prepare("update artifacts set share_nonce = null, share_expires_at = null where id = ?").bind(id).run();
 }

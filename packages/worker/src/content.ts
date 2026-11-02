@@ -7,11 +7,18 @@ export interface ContentToken {
   a: string; // artifact id
   v: number; // version
   exp: number; // unix seconds
+  s?: string; // share nonce, for tokens minted by a public link; checked on every request
 }
 
-export async function mintContentToken(secret: string, artifactId: string, version: number): Promise<{ token: string; exp: number }> {
+export async function mintContentToken(
+  secret: string,
+  artifactId: string,
+  version: number,
+  shareNonce?: string,
+): Promise<{ token: string; exp: number }> {
   const exp = Math.floor(Date.now() / 1000) + CONTENT_TOKEN_SECONDS;
-  return { token: await sign({ a: artifactId, v: version, exp } satisfies ContentToken, secret), exp };
+  const claims: ContentToken = shareNonce ? { a: artifactId, v: version, exp, s: shareNonce } : { a: artifactId, v: version, exp };
+  return { token: await sign(claims, secret), exp };
 }
 
 export function readContentToken(secret: string, token: string): Promise<ContentToken | undefined> {
