@@ -16,7 +16,11 @@ import {
   listVersions,
   restoreArtifact,
   revokeConnect,
+  clearShare,
+  setShare,
+  type ArtifactRow,
 } from "../db/artifacts.ts";
+import { SHARE_DAYS, newShareNonce, shareActive, shareExpiry, shareKey, shareKeyValid, sharePath } from "../share.ts";
 import {
   INVITE_DAYS,
   createInvite,
@@ -93,6 +97,11 @@ pages.get("/", requireViewer(), async (c) => {
                     <span class="badge warn" title={`May connect to ${a.allow_connect.join(", ")}`}>
                       external
                     </span>
+                  )}{" "}
+                  {shareActive(a) && (
+                    <span class="badge accent" title={`Anyone with the link can view it until ${formatTime(a.share_expires_at)}`}>
+                      public
+                    </span>
                   )}
                   {a.description && <div class="desc">{a.description}</div>}
                 </div>
@@ -151,8 +160,19 @@ summary::-webkit-details-marker { display: none; }
 .panel span { color: var(--text-2); }
 iframe { flex: 1; width: 100%; border: 0; background: #fff; }
 .short { display: none; }
+.share { width: min(360px, calc(100vw - 24px)); padding: var(--space-3); display: grid; gap: var(--space-2); }
+.share p { margin: 0; color: var(--text-2); }
+.share .link { display: flex; gap: var(--space-2); }
+.share input { flex: 1; min-width: 0; font: inherit; font-size: var(--text-xs); padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.share .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.share form { margin: 0; }
+.share button { font: inherit; padding: 4px var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; }
+.share button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text, #fff); }
+.share button.danger { color: var(--negative, #c0362c); }
+.badge.public { background: var(--accent-soft); color: var(--accent); }
 @media (max-width: 640px) {
   .meta, .label, .divider { display: none; }
+  .panel.share { position: fixed; top: 50px; left: 12px; right: 12px; width: auto; }
   .short { display: inline; }
 }
 `;
@@ -164,6 +184,10 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const version = await getVersion(c.env.DB, id, versionNumber);
   if (!version) return c.notFound();
   const versions = await listVersions(c.env.DB, id);
+  const viewer = c.get("viewer");
+  const shareUrl = shareActive(artifact)
+    ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
+    : undefined;
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, versionNumber);
   const src = `/c/${token}/${encodeURI(version.entry)}`;
   const nonce = c.get("nonce");
@@ -192,7 +216,11 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
               external
             </span>
           )}
+          {shareUrl && <span class="badge public">public</span>}
           <span class="spacer" />
+          {viewer.role === "root" && (
+            <SharePanel id={id} artifact={artifact} shareUrl={shareUrl} csrf={viewer.csrf} open={c.req.query("share") === "1"} />
+          )}
           <details>
             <summary class="tool">
               <span class="label">Versions</span>
@@ -230,10 +258,71 @@ async function refresh() {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 window.addEventListener("focus", refresh);
-setInterval(refresh, 60000);`)}
+setInterval(refresh, 60000);
+const copy = document.getElementById("share-copy");
+if (copy) copy.addEventListener("click", async () => {
+  const input = document.getElementById("share-url");
+  try { await navigator.clipboard.writeText(input.value); copy.textContent = "Copied"; }
+  catch { input.select(); copy.textContent = "Selected"; }
+  setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+});`)}
         </script>
       </body>
     </html>,
+  );
+}
+
+function daysLeft(iso: string): string {
+  const days = Math.ceil((Date.parse(iso) - Date.now()) / 864e5);
+  return days <= 1 ? "less than a day left" : `${days} days left`;
+}
+
+function SharePanel(props: { id: string; artifact: ArtifactRow; shareUrl: string | undefined; csrf: string; open: boolean }) {
+  const { id, artifact, shareUrl, csrf } = props;
+  const action = (path: string, label: string, cls = "") => (
+    <form method="post" action={`/a/${id}/share${path}`}>
+      <CsrfField token={csrf} />
+      <button type="submit" class={cls || undefined}>
+        {label}
+      </button>
+    </form>
+  );
+  return (
+    <details open={props.open}>
+      <summary class="tool">
+        <span class="label">Share</span>
+        <span class="short">⤴</span> ▾
+      </summary>
+      <div class="panel share">
+        {shareUrl ? (
+          <>
+            <p>Anyone with this link can view the latest version without signing in.</p>
+            <div class="link">
+              <input id="share-url" type="text" readonly value={shareUrl} aria-label="Public link" />
+              <button type="button" id="share-copy">
+                Copy
+              </button>
+            </div>
+            <p>
+              Open until <time datetime={artifact.share_expires_at!}>{formatTime(artifact.share_expires_at!)}</time> ({daysLeft(artifact.share_expires_at!)}).
+            </p>
+            <div class="actions">
+              {action("", `Extend ${SHARE_DAYS} days`)}
+              {action("/reset", "New link")}
+              {action("/off", "Turn off", "danger")}
+            </div>
+          </>
+        ) : (
+          <>
+            <p>
+              Create a link that anyone can open without signing in, for {SHARE_DAYS} days. They see the latest version only, not the list or
+              older versions.
+            </p>
+            <div class="actions">{action("", "Create public link", "primary")}</div>
+          </>
+        )}
+      </div>
+    </details>
   );
 }
 
@@ -249,6 +338,105 @@ pages.get("/a/:id/token", requireViewer(), async (c) => {
   const version = await getVersion(c.env.DB, id, Number(c.req.query("v") ?? artifact.current_version));
   if (!version) return c.json({ error: "not found" }, 404);
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version);
+  return c.json({ src: `/c/${token}/${encodeURI(version.entry)}`, exp });
+});
+
+// --- Public links (owner turns them on; anyone with the link views) ---
+
+async function shareAction(c: Context<AppEnv>, mode: "open" | "reset" | "off") {
+  const id = c.req.param("id")!;
+  const artifact = await getArtifact(c.env.DB, id);
+  if (!artifact) return c.notFound();
+  const expiresAt = shareExpiry();
+  if (mode === "off") {
+    await clearShare(c.env.DB, id);
+    await recordViewerAction(c, "share.disable", "artifact", id);
+  } else {
+    // "open" keeps a live link's URL and only moves its expiry; otherwise a new URL is made.
+    const keep = mode === "open" && shareActive(artifact);
+    await setShare(c.env.DB, id, keep ? artifact.share_nonce! : newShareNonce(), expiresAt);
+    await recordViewerAction(c, keep ? "share.extend" : mode === "reset" ? "share.reset" : "share.enable", "artifact", id, { expires_at: expiresAt });
+  }
+  return c.redirect(`/a/${id}?share=1`, 303);
+}
+
+// Middleware per route, not `use` on a sub-app: mounted at "/", that would also guard /s/*.
+const ownerForm = [requireViewer("root", true), requireSameOriginForm()] as const;
+pages.post("/a/:id/share", ...ownerForm, (c) => shareAction(c, "open"));
+pages.post("/a/:id/share/reset", ...ownerForm, (c) => shareAction(c, "reset"));
+pages.post("/a/:id/share/off", ...ownerForm, (c) => shareAction(c, "off"));
+
+/** Looks up a live public link; undefined for a wrong key, a turned-off or expired link, or a deleted artifact. */
+async function sharedArtifact(c: Context<AppEnv>) {
+  const artifact = await getArtifact(c.env.DB, c.req.param("id")!);
+  if (!artifact || !(await shareKeyValid(c.env.CONTENT_TOKEN_SECRET, artifact, c.req.param("key")!))) return undefined;
+  return artifact as ArtifactRow & { share_nonce: string; share_expires_at: string };
+}
+
+function noIndex(c: Context<AppEnv>) {
+  c.header("x-robots-tag", "noindex, nofollow, noarchive");
+}
+
+const LINK_GONE = "This link has expired or was turned off. Ask the person who sent it for a new one.";
+
+pages.get("/s/:id/:key", async (c) => {
+  noIndex(c);
+  const artifact = await sharedArtifact(c);
+  if (!artifact) return c.text(LINK_GONE, 404);
+  const version = await getVersion(c.env.DB, artifact.id, artifact.current_version);
+  if (!version) return c.text(LINK_GONE, 404);
+  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, artifact.id, version.version, artifact.share_nonce);
+  const src = `/c/${token}/${encodeURI(version.entry)}`;
+  return c.html(
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="robots" content="noindex, nofollow" />
+        <title>{artifact.title}</title>
+        <style>{raw(TOKENS + VIEWER_STYLES)}</style>
+      </head>
+      <body>
+        <div class="bar">
+          <span class="title">{artifact.title}</span>
+          <span class="meta">
+            Updated <Time iso={version.created_at} />
+          </span>
+          <span class="spacer" />
+          <a id="open" href={src} target="_blank" rel="noopener noreferrer" class="tool" title="Open in a new tab">
+            ↗ <span class="label">Open</span>
+          </a>
+        </div>
+        <iframe id="frame" src={src} sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" title={artifact.title} />
+        <script nonce={c.get("nonce")}>
+          {raw(`
+let exp = ${exp};
+const tokenUrl = location.pathname + "/token";
+async function refresh() {
+  if (Date.now() / 1000 < exp - 120) return;
+  const res = await fetch(tokenUrl, { credentials: "omit" });
+  if (!res.ok) return;
+  const next = await res.json();
+  exp = next.exp;
+  document.getElementById("frame").src = next.src;
+  document.getElementById("open").href = next.src;
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+window.addEventListener("focus", refresh);
+setInterval(refresh, 60000);`)}
+        </script>
+      </body>
+    </html>,
+  );
+});
+
+pages.get("/s/:id/:key/token", async (c) => {
+  noIndex(c);
+  const artifact = await sharedArtifact(c);
+  if (!artifact) return c.json({ error: LINK_GONE }, 404);
+  const version = await getVersion(c.env.DB, artifact.id, artifact.current_version);
+  if (!version) return c.json({ error: LINK_GONE }, 404);
+  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, artifact.id, version.version, artifact.share_nonce);
   return c.json({ src: `/c/${token}/${encodeURI(version.entry)}`, exp });
 });
 

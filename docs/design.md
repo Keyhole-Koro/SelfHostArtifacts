@@ -73,6 +73,8 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 | `/settings` | 閲覧者の追加と削除、端末の一覧と失効、外部通信を許可したページ、ゴミ箱 | root |
 | `/pair/:code` | `artifact login` の承認画面 | root |
 | `/auth/login`, `/auth/passkey/*`, `/auth/link/:token`, `/auth/logout` | パスキーとログインリンク | — |
+| `/a/:id/share`, `/a/:id/share/reset`, `/a/:id/share/off` | 公開リンクを作る・延長する／作り直す／止める（POST） | root（パスキーのセッション） |
+| `/s/:id/:key` | 公開リンクの外枠（最新版だけ） | パスの中の鍵 |
 | `/c/:token/*` | ページ本体の配信 | パスの中の署名付きトークン |
 | `/api/v1/*` | エージェント用 API | 端末の署名 |
 
@@ -234,7 +236,9 @@ create table artifacts (
   current_version integer not null,
   created_at text not null,
   updated_at text not null,
-  deleted_at text               -- ゴミ箱に入れた日時。TRASH_DAYS 日後に Cron で本当に消す
+  deleted_at text,              -- ゴミ箱に入れた日時。TRASH_DAYS 日後に Cron で本当に消す
+  share_nonce text,             -- 公開リンクの nonce。null なら公開していない
+  share_expires_at text         -- 公開リンクの期限
 );
 
 create table versions (
@@ -561,6 +565,20 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
 - 更新日時の新しい順。タイトル・説明・更新日時・版、外部通信ありの印
 - タイトルと説明で絞り込み（クライアント側。件数が増えたら D1 の検索に変える）
 - サムネイルは v2
+
+### 公開リンク（`/s/:id/:key`）
+
+ログインしていない人にも見せたいとき（応募書類に載せる URL など）のための、リンクを知っている人なら誰でも開ける URL。2026-11-02 に追加。
+
+- 持ち主が閲覧画面の「Share」から作る。既定で30日有効。「Extend 30 days」で同じ URL のまま延長、「New link」で作り直し（古い URL は即座に無効）、「Turn off」で止める
+- 鍵は `HMAC(CONTENT_TOKEN_SECRET, "share-link" ‖ id ‖ share_nonce)`（256 bit）。D1 には nonce だけを置くので、D1 の中身だけでは使える URL を作れない。nonce を消せば止まり、新しくすれば作り直しになる
+- 見せるのは常に最新版だけ。一覧・版の履歴・持ち主の操作は出さない。中身は `/a/:id` と同じ `/c/:token/` の sandbox で表示する
+- 公開リンクから出した `/c/:token/` には nonce を入れ、配信のたびに今の nonce と期限を確かめる。止めたり期限が切れたりすると、表示中のページもその場で読めなくなる（通常のトークンのように10分待たない）
+- 期限切れのリンクを延長すると新しい URL になる。一度死んだ URL は生き返らない
+- ゴミ箱に入れると止まり、戻しても止まったまま
+- 切り替えられるのは root のパスキーのセッションだけ。`artifact open` の閲覧専用セッション、viewer、エージェント（端末の署名）からは操作できない。エージェントが勝手に公開することを防ぐため
+- 公開リンクの応答には `X-Robots-Tag: noindex` を付ける。作成・延長・作り直し・停止は `audit_events` に記録する（鍵は記録しない）
+- 一覧では `public` の印を付ける
 
 ### 閲覧（`/a/:id`）
 
