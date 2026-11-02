@@ -93,7 +93,7 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 
 ### トークン
 
-- `/c/:token/` のトークンは HMAC で署名し、artifact id・版・有効期限（1時間）を含む。外枠を開くたびに新しく作る
+- `/c/:token/` のトークンは HMAC で署名し、artifact id・版・有効期限（10分）を含む。外枠を開くたびに新しく作り、表示中は期限前に更新する
 - トークンがパスの中にあるので、`styles.css` や `data.json` のような相対 URL はそのまま同じトークンの下で解決される。cookie が要らない
 - 期限が切れたら、外枠が iframe を新しいトークンで読み直す
 - `Referrer-Policy: no-referrer` で、外部 CDN にトークンが漏れないようにする
@@ -122,7 +122,7 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 2026-10-17 に Google ログインからパスキーへ切り替え、Google ログインはそのあと削除した。デプロイする人が Google Cloud で OAuth クライアントを作る手間をなくすため。外部サービスの登録は一切要らない。
 
 - 人は D1 の `users`（名前と役割）で表し、ログインはその人のパスキー（`passkeys`）で行う。メールアドレスは使わない
-- 検証は `@simplewebauthn/server`（Workers で動く）。attestation は `none`、discoverable credential（`residentKey: required`）なので、ログインでユーザー名を聞かない。user verification は `preferred`
+- 検証は `@simplewebauthn/server`（Workers で動く）。attestation は `none`、discoverable credential（`residentKey: required`）なので、ログインでユーザー名を聞かない。user verification は `required`
 - challenge は D1 に置かず、署名付きの短命 cookie（5分、1回で消費）に入れる
 - パスキーの JSON 処理は外部ライブラリなしで自前（`/assets/passkey.js`）。CDN を読まないので、管理画面の CSP は `script-src 'self' 'nonce-…'` のまま
 - 1台の端末（またはパスワードマネージャー）に同じ人のパスキーは1つ（`excludeCredentials`）。別の端末からは `/account` で追加する
@@ -133,7 +133,7 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 |---|---|
 | 持ち主の招待リンク | 最初の持ち主。デプロイスクリプトが owner がいないとき（または `--owner-link`）に D1 へ直接作り、URL を表示する。1日・1回限り |
 | 閲覧者の招待リンク | 持ち主が `/settings` で作る。7日・1回限り。開いた人が名前を入れてパスキーを作る |
-| `artifact open` | 登録済みの PC から、端末の鍵で署名した使い捨てのログインリンク（2分・1回）を開く。承認した人としてログインする。パスキーをなくしたときの復旧にもなる |
+| `artifact open` | 登録済みの PC から、端末の鍵で署名した使い捨てのログインリンク（2分・1回）を開く。承認した人として成果物を閲覧できるが、アカウント・設定・ペアリング操作はできない |
 | QR コード | `/account` で使い捨てのログインリンクを QR にして表示し、スマホで読み取ってログインする。そのスマホでパスキーを足す |
 
 招待リンクとログインリンクは、トークンそのものではなく sha256 だけを D1 に保存する。招待の受け付けは「招待を使用済みにする → ユーザーを作る（その招待を自分が使った場合だけ）→ パスキーを登録する」を1トランザクションで行い、同時に開かれても1人しか作られない。
@@ -150,7 +150,8 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 - 最後の1つのパスキーは削除できない（先に別のパスキーを足す）
 - セッションは D1 に保存し、`APP_HOST` 限定の cookie（`HttpOnly; Secure; SameSite=Strict; __Host-` プレフィックス）を発行する。有効期限は30日
   - `Strict` にするのは、sandbox のページからのリクエストに確実に付かないようにするため。CLI や QR コードで開いたリンクから来た直後はクロスサイト扱いで cookie が付かないので、ログイン直後は同じサイト内のページへ一度移ってから表示する
-- 端末の鍵で管理画面にもログインできる（`artifact open`）ので、端末の承認は持ち主の権限を渡すのと同じ重さになる。承認画面でコードと要求元の IP を必ず確かめる
+- `artifact open` で作るセッションは閲覧専用。アカウント、管理画面、端末承認はパスキーで作った通常セッションだけに許可する
+- ログイン、パスキー・ユーザー・端末の変更、成果物の公開・削除は追記専用の `audit_events` に記録し、Settings に直近50件を表示する。トークン・コード・Cookie・本文は記録せず、180日を過ぎた行は日次処理で削除する
 
 ### エージェント（CLI / MCP）: 端末ごとの公開鍵
 
@@ -298,19 +299,37 @@ create table login_links (      -- artifact open の使い捨てリンク（2分
   user_id text not null references users(id),
   next text not null,
   expires_at text not null,
-  used_at text
+  used_at text,
+  session_kind text not null     -- full | device
 );
 
 create table sessions (
   id text primary key,
   user_id text not null references users(id),
   csrf text not null,
-  expires_at text not null
+  expires_at text not null,
+  session_kind text not null     -- full | device
 );
 
 create table nonces (           -- 再送防止。5分で消す
   nonce text primary key,
   expires_at text not null
+);
+
+create table audit_events (     -- セキュリティ操作の追記専用ログ。180日保持
+  id text primary key,
+  event_at text not null,
+  request_id text not null,
+  actor_type text not null,     -- user | device | anonymous | system
+  actor_id text,
+  actor_label text,
+  action text not null,
+  target_type text not null,
+  target_id text,
+  result text not null,         -- success | denied | error
+  ip_address text,
+  user_agent text,
+  metadata text                 -- 秘密値を含まない小さな JSON
 );
 ```
 
@@ -575,7 +594,7 @@ Cloudflare 側の設定（D1・R2 の binding、Custom Domain、Cron、Rate Limi
 ## 乱用対策
 
 - 認証なしで呼べるのは `POST /api/v1/devices/pair` と `/auth/*` だけ
-- `pair` は Cloudflare の Rate Limiting（Workers の binding）で IP ごとに1分5回までにし、承認待ちは全体で同時に10件まで。超えたら 429
+- `pair` は Cloudflare の Rate Limiting（Workers の binding）で IP ごとに1分5回までにし、承認待ちは同じ IP ごとに同時3件まで。超えたら 429。全体上限は設けず、別IPから待ち行列を埋めても正規の申請を妨害できないようにする
 - 承認待ちは10分で期限切れ。承認画面ではコードと端末名と要求元の IP を表示し、身に覚えがなければ拒否できる
 
 ## リポジトリ構成

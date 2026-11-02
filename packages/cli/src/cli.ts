@@ -23,7 +23,7 @@ Setup
   artifact setup --host <host>      Log in, register the MCP server with Codex / Gemini CLI / Claude Code, install skills
   artifact login --host <host>      Pair this computer (opens the browser for approval)
   artifact status                   Show the deployment and device of this profile
-  artifact open [url]               Sign the browser in with this computer's key and open the site (or a page)
+  artifact open [url]               Open a view-only browser session with this computer's key
   artifact install-skills           (Re)install the skills
   artifact uninstall                Remove the MCP registrations and skills
 

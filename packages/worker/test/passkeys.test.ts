@@ -91,6 +91,31 @@ describe("invites", () => {
 });
 
 describe("signing in with a passkey", () => {
+  it("requires user verification for registration and authentication", async () => {
+    const token = await createInvite(env.DB, "viewer", null);
+    const optionsRes = await postJson(`/invite/${token}/options`, { name: "Verified" });
+    const registrationOptions = (await optionsRes.json()) as any;
+    expect(registrationOptions.authenticatorSelection.userVerification).toBe("required");
+
+    const key = await softPasskey();
+    const registered = await postJson(
+      `/invite/${token}/verify`,
+      { response: await key.register(registrationOptions, ORIGIN) },
+      { cookie: cookieFrom(optionsRes, "__Host-artifact_webauthn") },
+    );
+    expect(registered.status).toBe(200);
+
+    const loginOptionsRes = await postJson("/auth/passkey/login/options", {});
+    const loginOptions = (await loginOptionsRes.json()) as any;
+    expect(loginOptions.userVerification).toBe("required");
+    const notVerified = await postJson(
+      "/auth/passkey/login/verify",
+      { response: await key.authenticate(loginOptions, ORIGIN, false) },
+      { cookie: cookieFrom(loginOptionsRes, "__Host-artifact_webauthn") },
+    );
+    expect(notVerified.status).toBe(403);
+  });
+
   it("signs in the user the passkey belongs to", async () => {
     const key = await softPasskey();
     await acceptInvite(await createInvite(env.DB, "root", null), "Kiho", key);
@@ -179,8 +204,12 @@ describe("login links from the CLI", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toContain('content="0;url=/a/abc"');
     const session = cookieFrom(res, "__Host-artifact_session");
-    const row = await env.DB.prepare("select user_id from sessions where id = ?").bind(session.split("=")[1]).first<{ user_id: string }>();
+    const row = await env.DB.prepare("select user_id, session_kind from sessions where id = ?").bind(session.split("=")[1]).first<{ user_id: string; session_kind: string }>();
     expect(row?.user_id).toBe(owner.userId);
+    expect(row?.session_kind).toBe("device");
+    expect((await browserGet("/", session)).status).toBe(200);
+    expect((await browserGet("/settings", session)).status).toBe(302);
+    expect((await browserGet("/account", session)).status).toBe(302);
 
     expect((await SELF.fetch(url, { redirect: "manual" })).status).toBe(403);
   });
@@ -196,6 +225,19 @@ describe("login links from the CLI", () => {
     const { device } = await approvedDevice();
     const { url } = (await (await signedJson(device, "POST", "/api/v1/login-links", { next: "//evil.example" })).json()) as { url: string };
     expect(await (await SELF.fetch(url, { redirect: "manual" })).text()).toContain('content="0;url=/"');
+  });
+
+  it("rejects a control-character redirect and revokes an orphaned device", async () => {
+    const { device } = await approvedDevice();
+    const safe = await signedJson(device, "POST", "/api/v1/login-links", { next: "/\t/evil.example" });
+    const { url } = (await safe.json()) as { url: string };
+    expect(await (await SELF.fetch(url, { redirect: "manual" })).text()).toContain('content="0;url=/"');
+
+    await env.DB.prepare("update devices set user_id = null where id = ?").bind(device.id).run();
+    const denied = await signedJson(device, "POST", "/api/v1/login-links", {});
+    expect(denied.status).toBe(403);
+    const row = await env.DB.prepare("select revoked_at from devices where id = ?").bind(device.id).first<{ revoked_at: string | null }>();
+    expect(row?.revoked_at).toBeTruthy();
   });
 
   it("needs a signed request", async () => {

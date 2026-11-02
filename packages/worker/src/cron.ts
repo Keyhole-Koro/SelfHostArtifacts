@@ -1,4 +1,5 @@
 import type { Config, Env } from "./env.ts";
+import { AUDIT_RETENTION_DAYS } from "./db/audit.ts";
 import { blobKey } from "./routes/api.ts";
 
 /** Blobs younger than this are kept even when unreferenced: their publish may still be running. */
@@ -22,6 +23,7 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
     db.prepare("delete from pairings where expires_at <= ?").bind(new Date(now.getTime() - 864e5).toISOString()),
     db.prepare("delete from login_links where expires_at <= ?").bind(iso),
     db.prepare("delete from invites where expires_at <= ?").bind(iso),
+    db.prepare("delete from audit_events where event_at <= ?").bind(new Date(now.getTime() - AUDIT_RETENTION_DAYS * 864e5).toISOString()),
   ]);
   const expired = expiredResults.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 

@@ -1,16 +1,16 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { AppEnv, Role, Viewer } from "../app-env.ts";
+import type { AppEnv, Role, SessionKind, Viewer } from "../app-env.ts";
 import { randomToken } from "../lib/encoding.ts";
 
 export const SESSION_COOKIE = "__Host-artifact_session";
 const SESSION_DAYS = 30;
 
-export async function startSession(c: Context<AppEnv>, userId: string): Promise<void> {
+export async function startSession(c: Context<AppEnv>, userId: string, sessionKind: SessionKind): Promise<void> {
   const id = randomToken();
   const expires = new Date(Date.now() + SESSION_DAYS * 864e5);
-  await c.env.DB.prepare("insert into sessions (id, user_id, csrf, expires_at) values (?, ?, ?, ?)")
-    .bind(id, userId, randomToken(), expires.toISOString())
+  await c.env.DB.prepare("insert into sessions (id, user_id, csrf, expires_at, session_kind) values (?, ?, ?, ?, ?)")
+    .bind(id, userId, randomToken(), expires.toISOString(), sessionKind)
     .run();
   // Strict keeps the cookie off every request a sandboxed artifact can make.
   setCookie(c, SESSION_COOKIE, id, {
@@ -33,13 +33,13 @@ export async function currentViewer(c: Context<AppEnv>): Promise<Viewer | undefi
   const id = getCookie(c, SESSION_COOKIE);
   if (!id) return undefined;
   const row = await c.env.DB.prepare(
-    `select s.csrf, s.expires_at, u.id as user_id, u.name, u.role
+    `select s.csrf, s.expires_at, s.session_kind, u.id as user_id, u.name, u.role
      from sessions s join users u on u.id = s.user_id where s.id = ?`,
   )
     .bind(id)
-    .first<{ csrf: string; expires_at: string; user_id: string; name: string; role: Role }>();
+    .first<{ csrf: string; expires_at: string; session_kind: SessionKind; user_id: string; name: string; role: Role }>();
   if (!row || Date.parse(row.expires_at) <= Date.now()) return undefined;
-  return { userId: row.user_id, name: row.name, role: row.role, sessionId: id, csrf: row.csrf };
+  return { userId: row.user_id, name: row.name, role: row.role, sessionId: id, sessionKind: row.session_kind, csrf: row.csrf };
 }
 
 function loginRedirect(c: Context<AppEnv>) {
@@ -48,11 +48,12 @@ function loginRedirect(c: Context<AppEnv>) {
 }
 
 /** Pages for root and viewers. Anonymous visitors are sent to sign in. */
-export function requireViewer(minimum: Role = "viewer"): MiddlewareHandler<AppEnv> {
+export function requireViewer(minimum: Role = "viewer", fullSession = false): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const viewer = await currentViewer(c);
     if (!viewer) return loginRedirect(c);
     if (minimum === "root" && viewer.role !== "root") return c.text("Only the owner can open this page.", 403);
+    if (fullSession && viewer.sessionKind !== "full") return loginRedirect(c);
     c.set("viewer", viewer);
     await next();
   };

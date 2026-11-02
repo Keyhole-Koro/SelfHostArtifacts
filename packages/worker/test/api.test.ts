@@ -98,6 +98,12 @@ describe("publishing", () => {
     expect(Object.keys(detail.versions[0].files).sort()).toEqual(["data.json", "index.html"]);
     expect(detail.versions[0].created_by).toBe(device.id);
 
+    const audit = await env.DB.prepare("select actor_id, target_id, metadata from audit_events where action = 'artifact.create' order by event_at desc limit 1")
+      .first<{ actor_id: string; target_id: string; metadata: string }>();
+    expect(audit?.actor_id).toBe(device.id);
+    expect(audit?.target_id).toBe(body.id);
+    expect(JSON.parse(audit!.metadata)).toMatchObject({ version: 1 });
+
     const file = await signedFetch(device, "GET", `/api/v1/artifacts/${body.id}/files/index.html`);
     expect(await file.text()).toBe("<h1>v1</h1>");
   });

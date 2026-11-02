@@ -17,6 +17,13 @@ app.use(async (c, next) => {
   await next();
 });
 
+// Apply transport and MIME protections to every response, including API, content and errors.
+app.use("*", async (c, next) => {
+  await next();
+  c.header("strict-transport-security", "max-age=31536000; includeSubDomains");
+  c.header("x-content-type-options", "nosniff");
+});
+
 app.onError((err, c) => {
   console.error("unhandled", err);
   if (c.req.path.startsWith("/api/")) {

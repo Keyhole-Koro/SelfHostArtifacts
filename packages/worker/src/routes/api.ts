@@ -33,11 +33,13 @@ import {
 import { createLoginLink, createUser, firstRoot, getUser, LOGIN_LINK_SECONDS } from "../db/users.ts";
 import { apiError } from "../lib/api-error.ts";
 import { pairingCode, randomId } from "../lib/encoding.ts";
+import { safeNext } from "../lib/internal-path.ts";
+import { recordAuditEvent } from "../db/audit.ts";
 
 export const blobKey = (sha256: string) => `blobs/${sha256}`;
 
 const PAIRING_MINUTES = 10;
-const MAX_PENDING_PAIRINGS = 10;
+const MAX_PENDING_PAIRINGS_PER_IP = 3;
 
 export const api = new Hono<AppEnv>();
 
@@ -120,11 +122,13 @@ api.post("/devices/pair", async (c) => {
   const parsed = await readJson(c, pairStartSchema);
   if (!parsed.ok) return parsed.res;
   const now = new Date();
-  const pending = await c.env.DB.prepare("select count(*) as n from pairings where status = 'pending' and expires_at > ?")
-    .bind(now.toISOString())
+  const pending = await c.env.DB.prepare(
+    "select count(*) as n from pairings where status = 'pending' and expires_at > ? and requested_ip = ?",
+  )
+    .bind(now.toISOString(), ip)
     .first<{ n: number }>();
-  if ((pending?.n ?? 0) >= MAX_PENDING_PAIRINGS) {
-    return apiError(c, 429, "rate_limited", "Too many logins are waiting for approval. Approve or let them expire first.");
+  if ((pending?.n ?? 0) >= MAX_PENDING_PAIRINGS_PER_IP) {
+    return apiError(c, 429, "rate_limited", "Too many logins from this address are waiting for approval. Approve or let them expire first.");
   }
   const code = pairingCode();
   const expires = new Date(now.getTime() + PAIRING_MINUTES * 60_000).toISOString();
@@ -194,6 +198,12 @@ signed.post("/artifacts", async (c) => {
     allowConnect: manifest.allow_connect ?? [],
     deviceId: c.get("device").id,
   });
+  const device = c.get("device");
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "artifact.create", targetType: "artifact", targetId: id,
+    metadata: { version: 1, externalHosts: manifest.allow_connect?.length ?? 0 },
+  });
   return c.json<PublishResponse>({ id, url: artifactUrl(c, id), version: 1 }, 201);
 });
 
@@ -229,6 +239,12 @@ signed.put("/artifacts/:id", async (c) => {
     const latest = await getArtifact(c.env.DB, artifact.id);
     return conflict(c, latest?.current_version ?? base + 1);
   }
+  const device = c.get("device");
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "artifact.update", targetType: "artifact", targetId: artifact.id,
+    metadata: { version: base + 1, externalHosts: manifest.allow_connect?.length ?? 0 },
+  });
   return c.json<PublishResponse>({ id: artifact.id, url: artifactUrl(c, artifact.id), version: base + 1 });
 });
 
@@ -271,8 +287,14 @@ signed.get("/artifacts/:id/files/*", async (c) => {
 });
 
 signed.delete("/artifacts/:id", async (c) => {
-  const trashed = await trashArtifact(c.env.DB, c.req.param("id"));
+  const id = c.req.param("id");
+  const trashed = await trashArtifact(c.env.DB, id);
   if (!trashed) return apiError(c, 404, "not_found", "No artifact has this id (or it is already in the trash).");
+  const device = c.get("device");
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "artifact.trash", targetType: "artifact", targetId: id,
+  });
   return c.json({ trashed: true, restore: `${c.get("config").origin}/settings#trash` });
 });
 
@@ -280,19 +302,40 @@ const loginLinkSchema = z.object({ next: z.string().max(2000).optional() });
 
 /**
  * A single-use sign-in link for the browser, for `artifact open`. It signs in as the user who
- * approved this device. Devices approved before users existed sign in as the owner (who is
- * created here if nobody has signed in yet).
+ * approved this device, but only with permission to browse artifacts. An unowned device may
+ * create the first owner during initial bootstrap; it is never transferred to an existing owner.
  */
 signed.post("/login-links", async (c) => {
   const parsed = await readJson(c, loginLinkSchema);
   if (!parsed.ok) return parsed.res;
   const device = c.get("device");
-  const user =
-    (device.userId && (await getUser(c.env.DB, device.userId))) ||
-    (await firstRoot(c.env.DB)) ||
-    (await createUser(c.env.DB, { name: "Owner", role: "root" }));
-  const next = parsed.value.next?.startsWith("/") && !parsed.value.next.startsWith("//") ? parsed.value.next : "/";
-  const token = await createLoginLink(c.env.DB, user.id, next);
+  let user = device.userId ? await getUser(c.env.DB, device.userId) : null;
+  if (!user && device.userId) {
+    // This should normally be handled by deleteUser. Fail closed if an inconsistent row remains.
+    await c.env.DB.prepare("update devices set revoked_at = coalesce(revoked_at, ?) where id = ?")
+      .bind(new Date().toISOString(), device.id)
+      .run();
+    return apiError(c, 403, "device_owner_missing", "The person who approved this device no longer exists. Pair it again.");
+  }
+  if (!user) {
+    const root = await firstRoot(c.env.DB);
+    if (root) {
+      // Null ownership is reserved for first-owner bootstrap. Never transfer an orphaned key to
+      // another owner, because it may belong to a user who was removed.
+      await c.env.DB.prepare("update devices set revoked_at = coalesce(revoked_at, ?) where id = ?")
+        .bind(new Date().toISOString(), device.id)
+        .run();
+      return apiError(c, 403, "device_owner_missing", "This device is not associated with an account. Pair it again.");
+    }
+    user = await createUser(c.env.DB, { name: "Owner", role: "root" });
+    await c.env.DB.prepare("update devices set user_id = ? where id = ? and user_id is null").bind(user.id, device.id).run();
+  }
+  const next = safeNext(parsed.value.next, c.get("config").origin);
+  const token = await createLoginLink(c.env.DB, user.id, next, "device");
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "auth.device_link_create", targetType: "user", targetId: user.id,
+  });
   return c.json({ url: `${c.get("config").origin}/auth/link/${token}`, expires_in: LOGIN_LINK_SECONDS }, 201);
 });
 

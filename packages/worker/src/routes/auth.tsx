@@ -23,14 +23,11 @@ import {
 } from "../db/users.ts";
 import { Page } from "../ui/layout.tsx";
 import { pageSecurity } from "../ui/security.ts";
+import { safeNext } from "../lib/internal-path.ts";
+import { recordAuditEvent } from "../db/audit.ts";
 
 export const auth = new Hono<AppEnv>();
 auth.use(pageSecurity);
-
-/** Only same-site paths, so a crafted link cannot bounce the user elsewhere after sign-in. */
-export function safeNext(next: string | undefined): string {
-  return next?.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : "/";
-}
 
 function message(c: Context<AppEnv>, title: string, body: string, status: 400 | 403 | 404 | 500) {
   return c.html(
@@ -82,10 +79,14 @@ async function devUser(db: D1Database, config: Config): Promise<UserRow> {
 
 auth.get("/login", async (c) => {
   const config = c.get("config");
-  const next = safeNext(c.req.query("next"));
+  const next = safeNext(c.req.query("next"), config.origin);
   if (config.devLogin) {
     const user = await devUser(c.env.DB, config);
-    await startSession(c, user.id);
+    await startSession(c, user.id, "full");
+    await recordAuditEvent(c, {
+      actorType: "user", actorId: user.id, actorLabel: user.name,
+      action: "auth.login", targetType: "session", metadata: { method: "development" },
+    });
     return c.redirect(next);
   }
   const hasOwner = Boolean(await firstRoot(c.env.DB));
@@ -109,9 +110,8 @@ auth.get("/login", async (c) => {
         </button>
       </div>
       <p class="muted" style="margin-top:24px">
-        No passkey here yet? Open the invite link you were sent; it creates one. If you already have an account, sign in
-        another way first (<code>artifact open</code> on a computer set up with <code>artifact</code>, or a QR code from
-        your account on another device) and add a passkey under your name.
+        No passkey here yet? Open the invite link you were sent; it creates one. If you already have an account, use a
+        synced passkey or a QR code from your account on another signed-in device, then add a passkey under your name.
       </p>
     </Page>,
   );
@@ -125,8 +125,13 @@ auth.post("/passkey/login/verify", sameOrigin, async (c) => {
   const { response } = (await c.req.json()) as { response: AuthenticationResponseJSON };
   const passkey = await verifyAuthentication(c, ceremony, response);
   if (!passkey) return c.json({ error: "This passkey is not registered here, or it was removed." }, 403);
-  await startSession(c, passkey.user_id);
-  return c.json({ next: safeNext(c.req.query("next")) });
+  await startSession(c, passkey.user_id, "full");
+  const user = await c.env.DB.prepare("select name from users where id = ?").bind(passkey.user_id).first<{ name: string }>();
+  await recordAuditEvent(c, {
+    actorType: "user", actorId: passkey.user_id, actorLabel: user?.name,
+    action: "auth.login", targetType: "session", metadata: { method: "passkey" },
+  });
+  return c.json({ next: safeNext(c.req.query("next"), c.get("config").origin) });
 });
 
 // --- Login links made by `artifact open` ---
@@ -134,12 +139,22 @@ auth.post("/passkey/login/verify", sameOrigin, async (c) => {
 auth.get("/link/:token", async (c) => {
   const link = await consumeLoginLink(c.env.DB, c.req.param("token"));
   if (!link) return message(c, "This sign-in link has expired", "Links work once, for two minutes. Run artifact open again.", 403);
-  await startSession(c, link.userId);
-  return continueTo(c, safeNext(link.next));
+  await startSession(c, link.userId, link.sessionKind);
+  const user = await c.env.DB.prepare("select name from users where id = ?").bind(link.userId).first<{ name: string }>();
+  await recordAuditEvent(c, {
+    actorType: "user", actorId: link.userId, actorLabel: user?.name,
+    action: "auth.login", targetType: "session", metadata: { method: link.sessionKind === "device" ? "device_link" : "phone_link" },
+  });
+  return continueTo(c, safeNext(link.next, c.get("config").origin));
 });
 
 auth.post("/logout", requireViewer(), requireSameOriginForm(), async (c) => {
+  const viewer = c.get("viewer");
   await endSession(c);
+  await recordAuditEvent(c, {
+    actorType: "user", actorId: viewer.userId, actorLabel: viewer.name,
+    action: "auth.logout", targetType: "session", targetId: viewer.sessionId,
+  });
   return c.html(
     <Page title="Signed out" narrow>
       <h1>Signed out</h1>
@@ -228,6 +243,11 @@ invites.post("/:token/verify", sameOrigin, async (c) => {
     console.warn("invite.accept_failed", String(e));
     return c.json({ error: "This invite was just used by someone else." }, 409);
   }
-  await startSession(c, ceremony.userId);
+  await startSession(c, ceremony.userId, "full");
+  await recordAuditEvent(c, {
+    actorType: "user", actorId: ceremony.userId, actorLabel: ceremony.name,
+    action: "user.invite_accept", targetType: "user", targetId: ceremony.userId,
+    metadata: { role: invite.role },
+  });
   return c.json({ next: "/" });
 });

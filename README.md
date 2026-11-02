@@ -86,8 +86,8 @@ Then, in **Settings → People → Create invite link**, invite viewers. Each li
 person opening it creates their own passkey. Add a passkey for each of your devices under
 **Account** (passkeys synced by iCloud Keychain or Google Password Manager follow you anyway).
 
-Lost every passkey? On a computer set up with `artifact`, run `artifact open`: it signs the
-browser in with that computer's key. Or run `pnpm run deploy --owner-link` for a new owner link.
+Lost every passkey? Run `pnpm run deploy --owner-link` for a new owner link. `artifact open`
+creates a view-only browser session and cannot change passkeys, people or devices.
 
 Run `pnpm run deploy` again to update. It reuses `wrangler.local.toml` (git-ignored) and only sets
 secrets that are missing. All Cloudflare resources are declared in `wrangler.toml`.
@@ -152,7 +152,7 @@ artifact list
 artifact read https://artifacts.example.com/a/<id> data.json
 artifact delete https://artifacts.example.com/a/<id>
 artifact status
-artifact open [url]                       # sign the browser in with this computer's key
+artifact open [url]                       # open a view-only browser session with this computer's key
 artifact uninstall                        # remove the MCP registrations and skills
 ```
 
