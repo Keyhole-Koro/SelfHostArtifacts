@@ -1,6 +1,6 @@
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const MAX_VERSION_BYTES = 100 * 1024 * 1024;
-export const MAX_FILES_PER_VERSION = 200;
+export const MAX_FILES_PER_VERSION = 500;
 export const MAX_ALLOW_CONNECT = 20;
 export const MAX_PATH_LENGTH = 512;
 

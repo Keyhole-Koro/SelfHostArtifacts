@@ -220,7 +220,7 @@ Workers の無料プランは1回の処理あたり CPU 10ms まで。数 MB の
 
 ### 制限
 
-- 1ファイル 25MB、1版 100MB、1版 200ファイルまで
+- 1ファイル 25MB、1版 100MB、1版 500ファイルまで（画面キャプチャの一覧のような、画像の多いページが収まるように。files の JSON は500件でも D1 の1行に十分収まる）
 - 拡張子から決めた Content-Type だけを許可（html, css, js, json, svg, png, jpg, webp, gif, woff2, mp4, pdf, txt, md, csv）
 - 入口（`entry`）は `.html` だけ。Markdown のページは受け付けず、skill で「HTML にして公開する」と教える（`.md` は付属ファイルとしては置ける）
 
