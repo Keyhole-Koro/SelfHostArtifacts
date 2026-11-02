@@ -63,7 +63,7 @@ export async function registrationOptions(
     attestationType: "none",
     excludeCredentials: existing.map((p) => ({ id: p.id, transports: p.transports ? (JSON.parse(p.transports) as string[]) : undefined })),
     // Discoverable, so signing in needs no user name.
-    authenticatorSelection: { residentKey: "required", userVerification: "preferred" },
+    authenticatorSelection: { residentKey: "required", userVerification: "required" },
   });
   await remember(c, { kind: "register", userId: user.id, name: user.name, inviteHash: user.inviteHash }, options.challenge);
   return options;
@@ -88,7 +88,7 @@ export async function verifyRegistration(
       expectedChallenge: ceremony.challenge,
       expectedOrigin: config.origin,
       expectedRPID: config.rpId,
-      requireUserVerification: false,
+      requireUserVerification: true,
     });
     if (!result.verified) return undefined;
     const { credential } = result.registrationInfo;
@@ -105,7 +105,7 @@ export async function verifyRegistration(
 }
 
 export async function authenticationOptions(c: Context<AppEnv>): Promise<PublicKeyCredentialRequestOptionsJSON> {
-  const options = await generateAuthenticationOptions({ rpID: c.get("config").rpId, userVerification: "preferred" });
+  const options = await generateAuthenticationOptions({ rpID: c.get("config").rpId, userVerification: "required" });
   await remember(c, { kind: "login" }, options.challenge);
   return options;
 }
@@ -131,7 +131,7 @@ export async function verifyAuthentication(
         counter: passkey.counter,
         transports: passkey.transports ? (JSON.parse(passkey.transports) as string[]) : undefined,
       },
-      requireUserVerification: false,
+      requireUserVerification: true,
     });
     if (!result.verified) return undefined;
     await c.env.DB.prepare("update passkeys set counter = ?, last_used_at = ? where id = ?")

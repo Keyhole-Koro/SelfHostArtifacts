@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { mintContentToken } from "../src/content.ts";
+import { CONTENT_TOKEN_SECONDS, mintContentToken } from "../src/content.ts";
 import { sign } from "../src/lib/signed.ts";
 import { ORIGIN, ROOT, browserGet, contentSrc, createDevice, publish, sessionCookie } from "./helpers.ts";
 
@@ -14,6 +14,14 @@ async function published(files: Record<string, string> = { "index.html": "<h1>hi
 }
 
 describe("artifact content", () => {
+  it("keeps bearer content URLs short-lived", async () => {
+    const before = Math.floor(Date.now() / 1000);
+    const { exp } = await mintContentToken(SECRET, "artifact", 1);
+    expect(exp).toBeGreaterThanOrEqual(before + CONTENT_TOKEN_SECONDS);
+    expect(exp).toBeLessThanOrEqual(before + CONTENT_TOKEN_SECONDS + 1);
+    expect(CONTENT_TOKEN_SECONDS).toBe(10 * 60);
+  });
+
   it("serves the entry and relative files under the token", async () => {
     const { id, cookie } = await published();
     const src = await contentSrc(id, cookie);
@@ -33,6 +41,8 @@ describe("artifact content", () => {
     expect(csp).toContain("connect-src 'self';");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
   });
 
   it("adds allowed hosts to connect-src", async () => {

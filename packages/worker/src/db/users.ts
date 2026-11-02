@@ -1,4 +1,4 @@
-import type { Role } from "../app-env.ts";
+import type { Role, SessionKind } from "../app-env.ts";
 import { randomBase32, randomToken, sha256Hex } from "../lib/encoding.ts";
 
 export interface UserRow {
@@ -60,11 +60,14 @@ export async function createUser(db: D1Database, user: { name: string; role: Rol
 
 /** Deleting a user also deletes their passkeys, sessions and login links (foreign keys cascade). */
 export async function deleteUser(db: D1Database, id: string): Promise<void> {
+  const now = new Date().toISOString();
   await db.batch([
     db.prepare("delete from passkeys where user_id = ?").bind(id),
     db.prepare("delete from sessions where user_id = ?").bind(id),
     db.prepare("delete from login_links where user_id = ?").bind(id),
-    db.prepare("update devices set user_id = null where user_id = ?").bind(id),
+    // A deleted user's device must not become an unowned bootstrap device. Keep the foreign-key
+    // cleanup, but revoke the key before deleting the user.
+    db.prepare("update devices set revoked_at = coalesce(revoked_at, ?) where user_id = ?").bind(now, id),
     db.prepare("delete from users where id = ?").bind(id),
   ]);
 }
@@ -134,22 +137,30 @@ export function useInvite(db: D1Database, tokenHash: string, userId: string): D1
 
 export const LOGIN_LINK_SECONDS = 120;
 
-export async function createLoginLink(db: D1Database, userId: string, next: string): Promise<string> {
+export async function createLoginLink(
+  db: D1Database,
+  userId: string,
+  next: string,
+  sessionKind: SessionKind,
+): Promise<string> {
   const token = randomToken();
   await db
-    .prepare("insert into login_links (token_hash, user_id, next, expires_at) values (?, ?, ?, ?)")
-    .bind(await sha256Hex(token), userId, next, new Date(Date.now() + LOGIN_LINK_SECONDS * 1000).toISOString())
+    .prepare("insert into login_links (token_hash, user_id, next, expires_at, session_kind) values (?, ?, ?, ?, ?)")
+    .bind(await sha256Hex(token), userId, next, new Date(Date.now() + LOGIN_LINK_SECONDS * 1000).toISOString(), sessionKind)
     .run();
   return token;
 }
 
 /** Consumes a login link; returns its user and destination, or null if used or expired. */
-export async function consumeLoginLink(db: D1Database, token: string): Promise<{ userId: string; next: string } | null> {
+export async function consumeLoginLink(
+  db: D1Database,
+  token: string,
+): Promise<{ userId: string; next: string; sessionKind: SessionKind } | null> {
   const hash = await sha256Hex(token);
   const now = new Date().toISOString();
   const row = await db
-    .prepare("update login_links set used_at = ? where token_hash = ? and used_at is null and expires_at > ? returning user_id, next")
+    .prepare("update login_links set used_at = ? where token_hash = ? and used_at is null and expires_at > ? returning user_id, next, session_kind")
     .bind(now, hash, now)
-    .first<{ user_id: string; next: string }>();
-  return row ? { userId: row.user_id, next: row.next } : null;
+    .first<{ user_id: string; next: string; session_kind: SessionKind }>();
+  return row ? { userId: row.user_id, next: row.next, sessionKind: row.session_kind } : null;
 }

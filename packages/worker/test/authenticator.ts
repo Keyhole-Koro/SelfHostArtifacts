@@ -56,9 +56,9 @@ function toDer(raw: Uint8Array): Uint8Array<ArrayBuffer> {
 export interface SoftPasskey {
   id: string;
   /** Answers navigator.credentials.create() options with a registration response. */
-  register(options: any, origin: string): Promise<any>;
+  register(options: any, origin: string, userVerified?: boolean): Promise<any>;
   /** Answers navigator.credentials.get() options with an authentication response. */
-  authenticate(options: any, origin: string): Promise<any>;
+  authenticate(options: any, origin: string, userVerified?: boolean): Promise<any>;
 }
 
 export async function softPasskey(): Promise<SoftPasskey> {
@@ -81,12 +81,12 @@ export async function softPasskey(): Promise<SoftPasskey> {
 
   return {
     id,
-    async register(options, origin) {
+    async register(options, origin, userVerified = true) {
       userHandle = options.user.id;
       const clientData = utf8(JSON.stringify({ type: "webauthn.create", challenge: options.challenge, origin, crossOrigin: false }));
       const authData = concat(
         await sha256(utf8(options.rp.id)),
-        [0x45], // user present, user verified, attested credential data
+        [userVerified ? 0x45 : 0x41], // user present, optionally user verified, attested credential data
         counterBytes(counter),
         new Uint8Array(16), // aaguid
         [credentialId.length >> 8, credentialId.length & 255],
@@ -102,10 +102,10 @@ export async function softPasskey(): Promise<SoftPasskey> {
         response: { clientDataJSON: base64url(clientData), attestationObject: base64url(attestationObject), transports: ["internal"] },
       };
     },
-    async authenticate(options, origin) {
+    async authenticate(options, origin, userVerified = true) {
       counter += 1;
       const clientData = utf8(JSON.stringify({ type: "webauthn.get", challenge: options.challenge, origin, crossOrigin: false }));
-      const authData = concat(await sha256(utf8(options.rpId)), [0x05], counterBytes(counter));
+      const authData = concat(await sha256(utf8(options.rpId)), [userVerified ? 0x05 : 0x01], counterBytes(counter));
       const signed = concat(authData, await sha256(clientData));
       const raw = new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey, signed));
       return {

@@ -1,7 +1,7 @@
 import { sign, verify } from "./lib/signed.ts";
 
 /** Lifetime of the token in /c/:token/. The viewer page fetches a fresh one before it runs out. */
-export const CONTENT_TOKEN_SECONDS = 60 * 60;
+export const CONTENT_TOKEN_SECONDS = 10 * 60;
 
 export interface ContentToken {
   a: string; // artifact id

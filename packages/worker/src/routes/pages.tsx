@@ -6,6 +6,7 @@ import type { RegistrationResponseJSON } from "@simplewebauthn/server";
 import { passkeyLabel, registrationOptions, takeCeremony, verifyRegistration } from "../auth/passkeys.ts";
 import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../auth/session.ts";
 import { mintContentToken } from "../content.ts";
+import { listRecentAuditEvents, recordAuditEvent } from "../db/audit.ts";
 import {
   getArtifact,
   getVersion,
@@ -21,6 +22,7 @@ import {
   createInvite,
   createLoginLink,
   deleteUser,
+  getUser,
   insertPasskey,
   listOpenInvites,
   listPasskeys,
@@ -34,6 +36,25 @@ import { CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
 export const pages = new Hono<AppEnv>();
 
 pages.use(pageSecurity);
+
+function recordViewerAction(
+  c: Context<AppEnv>,
+  action: string,
+  targetType: string,
+  targetId?: string | null,
+  metadata?: Record<string, string | number | boolean | null>,
+) {
+  const viewer = c.get("viewer");
+  return recordAuditEvent(c, {
+    actorType: "user",
+    actorId: viewer.userId,
+    actorLabel: viewer.name,
+    action,
+    targetType,
+    targetId,
+    metadata,
+  });
+}
 
 // --- List ---
 
@@ -234,7 +255,8 @@ pages.get("/a/:id/token", requireViewer(), async (c) => {
 // --- Account (everyone): your passkeys ---
 
 const account = new Hono<AppEnv>();
-account.use(requireViewer());
+// A paired-device login may browse artifacts, but account changes require a passkey-backed session.
+account.use(requireViewer("viewer", true));
 
 account.get("/account", async (c) => {
   const viewer = c.get("viewer");
@@ -260,6 +282,19 @@ account.get("/account", async (c) => {
           <input type="text" name="name" required maxlength={64} value={viewer.name} aria-label="Name" autocomplete="name" />
           <button type="submit">Save</button>
         </form>
+      </section>
+
+      <section class="section" id="sessions">
+        <div class="section-head">
+          <div>
+            <h2>Signed-in browsers</h2>
+            <p>End every other browser session if a device was lost or an account may have been accessed.</p>
+          </div>
+          <form method="post" action="/account/sessions/revoke-others">
+            <CsrfField token={viewer.csrf} />
+            <button class="danger" type="submit">Sign out other browsers</button>
+          </form>
+        </div>
       </section>
 
       <section class="section" id="passkeys">
@@ -341,12 +376,14 @@ account.post("/account/passkeys/verify", requireSameOriginJson(), async (c) => {
     transports: passkey.transports,
     label: passkeyLabel(c.req.header("user-agent")),
   }).run();
+  await recordViewerAction(c, "passkey.add", "user", viewer.userId, { label: passkeyLabel(c.req.header("user-agent")) });
   return c.json({ next: "/account#passkeys" });
 });
 
 account.post("/account/phone-link", requireSameOriginForm(), async (c) => {
   const viewer = c.get("viewer");
-  const token = await createLoginLink(c.env.DB, viewer.userId, "/account#passkeys");
+  const token = await createLoginLink(c.env.DB, viewer.userId, "/account#passkeys", "full");
+  await recordViewerAction(c, "auth.phone_link_create", "user", viewer.userId);
   const url = `${c.get("config").origin}/auth/link/${token}`;
   // Dark modules on white whatever the theme: phone cameras read that most reliably.
   const qr = renderSVG(url, { border: 2, pixelSize: 6, whiteColor: "#ffffff", blackColor: "#000000" });
@@ -374,6 +411,7 @@ account.post("/account/name", requireSameOriginForm(), async (c) => {
   const name = String((await c.req.parseBody())["name"] ?? "").trim().replace(/\s+/g, " ");
   if (name.length < 1 || name.length > 64) return c.text("A name is 1 to 64 characters.", 400);
   await c.env.DB.prepare("update users set name = ? where id = ?").bind(name, c.get("viewer").userId).run();
+  await recordViewerAction(c, "user.name_update", "user", c.get("viewer").userId);
   return c.redirect("/account", 303);
 });
 
@@ -381,8 +419,21 @@ account.post("/account/passkeys/:id/remove", requireSameOriginForm(), async (c) 
   const viewer = c.get("viewer");
   const passkeys = await listPasskeys(c.env.DB, viewer.userId);
   if (passkeys.length <= 1) return c.text("Add another passkey before removing your last one.", 400);
-  await c.env.DB.prepare("delete from passkeys where id = ? and user_id = ?").bind(c.req.param("id"), viewer.userId).run();
+  await c.env.DB.batch([
+    c.env.DB.prepare("delete from passkeys where id = ? and user_id = ?").bind(c.req.param("id"), viewer.userId),
+    // Sessions are not tied to a particular credential. Keep this verified browser and end every
+    // other session so removing a compromised passkey also removes sessions it may have created.
+    c.env.DB.prepare("delete from sessions where user_id = ? and id <> ?").bind(viewer.userId, viewer.sessionId),
+  ]);
+  await recordViewerAction(c, "passkey.remove", "user", viewer.userId, { otherSessionsRevoked: true });
   return c.redirect("/account#passkeys", 303);
+});
+
+account.post("/account/sessions/revoke-others", requireSameOriginForm(), async (c) => {
+  const viewer = c.get("viewer");
+  const revoked = await c.env.DB.prepare("delete from sessions where user_id = ? and id <> ?").bind(viewer.userId, viewer.sessionId).run();
+  await recordViewerAction(c, "session.revoke_others", "user", viewer.userId, { count: revoked.meta.changes ?? 0 });
+  return c.redirect("/account#sessions", 303);
 });
 
 pages.route("/", account);
@@ -390,11 +441,12 @@ pages.route("/", account);
 // --- Settings (root only) ---
 
 const root = new Hono<AppEnv>();
-root.use(requireViewer("root"));
+// Owner operations require a passkey-backed session; a stolen publisher key is not enough.
+root.use(requireViewer("root", true));
 
 root.get("/settings", async (c) => {
   const viewer = c.get("viewer");
-  const [users, invitesOpen, devices, connecting, trash] = await Promise.all([
+  const [users, invitesOpen, devices, connecting, trash, auditEvents] = await Promise.all([
     listUsers(c.env.DB),
     listOpenInvites(c.env.DB),
     c.env.DB.prepare("select id, name, created_at, last_used_at from devices where revoked_at is null order by created_at desc").all<{
@@ -405,6 +457,7 @@ root.get("/settings", async (c) => {
     }>(),
     listConnecting(c.env.DB),
     listTrash(c.env.DB),
+    listRecentAuditEvents(c.env.DB, 50),
   ]);
   const trashDays = c.get("config").trashDays;
   return c.html(
@@ -473,8 +526,8 @@ root.get("/settings", async (c) => {
           <div>
             <h2>Devices</h2>
             <p>
-              Computers whose agents can publish. Add one with <code>artifact login</code>. A device can also sign you in here with{" "}
-              <code>artifact open</code>, so revoke any you no longer use.
+              Computers whose agents can publish. Add one with <code>artifact login</code>. A device can also create a view-only browser
+              session with <code>artifact open</code>, so revoke any you no longer use.
             </p>
           </div>
         </div>
@@ -566,6 +619,34 @@ root.get("/settings", async (c) => {
           ))}
         </ul>
       </section>
+
+      <section class="section" id="audit">
+        <div class="section-head">
+          <div>
+            <h2>Recent security activity</h2>
+            <p>Sign-ins, account and device changes, and publishing actions. The newest 50 events are shown.</p>
+          </div>
+        </div>
+        <ul class="rows">
+          {auditEvents.length === 0 && <li class="empty">No security activity has been recorded yet.</li>}
+          {auditEvents.map((event) => (
+            <li>
+              <div class="main">
+                <div class="title"><code>{event.action}</code></div>
+                <div class="desc">
+                  {event.actor_label ?? event.actor_id ?? event.actor_type}
+                  {event.target_id ? ` · ${event.target_type} ${event.target_id}` : ` · ${event.target_type}`}
+                  {event.ip_address ? ` · ${event.ip_address}` : ""}
+                </div>
+              </div>
+              <div class="side">
+                {event.result !== "success" && <span class="badge warn">{event.result}</span>}
+                <Time iso={event.event_at} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
     </Page>,
   );
 });
@@ -573,6 +654,7 @@ root.get("/settings", async (c) => {
 root.post("/settings/invites", requireSameOriginForm(), async (c) => {
   const viewer = c.get("viewer");
   const token = await createInvite(c.env.DB, "viewer", viewer.userId);
+  await recordViewerAction(c, "invite.create", "invite", null, { role: "viewer" });
   const url = `${c.get("config").origin}/invite/${token}`;
   return c.html(
     <Page title="Invite link" viewer={viewer}>
@@ -590,29 +672,39 @@ root.post("/settings/invites", requireSameOriginForm(), async (c) => {
 });
 
 root.post("/settings/invites/revoke", requireSameOriginForm(), async (c) => {
-  await c.env.DB.prepare("delete from invites where used_at is null").run();
+  const revoked = await c.env.DB.prepare("delete from invites where used_at is null").run();
+  await recordViewerAction(c, "invite.revoke_open", "invite", null, { count: revoked.meta.changes ?? 0 });
   return c.redirect("/settings#people", 303);
 });
 
 root.post("/settings/users/:id/remove", requireSameOriginForm(), async (c) => {
   const id = c.req.param("id");
   if (id === c.get("viewer").userId) return c.text("You cannot remove yourself.", 400);
+  const target = await getUser(c.env.DB, id);
   await deleteUser(c.env.DB, id);
+  await recordViewerAction(c, "user.remove", "user", id, { name: target?.name ?? "unknown", role: target?.role ?? "unknown" });
   return c.redirect("/settings#people", 303);
 });
 
 root.post("/settings/devices/:id/revoke", requireSameOriginForm(), async (c) => {
-  await c.env.DB.prepare("update devices set revoked_at = ? where id = ?").bind(new Date().toISOString(), c.req.param("id")).run();
+  const id = c.req.param("id");
+  const device = await c.env.DB.prepare("select name from devices where id = ?").bind(id).first<{ name: string }>();
+  await c.env.DB.prepare("update devices set revoked_at = ? where id = ?").bind(new Date().toISOString(), id).run();
+  await recordViewerAction(c, "device.revoke", "device", id, { name: device?.name ?? "unknown" });
   return c.redirect("/settings#devices", 303);
 });
 
 root.post("/settings/connect/:id/revoke", requireSameOriginForm(), async (c) => {
-  await revokeConnect(c.env.DB, c.req.param("id"));
+  const id = c.req.param("id");
+  await revokeConnect(c.env.DB, id);
+  await recordViewerAction(c, "artifact.external_access_revoke", "artifact", id);
   return c.redirect("/settings#external", 303);
 });
 
 root.post("/settings/trash/:id/restore", requireSameOriginForm(), async (c) => {
-  await restoreArtifact(c.env.DB, c.req.param("id"));
+  const id = c.req.param("id");
+  await restoreArtifact(c.env.DB, id);
+  await recordViewerAction(c, "artifact.restore", "artifact", id);
   return c.redirect("/settings#trash", 303);
 });
 
@@ -707,18 +799,30 @@ root.post("/pair/:code", requireSameOriginForm(), async (c) => {
   const decision = (await c.req.parseBody())["decision"];
   if (decision === "approve") {
     const deviceId = randomId();
-    await c.env.DB.batch([
-      c.env.DB.prepare("insert into devices (id, name, public_key, created_at, user_id) values (?, ?, ?, ?, ?)").bind(
-        deviceId,
-        pairing.name,
-        pairing.public_key,
-        new Date().toISOString(),
-        viewer.userId,
-      ),
-      c.env.DB.prepare("update pairings set status = 'approved', device_id = ? where code = ? and status = 'pending'").bind(deviceId, pairing.code),
+    const now = new Date().toISOString();
+    const [inserted, claimed] = await c.env.DB.batch([
+      // The INSERT itself checks that the pairing is still claimable. D1 executes a batch as one
+      // transaction, so two approval requests cannot both create a device.
+      c.env.DB.prepare(
+        `insert into devices (id, name, public_key, created_at, user_id)
+         select ?, name, public_key, ?, ? from pairings
+         where code = ? and status = 'pending' and expires_at > ?`,
+      ).bind(deviceId, now, viewer.userId, pairing.code, now),
+      c.env.DB.prepare(
+        `update pairings set status = 'approved', device_id = ?
+         where code = ? and status = 'pending' and expires_at > ?
+           and exists (select 1 from devices where id = ?)`,
+      ).bind(deviceId, pairing.code, now, deviceId),
     ]);
+    if (inserted?.meta.changes !== 1 || claimed?.meta.changes !== 1) {
+      return c.redirect(`/pair/${c.req.param("code")}`, 303);
+    }
+    await recordViewerAction(c, "device.approve", "device", deviceId, { name: pairing.name });
   } else {
-    await c.env.DB.prepare("update pairings set status = 'denied' where code = ?").bind(pairing.code).run();
+    await c.env.DB.prepare("update pairings set status = 'denied' where code = ? and status = 'pending' and expires_at > ?")
+      .bind(pairing.code, new Date().toISOString())
+      .run();
+    await recordViewerAction(c, "device.deny", "pairing", null, { name: pairing.name });
   }
   return c.html(
     <Page title="Device" viewer={viewer} narrow>

@@ -24,6 +24,8 @@ export const pageSecurity: MiddlewareHandler<AppEnv> = async (c, next) => {
     ].join("; "),
   );
   c.header("x-frame-options", "DENY");
+  c.header("x-content-type-options", "nosniff");
   c.header("referrer-policy", "same-origin");
+  c.header("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
   c.header("cache-control", "private, no-store");
 };

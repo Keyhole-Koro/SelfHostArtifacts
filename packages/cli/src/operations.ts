@@ -195,8 +195,8 @@ export async function remove(url: string): Promise<{ restore: string }> {
 }
 
 /**
- * A single-use link that signs the browser in (as the person who approved this computer) and
- * then shows `url`, or the list of artifacts.
+ * A single-use link that creates a view-only browser session as the person who approved this
+ * computer, then shows `url` or the list of artifacts.
  */
 export async function loginLink(url?: string): Promise<string> {
   const s = session();

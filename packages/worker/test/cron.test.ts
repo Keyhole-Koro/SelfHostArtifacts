@@ -53,4 +53,15 @@ describe("daily cleanup", () => {
     const report = await cleanup(env, loadConfig(env));
     expect(report.expired).toBeGreaterThanOrEqual(2);
   });
+
+  it("removes audit events after the retention period", async () => {
+    const old = new Date(Date.now() - 181 * DAY).toISOString();
+    await env.DB.prepare(
+      `insert into audit_events
+       (id, event_at, request_id, actor_type, action, target_type, result)
+       values ('old-audit', ?, 'request', 'system', 'cleanup.test', 'system', 'success')`,
+    ).bind(old).run();
+    await cleanup(env, loadConfig(env));
+    expect(await env.DB.prepare("select 1 from audit_events where id = 'old-audit'").first()).toBeNull();
+  });
 });

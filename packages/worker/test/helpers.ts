@@ -88,7 +88,7 @@ export async function sessionCookie(who: "root" | "viewer" | { userId: string } 
   const userId = typeof who === "string" ? await createTestUser(who) : who.userId;
   const id = randomToken();
   const csrf = randomToken();
-  await env.DB.prepare("insert into sessions (id, user_id, csrf, expires_at) values (?, ?, ?, ?)")
+  await env.DB.prepare("insert into sessions (id, user_id, csrf, expires_at, session_kind) values (?, ?, ?, ?, 'full')")
     .bind(id, userId, csrf, new Date(Date.now() + 864e5).toISOString())
     .run();
   return { cookie: `__Host-artifact_session=${id}`, csrf, userId };
