@@ -117,8 +117,5 @@ document.querySelectorAll('[role=tab]').forEach((tab) => tab.addEventListener('c
 
 ## Diagrams
 
-Draw simple diagrams as inline SVG: boxes, arrows and short labels, coloured with the tokens
-(`fill="var(--surface)"`, `stroke="var(--border-strong)"`, arrows in `var(--accent)`). Set a
-`viewBox`, `width="100%"`, a `min-width` that keeps the labels readable, and put it in `.scroll-x`
-so it scrolls on a phone instead of shrinking to unreadable text. Give it `role="img"` and an
-`aria-label` that says what it shows. Size boxes to their longest label plus `--space-3` padding.
+Flowcharts, sequence, state and block diagrams: Mermaid, with the recipe and syntax rules in
+`diagrams.md`. Other shapes: hand-drawn inline SVG, also in `diagrams.md`.

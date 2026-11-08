@@ -15,19 +15,41 @@ calm, legible, consistent, with one clear message at the top.
    It becomes the `<h1>` or the lead paragraph. A page is not a chat reply: no "Here is your
    page", no recap of the request, no closing summary of what you did.
 2. **Pick one shape** (see "Shapes"). Do not mix them.
-3. **Start from `references/starter.html`.** Copy it, keep its tokens and base styles, and add
+3. **List the figures.** Go through the content with "When to draw" and note every figure the
+   page needs, before writing any prose.
+4. **Start from `references/starter.html`.** Copy it, keep its tokens and base styles, and add
    only what this page needs from `references/components.md`.
-4. **Fill it with the real content.** Real numbers, real names, real units. No lorem ipsum, no
+5. **Fill it with the real content.** Real numbers, real names, real units. No lorem ipsum, no
    placeholder charts, no "TODO".
-5. **Check it** with the list at the end, then publish (see the selfhost-artifact-publish skill).
+6. **Check it** with the list at the end, then publish (see the selfhost-artifact-publish skill).
 
 ## Shapes
 
 | Shape | Use for | Structure |
 |---|---|---|
-| **Document** | Explanations, reports, notes, decisions | `<h1>`, a lead paragraph, `<h2>` sections of prose, tables and figures where they help |
+| **Document** | Explanations, reports, notes, decisions | `<h1>`, a lead paragraph, `<h2>` sections of prose, a figure for every flow, structure or change of state (see "When to draw"), tables for exact values |
 | **Dashboard** | Numbers to monitor or compare | A row of 2–4 stat tiles, then 1–3 charts, then the detailed table |
 | **Tool** | Something to interact with (a calculator, a filterable list) | Controls on top or on the left, the result next to them, an explanation below |
+
+## When to draw
+
+Readers grasp a sequence, a structure or a change of state faster from a picture than from
+paragraphs or bullets. When the content has one of these, the figure is part of the page, not an
+extra:
+
+| The content has… | Draw | How |
+|---|---|---|
+| A procedure or decision with 3 or more steps | Flowchart | `references/diagrams.md` |
+| Requests passing between 3 or more systems or people | Sequence diagram | `references/diagrams.md` |
+| Something that changes state (an order, a contract, a ticket) | State diagram | `references/diagrams.md` |
+| Parts and how they connect (architecture, data flow, who owns what) | Block diagram | `references/diagrams.md` |
+| Numbers over time or across categories | Chart | `references/charts.md` |
+
+Each figure sits next to the prose it explains and has a caption that says what it shows. The
+prose still makes the point; the figure lets the reader check it at a glance.
+
+Do not draw a list of independent items (a list or a table), exact values (a table) or a single
+fact (a sentence or a stat tile).
 
 ## Non-negotiables
 
@@ -60,7 +82,8 @@ calm, legible, consistent, with one clear message at the top.
 - **Charts state the finding.** The chart title is the takeaway ("Sign-ups doubled after the
   redesign"), not the metric name. See `references/charts.md`.
 - **No decoration for its own sake**: no gradients on text, no emoji as icons, no animation that
-  does not explain something, no hero images.
+  does not explain something, no hero images. A diagram that shows how something works is
+  content, not decoration.
 
 ## Sandbox
 
@@ -77,6 +100,9 @@ The page runs in a sandboxed frame with an opaque origin:
 ## Check before publishing
 
 - [ ] The first screen says what the page is about and the main finding.
+- [ ] Every flow, structure and change of state in the content has its figure ("When to draw"),
+      with a caption.
+- [ ] Every Mermaid diagram follows the syntax rules in `references/diagrams.md`.
 - [ ] At 360px: nothing overflows the page; tables and diagrams scroll inside their box.
 - [ ] Dark mode: no fixed colour anywhere (search the file for `#` and `rgb` outside `:root`).
 - [ ] Every text size and gap comes from the scales.

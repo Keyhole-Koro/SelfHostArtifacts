@@ -516,6 +516,7 @@ skills/
       layout.md         # スマホ幅、余白、表やグラフの置き方
       theming.md        # 色のトークン、ダークモード
       libraries.md      # 使ってよい CDN とバージョンの固定（CSP の許可リストと一致させる）
+      diagrams.md       # いつ図にするか、Mermaid の設定（トークンの色・ダークモード・スマホ）と構文の落とし穴
   selfhost-artifact-publish/
     SKILL.md            # いつ公開するか、更新のしかた、秘密情報を載せない、delete はユーザーが頼んだときだけ
 ```
@@ -525,6 +526,7 @@ skills/
 - `<title>` は2〜4語の名前
 - 色は `:root` のトークンで定義し、`prefers-color-scheme: dark` で切り替える。`body` の背景を明示する
 - スマホ幅（左右16px の余白、横スクロールなし）で崩れない
+- 手順・システム間のやりとり・状態の変化・構成が出てきたら図にする（`references/diagrams.md`）。文章や箇条書きだけで済ませない
 - 外部スクリプトは `references/libraries.md` の CDN から、バージョンを固定して読む
 - localStorage は try/catch で囲み、なくても動くようにする
 - 秘密情報・認証情報・個人データをページに書かない
