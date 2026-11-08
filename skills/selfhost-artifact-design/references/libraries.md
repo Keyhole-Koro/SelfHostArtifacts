@@ -18,7 +18,8 @@ Good defaults:
 - Charts: Chart.js (`https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js`), or
   plain inline SVG for a few bars or lines.
 - Maths: KaTeX (`https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/`).
-- Diagrams: Mermaid (`https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js`).
+- Diagrams: Mermaid (`https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js`), set up
+  as in `diagrams.md`.
 - Syntax highlighting: highlight.js from cdnjs.
 
 Prefer no library at all when a few lines of HTML, CSS or SVG do the job: the page loads faster
