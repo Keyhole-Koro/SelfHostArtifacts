@@ -61,6 +61,10 @@ img, svg, canvas, video { max-width: 100%; height: auto; }
 .scroll-x { overflow-x: auto; }
 .grid { display: grid; gap: var(--space-4); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 footer { margin-top: var(--space-7); font-size: var(--text-sm); color: var(--text-2); }
+details.more { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin: var(--space-4) 0; }
+details.more > summary { cursor: pointer; padding: var(--space-3) var(--space-4); font-weight: 600; }
+details.more[open] > summary { border-bottom: 1px solid var(--border); }
+details.more > .more-body { padding: var(--space-4); }
 
 /* ---- Components this page uses (components.md) ---- */
 </style>
@@ -68,10 +72,20 @@ footer { margin-top: var(--space-7); font-size: var(--text-sm); color: var(--tex
 <body>
 <main>
   <h1>The main finding, in one line</h1>
-  <p class="lead">One or two sentences of context: what this is about and why it matters.</p>
+  <p class="lead">One or two sentences: what this is about and why it matters.</p>
+
+  <!-- First screen: one visual block that carries the finding (SKILL.md, "First screen"):
+       stat tiles, key points, comparison cards, a status list or a figure. Not a paragraph. -->
 
   <h2>First section</h2>
+  <!-- Lead with this part's figure or component (SKILL.md, "Show, then tell"),
+       then at most two short paragraphs. -->
   <p>Content.</p>
+
+  <details class="more">
+    <summary>How this was measured</summary>
+    <div class="more-body"><p>Method, commands, logs, raw data, history.</p></div>
+  </details>
 
   <footer>Sources: …</footer>
 </main>

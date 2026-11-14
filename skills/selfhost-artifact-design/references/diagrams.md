@@ -20,7 +20,8 @@ hard to read on a phone.
 
 Keep one idea per diagram and about 12 nodes at most. Split a bigger one into an overview and
 details. Keep labels short (about 20 characters); put the explanation in the prose and the
-caption.
+caption. A decision diamond grows with its label: keep it to a short question, or use a
+hexagon (`check{{"Healthy?"}}`) when the question has to be longer.
 
 ## Recipe
 
@@ -74,6 +75,7 @@ async function drawDiagrams() {
       lineColor: css('--text-2'), textColor: css('--text'),
       actorBkg: css('--surface-2'), actorBorder: css('--border-strong'), actorTextColor: css('--text'),
       signalColor: css('--text-2'), signalTextColor: css('--text'),
+      noteBkgColor: css('--accent-soft'), noteBorderColor: css('--border-strong'), noteTextColor: css('--text'),
       labelBackground: css('--surface'), edgeLabelBackground: css('--surface'),
       clusterBkg: css('--surface'), clusterBorder: css('--border-strong'),
       attributeBackgroundColorOdd: css('--surface'), attributeBackgroundColorEven: css('--surface-2'),
@@ -137,10 +139,13 @@ State diagrams need the `classDef` line; flowcharts work with or without it, so 
 
 ## Hand-drawn SVG
 
-For shapes Mermaid has no type for (a screen layout sketch, a timeline drawn to scale, a 2×2
-matrix, stacked layers), draw inline SVG: boxes, arrows and short labels, coloured with the
+For shapes Mermaid has no type for (a screen layout sketch, a timeline drawn to scale, stacked
+layers), draw inline SVG: boxes, arrows and short labels, coloured with the
 tokens (`fill="var(--surface)"`, `stroke="var(--border-strong)"`, arrows in `var(--accent)`). Set
 a `viewBox`, `width="100%"`, a `min-width` that keeps the labels readable, and put it in
 `.scroll-x` so it scrolls on a phone instead of shrinking to unreadable text. Give it
 `role="img"` and an `aria-label` that says what it shows. Size boxes to their longest label plus
 `--space-3` padding.
+
+A list of dated events, a 2×2 placement or a straight line of steps does not need SVG: use the
+timeline, 2×2 placement or steps in `components.md`.

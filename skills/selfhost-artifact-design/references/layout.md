@@ -59,6 +59,7 @@ Test at 360px wide: the page itself never scrolls sideways. Long URLs and identi
 
 - One `<h1>`. `<h2>` for sections, `<h3>` sparingly. Do not skip levels.
 - Lead with the answer, key figures or the main control. Method, caveats and raw data go lower.
-- Use `<details><summary>` for long supporting material most readers will skip.
+- Put method, commands, logs, raw data and history in `<details>` (`components.md`), so the
+  visible page keeps to the word budget in SKILL.md.
 - A page longer than about three screens gets a short table of contents at the top (links to
   section ids), not a sticky sidebar.

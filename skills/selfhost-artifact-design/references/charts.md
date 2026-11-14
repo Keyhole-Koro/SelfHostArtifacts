@@ -11,7 +11,8 @@
 | How is one measure distributed? | Histogram |
 | Exact values matter | A table, not a chart |
 
-If the chart would have one or two data points, write the number in a stat tile instead.
+If the chart would have one or two data points, write the number in a stat tile instead. For
+three to eight values that need no axis, data bars (`components.md`) are lighter than a chart.
 
 ## Every chart has
 
@@ -22,6 +23,9 @@ If the chart would have one or two data points, write the number in a stat tile 
 - Direct labels on lines or bars when there are five series or fewer; otherwise a legend.
 - A caption with the period and the source.
 - A height that suits the data (240–360px) and a width that follows its container.
+
+Do not follow a chart with a table of the same numbers. Label the values on the chart (or in its
+tooltip); if the reader needs the table, put it in `<details>` below the chart.
 
 ## Chart.js with the page's tokens
 
