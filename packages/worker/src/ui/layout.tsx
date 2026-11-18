@@ -134,10 +134,10 @@ function initials(name: string): string {
   return letters.toUpperCase();
 }
 
-export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boolean; narrow?: boolean; children: Child }) {
+export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boolean; narrow?: boolean; lang?: string; children: Child }) {
   const viewer = props.viewer;
   return (
-    <html lang="en">
+    <html lang={props.lang ?? "en"}>
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />

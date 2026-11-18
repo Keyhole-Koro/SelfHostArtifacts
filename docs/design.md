@@ -350,6 +350,54 @@ create table audit_events (     -- セキュリティ操作の追記専用ログ
 - 版は既定で全部残す。中身のハッシュで重複を省くので、テキストの更新ではほとんど容量が増えない
 - `KEEP_VERSIONS` を 1 以上にすると、Cron が各ページの最新 N 版だけ残して古い版を消す
 
+## 秘密の受け渡し
+
+2026-11-18 に足した。パスワードや API キーを、ページにも会話にも平文で出さずに人へ渡す。受け取る人のブラウザが鍵の組を作り、送る側（エージェント）はその公開鍵へ手元で暗号化する。Worker は公開鍵と暗号文を中継するだけで、平文を見ない。
+
+1. エージェントが `secret_request`（CLI は `artifact secret request`）でリクエストを作る。受け取り用の URL `/secret/<token>` が返る。token は 256 ビットの乱数で、D1 には sha256 だけを置く
+2. ユーザーが URL を相手へ送る。チャットやメールでよい
+3. 相手がリンクを開くと、ブラウザが ECDH P-256 の鍵の組を作る。秘密鍵は取り出せない形（`extractable: false`）で IndexedDB に置き、公開鍵だけを送る。登録できるのは最初に開いたブラウザだけで、ほかのブラウザには「別のブラウザで開かれている」と出る
+4. エージェントは `secret_status` で、開いた時刻・IP・ブラウザと、公開鍵の指紋（12 桁）を見る。指紋は CLI が公開鍵から自分で計算する。サーバーが鍵をすり替えても、相手の画面の数字と合わなくなる
+5. `secret_send` が、ファイル（.env、JSON、テキスト）から値を読み、手元で暗号化して置く。結果には名前と指紋だけを返し、値は返さない
+6. 相手の画面が暗号文を取り、秘密鍵で復号して表示する。「保存した」を押すと、サーバーの暗号文とブラウザの鍵を消す
+
+- **暗号**: 送る側が使い捨ての P-256 鍵で ECDH → HKDF-SHA256（salt は送る側と受け取る側の公開鍵を続けたもの、info は `artifact-secret v1\0<id>`）→ AES-256-GCM（追加認証データも同じ）。別のリクエストへ暗号文を付け替えると復号できない。ブラウザ側のコードは `@artifact/shared` の `SECRET_CRYPTO_JS` で、`/assets/secret.js` と CLI のテストが同じものを使う
+- **artifact と分けた理由**: artifact は版を残し、消してもゴミ箱に残り、一覧に出て、中身を平文で置き、sandbox の枠で動く（鍵を保存できない）。秘密のリクエストは版を持たず、受け取り・削除・期限で暗号文をその場で消し、一覧は `/settings` の Secrets にだけ出す。受け取る画面はサイト本体の画面（パスキーのログインと同じ CSP）
+- **期限**: 既定 72 時間、最長 168 時間。Safari は 7 日使われなかったサイトのデータ（鍵）を消すため。毎日の Cron が期限切れの暗号文を消し、終わったリクエストは 30 日後に行ごと消す
+- **受け取る人のアカウントは求めない**: 外の人にパスキーを作ってもらわずに済む。代わりに、受け取る前のリンクの横取りは、開いた時刻・IP・指紋を見てから送ることで防ぐ
+- **守れないこと**: Worker を乗っ取られて偽の受け取り画面を配られる場合と、受け取る人の端末が乗っ取られている場合。Web で暗号化する仕組みに共通の限界
+- **画面の言葉**: 受け取る画面だけ、`Accept-Language` で日本語と英語を切り替える
+
+| パス | 認証 | 内容 |
+|---|---|---|
+| `GET /secret/:token` | URL のトークン | 受け取る画面 |
+| `GET /secret/:token/state` | 同上 | 状態と、登録された公開鍵 |
+| `POST /secret/:token/claim` | 同上と Origin | 公開鍵を登録する（1 回だけ。P-256 の点か確かめる） |
+| `GET /secret/:token/sealed` | 同上 | 暗号文。最初に取られた時刻を記録する |
+| `POST /secret/:token/received` | 同上と Origin | 受け取った。暗号文を消す |
+| `POST /api/v1/secrets`、`GET /api/v1/secrets` | 端末の署名 | 作る、一覧 |
+| `GET /api/v1/secrets/:id`、`DELETE /api/v1/secrets/:id` | 端末の署名 | 状態、消す |
+| `PUT /api/v1/secrets/:id/sealed` | 端末の署名 | 暗号文を置く（開かれたあと 1 回だけ） |
+| `POST /settings/secrets/:id/delete` | root | 消す |
+
+```sql
+create table secrets (          -- 0005_secrets.sql
+  id text primary key,
+  token_hash text not null unique,  -- 受け取り用 URL のトークンの sha256
+  label text not null,              -- 受け取る人に見せる名前（秘密ではない）
+  created_by text not null,         -- 端末 id。端末を失効しても記録は残すので外部キーは付けない
+  created_at text not null,
+  expires_at text not null,
+  claimed_at text, claim_ip text, claim_user_agent text,
+  public_key text,                  -- 受け取る人の公開鍵（P-256、raw を base64url）
+  sealed_at text,
+  ciphertext text,                  -- 暗号文（JSON）。終わったら null
+  opened_at text,
+  finished_at text,
+  finished_by text                  -- recipient | owner | device | expiry
+);
+```
+
 ## 料金
 
 2026-10-16 に Cloudflare の料金ページ（[Workers](https://developers.cloudflare.com/workers/platform/pricing/)、[R2](https://developers.cloudflare.com/r2/pricing/)）で確かめた値。
@@ -457,7 +505,7 @@ args = ["mcp"]
 
 ## AI から見た使い方
 
-AI にとって `artifact` は、**MCP のツール4つ**と **skill 2つ**（`selfhost-artifact-design`、`selfhost-artifact-publish`）。
+AI にとって `artifact` は、**ページの MCP ツール4つ**（と秘密の受け渡しの4つ。「秘密の受け渡し」の節）と **skill 2つ**（`selfhost-artifact-design`、`selfhost-artifact-publish`）。
 
 ### ツール
 
@@ -469,6 +517,10 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 | `read` | `url`, `path?` | 公開中の中身を読む |
 | `list` | `limit?` | 一覧 |
 | `delete` | `url` | ゴミ箱へ移す。ツール説明に「ユーザーが頼んだときだけ」と書く |
+| `secret_request` | `label`, `expires_in_hours?` | 秘密の受け取り用の URL を作る |
+| `secret_status` | `id?` | 開かれたか（時刻・IP・ブラウザ）と鍵の指紋。`id` なしで一覧 |
+| `secret_send` | `id`, `file_path`, `keys?` | ファイルの値を手元で暗号化して置く。値は引数にも結果にも出さない |
+| `secret_delete` | `id` | リクエストと暗号文を消す。ユーザーが頼んだときだけ |
 
 エージェントは MCP の `tools/list` で名前・説明・引数のスキーマを受け取る。`publish` の例:
 

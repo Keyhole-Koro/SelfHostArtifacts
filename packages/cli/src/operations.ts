@@ -7,12 +7,16 @@ import {
   type BlobCheckResponse,
   type ListResponse,
   type PublishResponse,
+  type SecretCreateResponse,
+  type SecretListResponse,
+  type SecretSummary,
 } from "@artifact/shared";
 import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactError, artifactIdFromUrl, expectOk, session, sha256Hex, signedFetch, signedJson, type Session } from "./client.ts";
 import { forgetArtifact, loadState, rememberPublish } from "./profile.ts";
+import { encryptForRecipient, fingerprint, readSecretItems, type KeySelection } from "./secret.ts";
 
 export interface PublishInput {
   /** An .html file, or a directory with index.html (every publishable file in it is included). */
@@ -208,4 +212,71 @@ export async function loginLink(url?: string): Promise<string> {
   }
   const { url: link } = await signedJson<{ url: string }>(s, "POST", "/api/v1/login-links", { next });
   return link;
+}
+
+// --- Secret handoff ---
+
+const SECRET_ID = /^[0-9a-z]{16}$/;
+
+function secretId(id: string): string {
+  const trimmed = id.trim();
+  if (!SECRET_ID.test(trimmed)) {
+    throw new ArtifactError(`"${id}" is not a secret request id. Use the id that secret_request returned ("artifact secret status" lists them), not the recipient's link.`, "bad_id");
+  }
+  return trimmed;
+}
+
+export interface SecretState extends SecretSummary {
+  /** Computed here from the public key, so a server that swapped the key cannot fake it. */
+  fingerprint: string | null;
+}
+
+async function withFingerprint(summary: SecretSummary): Promise<SecretState> {
+  return { ...summary, fingerprint: summary.public_key ? await fingerprint(summary.public_key) : null };
+}
+
+export async function secretRequest(label: string, hours?: number): Promise<SecretCreateResponse> {
+  const body: Record<string, unknown> = { label };
+  if (hours !== undefined) body["expires_in_hours"] = hours;
+  return signedJson<SecretCreateResponse>(session(), "POST", "/api/v1/secrets", body);
+}
+
+export async function secretStatus(id: string): Promise<SecretState> {
+  return withFingerprint(await signedJson<SecretSummary>(session(), "GET", `/api/v1/secrets/${secretId(id)}`));
+}
+
+export async function secretList(limit = 25): Promise<SecretListResponse> {
+  return signedJson<SecretListResponse>(session(), "GET", `/api/v1/secrets?limit=${limit}`);
+}
+
+export interface SecretSendResult {
+  id: string;
+  /** Names only, never values. */
+  names: string[];
+  fingerprint: string;
+}
+
+const NOT_READY: Record<string, string> = {
+  waiting: "Nobody has opened the link yet. Send it to the recipient and wait until the status is claimed.",
+  sealed: "This request already holds a secret. Delete it and make a new request to send something else.",
+  received: "The recipient already received and deleted this request. Make a new request.",
+  deleted: "This request was deleted. Make a new request.",
+  expired: "This request has expired. Make a new request.",
+};
+
+export async function secretSend(id: string, filePath: string, keys?: KeySelection): Promise<SecretSendResult> {
+  const s = session();
+  const sid = secretId(id);
+  const items = readSecretItems(filePath, keys);
+  const state = await signedJson<SecretSummary>(s, "GET", `/api/v1/secrets/${sid}`);
+  if (state.status !== "claimed" || !state.public_key) {
+    throw new ArtifactError(NOT_READY[state.status] ?? `The request is ${state.status}.`, `secret_${state.status}`);
+  }
+  const envelope = await encryptForRecipient(sid, state.public_key, { items });
+  await signedJson(s, "PUT", `/api/v1/secrets/${sid}/sealed`, { envelope });
+  return { id: sid, names: items.map((i) => i.name), fingerprint: await fingerprint(state.public_key) };
+}
+
+export async function secretDelete(id: string): Promise<{ status: string }> {
+  return signedJson<{ status: string }>(session(), "DELETE", `/api/v1/secrets/${secretId(id)}`);
 }

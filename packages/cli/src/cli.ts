@@ -12,8 +12,9 @@ import {
   unregisterMcp,
   type Agent,
 } from "./commands/setup.ts";
-import { serveMcp } from "./mcp.ts";
-import { list, loginLink, publish, read, remove } from "./operations.ts";
+import { describeSecret, serveMcp } from "./mcp.ts";
+import { list, loginLink, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretStatus } from "./operations.ts";
+import type { KeySelection } from "./secret.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
 
@@ -33,6 +34,13 @@ Pages
   artifact list [--limit n]
   artifact read <url> [path] [--version n]
   artifact delete <url>             Move to the trash (restorable for 30 days)
+
+Secrets (only the recipient's browser can decrypt)
+  artifact secret request --label <l> [--hours n]   Make a link for the recipient (72 h by default, at most 168)
+  artifact secret status [id]                       Who opened it and the key fingerprint; without id, recent requests
+  artifact secret send <id> <file> [--key NAME[=Shown name]]...
+                                    Encrypt values from a .env, JSON or text file and send them
+  artifact secret delete <id>                       End the request and delete the ciphertext
 
 Agents
   artifact mcp                      Run the stdio MCP server (agents start this themselves)
@@ -65,6 +73,9 @@ function parse() {
       "no-browser": { type: "boolean" },
       browser: { type: "string" },
       "skip-login": { type: "boolean" },
+      label: { type: "string" },
+      hours: { type: "string" },
+      key: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -86,6 +97,18 @@ function filesFrom(pairs: string[] | undefined): Record<string, string> | undefi
     files[pair.slice(0, eq)] = pair.slice(eq + 1);
   }
   return files;
+}
+
+/** --key NAME keeps the name; --key NAME=Shown name renames it. */
+function keysFrom(keys: string[] | undefined): KeySelection | undefined {
+  if (!keys?.length) return undefined;
+  if (keys.every((k) => !k.includes("="))) return keys;
+  const out: Record<string, string> = {};
+  for (const k of keys) {
+    const eq = k.indexOf("=");
+    out[eq < 0 ? k : k.slice(0, eq)] = eq < 0 ? k : k.slice(eq + 1);
+  }
+  return out;
 }
 
 async function main(): Promise<void> {
@@ -214,6 +237,42 @@ async function main(): Promise<void> {
       const r = await remove(url);
       out(`Moved to the trash. Restore it at ${r.restore}`, r);
       return;
+    }
+
+    case "secret": {
+      const [sub, id, file] = rest;
+      switch (sub) {
+        case "request": {
+          if (!o.label) throw new ArtifactError("Usage: artifact secret request --label <what it is> [--hours n]", "bad_args");
+          const r = await secretRequest(o.label, o.hours ? Number(o.hours) : undefined);
+          out(`Request ${r.id}. Give this link to the recipient:\n${r.url}\nIt works until ${r.expires_at}.`, r);
+          return;
+        }
+        case "status": {
+          if (!id) {
+            const r = await secretList(o.limit ? Number(o.limit) : 25);
+            out(r.secrets.map((x) => `${x.id}  ${x.status.padEnd(8)}  ${x.label}`).join("\n") || "No secret requests yet.", r);
+            return;
+          }
+          const r = await secretStatus(id);
+          out(describeSecret(r), r);
+          return;
+        }
+        case "send": {
+          if (!id || !file) throw new ArtifactError("Usage: artifact secret send <id> <file> [--key NAME[=Shown name]]...", "bad_args");
+          const r = await secretSend(id, file, keysFrom(o.key));
+          out(`Sent ${r.names.join(", ")} to the browser with key fingerprint ${r.fingerprint}.`, r);
+          return;
+        }
+        case "delete": {
+          if (!id) throw new ArtifactError("Usage: artifact secret delete <id>", "bad_args");
+          const r = await secretDelete(id);
+          out(r.status === "deleted" ? "Deleted. The link no longer works." : `It had already ended (${r.status}).`, r);
+          return;
+        }
+        default:
+          throw new ArtifactError("Usage: artifact secret request|status|send|delete. Run `artifact help`.", "bad_args");
+      }
     }
 
     default:

@@ -53,6 +53,18 @@ having external access. Prefer saving the data into a file published with the pa
 - `delete({ url })` moves a page to the trash (restorable for 30 days). Only when the user
   asked for that page to be deleted.
 
+## Handing over a secret
+
+Never put a password, key or token in a page. To give one to a person, use the secret tools:
+
+1. `secret_request({ label })` returns a link; give it to the user to send to the recipient.
+2. When `secret_status({ id })` says `claimed`, check that the open (time, IP, browser) looks
+   like the intended person. If the user wants to be sure, they compare the 12-digit fingerprint
+   with the recipient's page.
+3. `secret_send({ id, file_path, keys? })` encrypts the values from a local file. Pass the file,
+   never the values: do not write a secret into tool arguments or the conversation.
+4. `secret_delete({ id })` only when the user asks.
+
 ## Errors
 
 The error text says what to do. If it says the user must run `artifact login`, tell them to run

@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
-import { list, publish, read, remove } from "./operations.ts";
+import { list, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretStatus, type SecretState } from "./operations.ts";
 import { VERSION } from "./version.ts";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -107,7 +107,112 @@ export function createServer(): McpServer {
       }),
   );
 
+  server.registerTool(
+    "secret_request",
+    {
+      title: "Ask for a secret handoff link",
+      description:
+        "Start handing a secret (a password, an API key) to someone. Returns a link for the recipient; the user sends it to them by any " +
+        "channel. When they open it, their browser makes a key pair, and only that browser can decrypt what you send. Then check " +
+        "secret_status and call secret_send. Never put a secret in a page or in the conversation; use this instead.",
+      inputSchema: {
+        label: z.string().describe("What is being handed over, shown to the recipient (not secret), e.g. \"Mail passwords\""),
+        expires_in_hours: z.number().int().min(1).max(168).optional().describe("How long the link works; 72 by default, at most 168"),
+      },
+    },
+    ({ label, expires_in_hours }) =>
+      run(async () => {
+        const r = await secretRequest(label, expires_in_hours);
+        return (
+          `Created secret request ${r.id} ("${r.label}"). Give this link to the recipient: ${r.url}\n` +
+          `It works until ${r.expires_at}. The link alone never reveals the secret. After the recipient opens it, check secret_status, then call secret_send.`
+        );
+      }),
+  );
+
+  server.registerTool(
+    "secret_status",
+    {
+      title: "Check a secret handoff",
+      description:
+        "Show whether the recipient has opened the link (when, from which IP and browser) and the fingerprint of their key. Without id, " +
+        "list recent requests. Before secret_send, make sure the open looks like the intended person; if in doubt, ask the user to compare " +
+        "the fingerprint with the 12 digits on the recipient's page.",
+      inputSchema: { id: z.string().optional().describe("The request id from secret_request") },
+    },
+    ({ id }) =>
+      run(async () => {
+        if (!id) {
+          const { secrets } = await secretList(25);
+          if (secrets.length === 0) return "No secret requests yet.";
+          return secrets.map((x) => `${x.id}  ${x.status}  ${x.label}  (created ${x.created_at}, expires ${x.expires_at})`).join("\n");
+        }
+        return describeSecret(await secretStatus(id));
+      }),
+  );
+
+  server.registerTool(
+    "secret_send",
+    {
+      title: "Send a secret to the recipient's browser",
+      description:
+        "Encrypt values from a local file for the recipient's browser and store only the ciphertext. The file can be .env (KEY=VALUE), " +
+        "JSON ({\"NAME\": \"value\"}), or any text file (sent as one item). Never write a secret value into this tool's arguments or the " +
+        "conversation: pass the file path, and keys to choose or rename items. The result lists names, never values. Works once per " +
+        "request, after the recipient has opened the link (status claimed).",
+      inputSchema: {
+        id: z.string().describe("The request id from secret_request"),
+        file_path: z.string().describe("Absolute path of the file that holds the values"),
+        keys: z
+          .union([z.array(z.string()), z.record(z.string(), z.string())])
+          .optional()
+          .describe('Items to send: ["KEY", …] keeps the names; {"KEY": "Shown name"} renames them. All items by default'),
+      },
+    },
+    ({ id, file_path, keys }) =>
+      run(async () => {
+        const r = await secretSend(id, file_path, keys);
+        return (
+          `Sent ${r.names.length} item${r.names.length === 1 ? "" : "s"} (${r.names.join(", ")}) to the browser whose key fingerprint is ${r.fingerprint}. ` +
+          "The recipient's page shows them now and deletes them from the server when they are done."
+        );
+      }),
+  );
+
+  server.registerTool(
+    "secret_delete",
+    {
+      title: "Delete a secret request",
+      description: "End a secret request and delete its ciphertext; the link stops working. Only when the user asks for it.",
+      inputSchema: { id: z.string().describe("The request id") },
+      annotations: { destructiveHint: true },
+    },
+    ({ id }) =>
+      run(async () => {
+        const r = await secretDelete(id);
+        return r.status === "deleted" ? "Deleted. The link no longer works." : `It had already ended (${r.status}).`;
+      }),
+  );
+
   return server;
+}
+
+const NEXT_STEP: Record<string, string> = {
+  waiting: "Nobody has opened the link yet. Make sure the recipient got it.",
+  claimed: "Ready to send with secret_send.",
+  sealed: "Sent; waiting for the recipient to finish.",
+  received: "The recipient received it and deleted it from the server.",
+  deleted: "Deleted.",
+  expired: "Expired. Make a new request if it is still needed.",
+};
+
+export function describeSecret(x: SecretState): string {
+  const lines = [`${x.label} — ${x.status}`, `Created ${x.created_at}, works until ${x.expires_at}`];
+  if (x.claimed_at) lines.push(`Opened ${x.claimed_at} from ${x.claim_ip ?? "unknown IP"} (${x.claim_user_agent ?? "unknown browser"})`);
+  if (x.fingerprint) lines.push(`Key fingerprint: ${x.fingerprint} (the recipient's page shows the same digits)`);
+  if (x.opened_at) lines.push(`Recipient fetched the secret ${x.opened_at}`);
+  lines.push(NEXT_STEP[x.status] ?? "");
+  return lines.filter(Boolean).join("\n");
 }
 
 export async function serveMcp(): Promise<void> {
