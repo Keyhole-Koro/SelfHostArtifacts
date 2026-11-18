@@ -33,11 +33,21 @@ import {
   listUsers,
 } from "../db/users.ts";
 import { randomId } from "../lib/encoding.ts";
+import { finishSecret, listSecrets, secretOpen, secretStatus } from "../db/secrets.ts";
 import { renderSVG } from "uqr";
 import { pageSecurity } from "../ui/security.ts";
 import { CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
 
 export const pages = new Hono<AppEnv>();
+
+const SECRET_STATUS_LABEL = {
+  waiting: "Not opened",
+  claimed: "Opened",
+  sealed: "Sent",
+  received: "Received",
+  deleted: "Deleted",
+  expired: "Expired",
+} as const;
 
 pages.use(pageSecurity);
 
@@ -634,7 +644,7 @@ root.use(requireViewer("root", true));
 
 root.get("/settings", async (c) => {
   const viewer = c.get("viewer");
-  const [users, invitesOpen, devices, connecting, trash, auditEvents] = await Promise.all([
+  const [users, invitesOpen, devices, connecting, trash, auditEvents, secrets] = await Promise.all([
     listUsers(c.env.DB),
     listOpenInvites(c.env.DB),
     c.env.DB.prepare("select id, name, created_at, last_used_at from devices where revoked_at is null order by created_at desc").all<{
@@ -646,6 +656,7 @@ root.get("/settings", async (c) => {
     listConnecting(c.env.DB),
     listTrash(c.env.DB),
     listRecentAuditEvents(c.env.DB, 50),
+    listSecrets(c.env.DB, 50),
   ]);
   const trashDays = c.get("config").trashDays;
   return c.html(
@@ -745,6 +756,54 @@ root.get("/settings", async (c) => {
               </div>
             </li>
           ))}
+        </ul>
+      </section>
+
+      <section class="section" id="secrets">
+        <div class="section-head">
+          <div>
+            <h2>Secrets</h2>
+            <p>
+              Requests made with <code>artifact secret request</code>. Only the recipient's browser can decrypt; this list shows who
+              opened each link. Ended requests are kept here for 30 days without their contents.
+            </p>
+          </div>
+        </div>
+        <ul class="rows">
+          {secrets.length === 0 && <li class="empty">No secret requests yet.</li>}
+          {secrets.map((r) => {
+            const status = secretStatus(r);
+            return (
+              <li>
+                <div class="main">
+                  <div class="title">
+                    {r.label} <span class={`badge ${status === "sealed" || status === "claimed" ? "accent" : ""}`}>{SECRET_STATUS_LABEL[status]}</span>
+                  </div>
+                  <div class="desc">
+                    Created <Time iso={r.created_at} />
+                    {r.claimed_at && (
+                      <>
+                        {" · opened "}
+                        <Time iso={r.claimed_at} />
+                        {r.claim_ip ? ` from ${r.claim_ip}` : ""}
+                      </>
+                    )}
+                    {secretOpen(r) ? ` · expires ${formatTime(r.expires_at)}` : ""}
+                  </div>
+                </div>
+                <div class="side">
+                  {secretOpen(r) && (
+                    <form class="inline" method="post" action={`/settings/secrets/${r.id}/delete`}>
+                      <CsrfField token={viewer.csrf} />
+                      <button class="danger" type="submit">
+                        Delete
+                      </button>
+                    </form>
+                  )}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       </section>
 
@@ -880,6 +939,12 @@ root.post("/settings/devices/:id/revoke", requireSameOriginForm(), async (c) => 
   await c.env.DB.prepare("update devices set revoked_at = ? where id = ?").bind(new Date().toISOString(), id).run();
   await recordViewerAction(c, "device.revoke", "device", id, { name: device?.name ?? "unknown" });
   return c.redirect("/settings#devices", 303);
+});
+
+root.post("/settings/secrets/:id/delete", requireSameOriginForm(), async (c) => {
+  const id = c.req.param("id");
+  if (await finishSecret(c.env.DB, id, "owner")) await recordViewerAction(c, "secret.delete", "secret", id);
+  return c.redirect("/settings#secrets", 303);
 });
 
 root.post("/settings/connect/:id/revoke", requireSameOriginForm(), async (c) => {

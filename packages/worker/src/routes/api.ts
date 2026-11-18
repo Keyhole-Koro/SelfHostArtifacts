@@ -15,6 +15,12 @@ import {
   type PairStartResponse,
   type PublishResponse,
   type VersionFile,
+  SECRET_DEFAULT_HOURS,
+  secretCreateSchema,
+  secretSealSchema,
+  type SecretCreateResponse,
+  type SecretListResponse,
+  type SecretSummary,
 } from "@artifact/shared";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
@@ -32,7 +38,8 @@ import {
 } from "../db/artifacts.ts";
 import { createLoginLink, createUser, firstRoot, getUser, LOGIN_LINK_SECONDS } from "../db/users.ts";
 import { apiError } from "../lib/api-error.ts";
-import { pairingCode, randomId } from "../lib/encoding.ts";
+import { pairingCode, randomId, randomToken, sha256Hex } from "../lib/encoding.ts";
+import { createSecret, finishSecret, getSecret, listSecrets, sealSecret, secretStatus, secretSummary } from "../db/secrets.ts";
 import { safeNext } from "../lib/internal-path.ts";
 import { recordAuditEvent } from "../db/audit.ts";
 
@@ -337,6 +344,75 @@ signed.post("/login-links", async (c) => {
     action: "auth.device_link_create", targetType: "user", targetId: user.id,
   });
   return c.json({ url: `${c.get("config").origin}/auth/link/${token}`, expires_in: LOGIN_LINK_SECONDS }, 201);
+});
+
+// --- Secret handoff: the recipient's browser holds the key; the API only relays ciphertext ---
+
+signed.post("/secrets", async (c) => {
+  const parsed = await readJson(c, secretCreateSchema);
+  if (!parsed.ok) return parsed.res;
+  const { label, expires_in_hours } = parsed.value;
+  const id = randomId();
+  const token = randomToken();
+  const expiresAt = new Date(Date.now() + (expires_in_hours ?? SECRET_DEFAULT_HOURS) * 3600e3).toISOString();
+  const device = c.get("device");
+  await createSecret(c.env.DB, { id, tokenHash: await sha256Hex(token), label, deviceId: device.id, expiresAt });
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "secret.create", targetType: "secret", targetId: id,
+    metadata: { hours: expires_in_hours ?? SECRET_DEFAULT_HOURS },
+  });
+  return c.json<SecretCreateResponse>({ id, url: `${c.get("config").origin}/secret/${token}`, label, expires_at: expiresAt }, 201);
+});
+
+signed.get("/secrets", async (c) => {
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 25) || 25, 1), 200);
+  const rows = await listSecrets(c.env.DB, limit);
+  return c.json<SecretListResponse>({ secrets: rows.map((r) => secretSummary(r)) });
+});
+
+const SECRET_NOT_FOUND = "No secret request has this id.";
+
+signed.get("/secrets/:id", async (c) => {
+  const row = await getSecret(c.env.DB, c.req.param("id"));
+  if (!row) return apiError(c, 404, "not_found", SECRET_NOT_FOUND);
+  return c.json<SecretSummary>(secretSummary(row));
+});
+
+signed.put("/secrets/:id/sealed", async (c) => {
+  const row = await getSecret(c.env.DB, c.req.param("id"));
+  if (!row) return apiError(c, 404, "not_found", SECRET_NOT_FOUND);
+  const status = secretStatus(row);
+  if (status === "waiting") {
+    return apiError(c, 409, "not_claimed", "Nobody has opened the link yet. Send it to the recipient, then wait until the status is claimed.");
+  }
+  if (status === "sealed") return apiError(c, 409, "already_sealed", "This request already holds a secret. Delete it and make a new request to send another.");
+  if (status !== "claimed") return apiError(c, 410, "gone", `This request has ended (${status}). Make a new request.`);
+  const parsed = await readJson(c, secretSealSchema);
+  if (!parsed.ok) return parsed.res;
+  if (!(await sealSecret(c.env.DB, row.id, JSON.stringify(parsed.value.envelope)))) {
+    return apiError(c, 409, "not_sealed", "The request changed while sending. Check its status and try again.");
+  }
+  const device = c.get("device");
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "secret.seal", targetType: "secret", targetId: row.id,
+  });
+  return c.json({ status: "sealed" });
+});
+
+signed.delete("/secrets/:id", async (c) => {
+  const row = await getSecret(c.env.DB, c.req.param("id"));
+  if (!row) return apiError(c, 404, "not_found", SECRET_NOT_FOUND);
+  const finished = await finishSecret(c.env.DB, row.id, "device");
+  if (finished) {
+    const device = c.get("device");
+    await recordAuditEvent(c, {
+      actorType: "device", actorId: device.id, actorLabel: device.name,
+      action: "secret.delete", targetType: "secret", targetId: row.id,
+    });
+  }
+  return c.json({ deleted: true, status: finished ? "deleted" : secretStatus(row) });
 });
 
 api.route("/", signed);

@@ -90,6 +90,12 @@ To show a page to someone without an account, open it and choose **Share → Cre
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
 it, replace it with a new link or turn it off; agents cannot make pages public.
 
+To hand someone a password or an API key, an agent can make a **secret link** (`secret_request`).
+The recipient opens it without an account; their browser makes a key pair, and the agent encrypts
+the values on your computer for that browser (`secret_send`). The Worker only ever stores the
+ciphertext, which is deleted when the recipient is done or the link expires (72 hours by default).
+**Settings → Secrets** shows who opened each link.
+
 Lost every passkey? Run `pnpm run deploy --owner-link` for a new owner link. `artifact open`
 creates a view-only browser session and cannot change passkeys, people or devices.
 
@@ -146,6 +152,10 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `read` | Read a published page or one of its files |
 | `list` | Recent pages |
 | `delete` | Move a page to the trash (restorable in Settings for 30 days) |
+| `secret_request` | Make a link for handing a secret to someone |
+| `secret_status` | Whether the link was opened (when, from where) and the recipient's key fingerprint |
+| `secret_send` | Encrypt values from a local `.env`, JSON or text file for the recipient's browser |
+| `secret_delete` | End a secret request and delete its ciphertext |
 
 ### CLI
 
@@ -157,6 +167,9 @@ artifact read https://artifacts.example.com/a/<id> data.json
 artifact delete https://artifacts.example.com/a/<id>
 artifact status
 artifact open [url]                       # open a view-only browser session with this computer's key
+artifact secret request --label "Mail passwords"        # prints the recipient's link
+artifact secret status <id>                              # opened? key fingerprint
+artifact secret send <id> ./mail.env --key SMTP_PASSWORD=notify@example.com
 artifact uninstall                        # remove the MCP registrations and skills
 ```
 
