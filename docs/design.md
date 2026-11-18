@@ -82,8 +82,8 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 
 エージェントが書いた任意の JS が動く。管理画面と同じオリジンで配信するので、ページ本体は**オリジンを持たない（opaque origin）状態**で動かして隔離する。
 
-- 外枠は `<iframe src="/c/<token>/index.html" sandbox="allow-scripts allow-forms allow-popups allow-downloads">` で読む。`allow-same-origin` は**付けない**
-- さらに `/c/*` の応答そのものに `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups allow-downloads` を付ける。誰かが `/c/...` を直接（iframe の外で）開いても、やはり opaque origin になる。これが一番大事な防御で、iframe の属性だけに頼らない
+- 外枠は `<iframe src="/c/<token>/index.html" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals">` で読む。`allow-same-origin` は**付けない**
+- さらに `/c/*` の応答そのものに、同じフラグで `Content-Security-Policy: sandbox …` を付ける。誰かが `/c/...` を直接（iframe の外で）開いても、やはり opaque origin になる。これが一番大事な防御で、iframe の属性だけに頼らない
 
 これで、ページの JS は:
 
@@ -115,7 +115,9 @@ keyhole.work なら `APP_HOST = "artifacts.keyhole.work"`。
 - `Access-Control-Allow-Origin: *`（opaque origin から `fetch('data.json')` や `<script type="module">` を読むと CORS になるため。認可はトークンでしているので問題ない）
 - `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`Cache-Control: private, no-store`
 
-管理画面側（`/`, `/a/*`, `/settings` など）は、フォームの POST に `Origin` の検査と CSRF トークンを付ける。sandbox のページが `allow-popups` で開いた窓からフォームを送っても、`Origin: null` になって弾かれる。
+管理画面側（`/`, `/a/*`, `/settings` など）は、フォームの POST に `Origin` の検査と CSRF トークンを付ける。sandbox のページ自身がフォームを送っても、`Origin: null` になって弾かれる。
+
+`allow-popups-to-escape-sandbox` は 2026-11-18 に足した。ないと、ページの中の `target="_blank"` のリンクで開いたタブも sandbox を引き継ぎ、そこで開いた別のページやログイン画面が opaque origin で動いて、パスキーのログインが「Failed to fetch」で失敗する。足しても、ページ本体は sandbox のままで、そのタブで `/c/*` を開いても応答の CSP で再び sandbox になる。新しいタブはページから見てクロスサイトなので、`SameSite=Strict` のセッション cookie は最初の読み込みに付かない（ログイン画面が出ることがある）。
 
 ## 認証
 

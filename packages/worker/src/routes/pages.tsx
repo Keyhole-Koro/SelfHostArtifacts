@@ -5,7 +5,7 @@ import type { AppEnv } from "../app-env.ts";
 import type { RegistrationResponseJSON } from "@simplewebauthn/server";
 import { passkeyLabel, registrationOptions, takeCeremony, verifyRegistration } from "../auth/passkeys.ts";
 import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../auth/session.ts";
-import { mintContentToken } from "../content.ts";
+import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
 import { listRecentAuditEvents, recordAuditEvent } from "../db/audit.ts";
 import {
   getArtifact,
@@ -242,7 +242,7 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
             ↗ <span class="label">Open</span>
           </a>
         </div>
-        <iframe id="frame" src={src} sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" title={artifact.title} />
+        <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
         <script nonce={nonce}>
           {raw(`
 let exp = ${exp};
@@ -407,7 +407,7 @@ pages.get("/s/:id/:key", async (c) => {
             ↗ <span class="label">Open</span>
           </a>
         </div>
-        <iframe id="frame" src={src} sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals" title={artifact.title} />
+        <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
         <script nonce={c.get("nonce")}>
           {raw(`
 let exp = ${exp};

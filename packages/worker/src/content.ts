@@ -34,8 +34,14 @@ const FONT_HOSTS = [...SCRIPT_CDNS, "https://fonts.gstatic.com"];
  * The sandbox flags of the artifact frame. `allow-same-origin` is deliberately absent: the
  * page runs in an opaque origin, so it cannot read our cookies, our DOM or call our API as
  * the signed-in user, even though it is served from the same host.
+ *
+ * `allow-popups-to-escape-sandbox` lets a link with target="_blank" open an ordinary tab.
+ * Without it the new tab inherits this sandbox, so another artifact or the sign-in page opened
+ * from a link runs in an opaque origin and passkey sign-in fails with "Failed to fetch". The
+ * page itself stays sandboxed, and anything under /c/ opened in that tab is sandboxed again by
+ * its own Content-Security-Policy.
  */
-export const SANDBOX_FLAGS = "allow-scripts allow-forms allow-popups allow-downloads allow-modals";
+export const SANDBOX_FLAGS = "allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals";
 
 export function contentSecurityPolicy(allowConnect: string[]): string {
   const connect = ["'self'", ...allowConnect.map((h) => `https://${h}`)];
