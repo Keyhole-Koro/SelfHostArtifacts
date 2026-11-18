@@ -36,7 +36,7 @@ describe("artifact content", () => {
     const { id, cookie } = await published();
     const res = await SELF.fetch(`${ORIGIN}${await contentSrc(id, cookie)}`);
     const csp = res.headers.get("content-security-policy")!;
-    expect(csp).toMatch(/^sandbox allow-scripts allow-forms allow-popups allow-downloads allow-modals;/);
+    expect(csp).toMatch(/^sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals;/);
     expect(csp).not.toContain("allow-same-origin");
     expect(csp).toContain("connect-src 'self';");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
@@ -96,7 +96,7 @@ describe("viewer page", () => {
     const { id, cookie } = await published();
     const res = await browserGet(`/a/${id}`, cookie);
     const html = await res.text();
-    expect(html).toMatch(/<iframe id="frame" src="\/c\/[^"]+\/index.html" sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"/);
+    expect(html).toMatch(/<iframe id="frame" src="\/c\/[^"]+\/index.html" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals"/);
     expect(html).not.toContain("allow-same-origin");
     expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
   });
