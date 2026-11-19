@@ -351,18 +351,23 @@ signed.post("/login-links", async (c) => {
 signed.post("/secrets", async (c) => {
   const parsed = await readJson(c, secretCreateSchema);
   if (!parsed.ok) return parsed.res;
-  const { label, expires_in_hours } = parsed.value;
+  const { label, expires_in_hours, share } = parsed.value;
+  const mode = share ? "share" : "request";
   const id = randomId();
   const token = randomToken();
   const expiresAt = new Date(Date.now() + (expires_in_hours ?? SECRET_DEFAULT_HOURS) * 3600e3).toISOString();
   const device = c.get("device");
-  await createSecret(c.env.DB, { id, tokenHash: await sha256Hex(token), label, deviceId: device.id, expiresAt });
+  await createSecret(c.env.DB, {
+    id, mode, tokenHash: await sha256Hex(token), label, deviceId: device.id, expiresAt,
+    // Share mode: the inner envelope; its key is in the part of the link the server never sees.
+    ...(share ? { ciphertext: JSON.stringify(share) } : {}),
+  });
   await recordAuditEvent(c, {
     actorType: "device", actorId: device.id, actorLabel: device.name,
     action: "secret.create", targetType: "secret", targetId: id,
-    metadata: { hours: expires_in_hours ?? SECRET_DEFAULT_HOURS },
+    metadata: { hours: expires_in_hours ?? SECRET_DEFAULT_HOURS, mode },
   });
-  return c.json<SecretCreateResponse>({ id, url: `${c.get("config").origin}/secret/${token}`, label, expires_at: expiresAt }, 201);
+  return c.json<SecretCreateResponse>({ id, mode, url: `${c.get("config").origin}/secret/${token}`, label, expires_at: expiresAt }, 201);
 });
 
 signed.get("/secrets", async (c) => {
@@ -382,6 +387,9 @@ signed.get("/secrets/:id", async (c) => {
 signed.put("/secrets/:id/sealed", async (c) => {
   const row = await getSecret(c.env.DB, c.req.param("id"));
   if (!row) return apiError(c, 404, "not_found", SECRET_NOT_FOUND);
+  if (row.mode === "share") {
+    return apiError(c, 409, "share_mode", "This is a share link: its ciphertext was put when it was made, and the first browser that opens it reads it.");
+  }
   const status = secretStatus(row);
   if (status === "waiting") {
     return apiError(c, 409, "not_claimed", "Nobody has opened the link yet. Send it to the recipient, then wait until the status is claimed.");

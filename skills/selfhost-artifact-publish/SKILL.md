@@ -55,7 +55,15 @@ having external access. Prefer saving the data into a file published with the pa
 
 ## Handing over a secret
 
-Never put a password, key or token in a page. To give one to a person, use the secret tools:
+Never put a password, key or token in a page. To give one to a person, use the secret tools.
+
+Usually one step is enough: `secret_share({ label, file_path, keys? })` encrypts the values from
+a local file and returns a link with its key after `#`. Give the whole link to the user to pass
+on. The first browser that opens it and presses Show reads the values; afterwards
+`secret_status({ id })` shows when and from where it was opened. If that was not the recipient,
+tell the user, and make a new link once they ask you to delete the old one.
+
+When the user wants to confirm the recipient before anything is sent:
 
 1. `secret_request({ label })` returns a link; give it to the user to send to the recipient.
 2. When `secret_status({ id })` says `claimed`, check that the open (time, IP, browser) looks

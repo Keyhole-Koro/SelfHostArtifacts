@@ -3,8 +3,9 @@ import { Hono, type Context } from "hono";
 import { raw } from "hono/html";
 import type { AppEnv } from "../app-env.ts";
 import { recordAuditEvent } from "../db/audit.ts";
-import { claimSecret, finishSecret, markSecretOpened, secretByTokenHash, secretOpen, secretStatus, type SecretRow } from "../db/secrets.ts";
-import { fromBase64url, sha256Hex } from "../lib/encoding.ts";
+import { claimSecret, claimShare, finishSecret, markSecretOpened, secretByTokenHash, secretOpen, secretStatus, type SecretRow } from "../db/secrets.ts";
+import { fromBase64url, sha256Hex, utf8 } from "../lib/encoding.ts";
+import { sealForRecipient } from "../lib/secret-seal.ts";
 import { Page, formatTime } from "../ui/layout.tsx";
 import { pageSecurity } from "../ui/security.ts";
 
@@ -12,6 +13,10 @@ import { pageSecurity } from "../ui/security.ts";
  * The recipient's side of a secret handoff, at /secret/:token. No sign-in: whoever opens the link
  * first makes a key pair in their browser and registers the public key; only that browser can
  * decrypt what the sender puts. The page's script (/assets/secret.js) does all the cryptography.
+ *
+ * In share mode the ciphertext is already there, under a key from the part of the link after #.
+ * The browser registers its key only when the person presses the button (link previews and mail
+ * scanners open links too), and the claim wraps the ciphertext for that browser.
  */
 export const secretPages = new Hono<AppEnv>();
 secretPages.use(pageSecurity);
@@ -45,6 +50,9 @@ const STRINGS = {
     storage: "This browser cannot keep the key (private browsing, or site data is blocked). Open the link in a normal window.",
     decryptFailed: "This browser could not decrypt the secret. Ask the sender for a new link.",
     error: "Something went wrong. Reload the page.",
+    shareIntro: "Press Show to read it. From then on, only this browser can show it: the link does not work in any other browser.",
+    open: "Show",
+    linkBroken: "The link is incomplete. Open the whole link you received, including the part after #.",
   },
   ja: {
     title: "秘密の受け取り",
@@ -68,6 +76,9 @@ const STRINGS = {
     storage: "このブラウザでは鍵を保存できません（プライベートブラウズか、サイトのデータがブロックされています）。通常のウィンドウで開いてください。",
     decryptFailed: "このブラウザでは復号できませんでした。送った人に新しいリンクを頼んでください。",
     error: "うまくいきませんでした。ページを読み込み直してください。",
+    shareIntro: "「表示する」を押すと表示されます。そのあとは、このブラウザだけが表示できます。ほかのブラウザでこのリンクを開いても表示されません。",
+    open: "表示する",
+    linkBroken: "リンクが途中で切れています。届いたリンクを、# から後ろも含めてそのまま開いてください。",
   },
 } as const;
 
@@ -121,7 +132,7 @@ secretPages.get("/:token", async (c) => {
   return c.html(
     <Page title={t.title} narrow lang={lang}>
       <style>{raw(STYLES)}</style>
-      <div class="card stack" id="secret" data-id={row.id} data-strings={JSON.stringify(t)}>
+      <div class="card stack" id="secret" data-id={row.id} data-mode={row.mode} data-strings={JSON.stringify(t)}>
         <div>
           <h1>{row.label}</h1>
           <p class="muted small">
@@ -163,7 +174,18 @@ secretPages.post("/:token/claim", async (c) => {
   } catch {
     return c.json({ error: "public_key must be a P-256 public key." }, 400);
   }
-  const claimed = await claimSecret(c.env.DB, row.id, parsed.data.public_key, c.req.header("cf-connecting-ip") ?? null, c.req.header("user-agent") ?? null);
+  const ip = c.req.header("cf-connecting-ip") ?? null;
+  const userAgent = c.req.header("user-agent") ?? null;
+  if (row.mode === "share") {
+    if (row.claimed_at || !row.ciphertext) return c.json({ status: secretStatus(row) }, 409);
+    // The Worker cannot read the inner envelope (its key is after the #); it only wraps it for this browser.
+    const wrapped = await sealForRecipient(row.id, parsed.data.public_key, utf8(row.ciphertext));
+    const claimed = await claimShare(c.env.DB, { id: row.id, inner: row.ciphertext, wrapped: JSON.stringify(wrapped), publicKey: parsed.data.public_key, ip, userAgent });
+    if (!claimed) return c.json({ status: "sealed" }, 409);
+    await anonymousAudit(c, "secret.claim", row.id);
+    return c.json({ status: "sealed" });
+  }
+  const claimed = await claimSecret(c.env.DB, row.id, parsed.data.public_key, ip, userAgent);
   if (!claimed) return c.json({ status: secretStatus(row) }, 409);
   await anonymousAudit(c, "secret.claim", row.id);
   return c.json({ status: "claimed" });
@@ -172,7 +194,8 @@ secretPages.post("/:token/claim", async (c) => {
 secretPages.get("/:token/sealed", async (c) => {
   const row = await secretFor(c);
   if (!row || !secretOpen(row)) return c.json({ status: "gone" }, 404);
-  if (!row.ciphertext) return c.json({ status: secretStatus(row) }, 409);
+  // In share mode an unclaimed row holds the inner envelope: never hand that out.
+  if (!row.sealed_at || !row.ciphertext) return c.json({ status: secretStatus(row) }, 409);
   if (await markSecretOpened(c.env.DB, row.id)) await anonymousAudit(c, "secret.open", row.id);
   return c.json({ envelope: JSON.parse(row.ciphertext) as SecretEnvelope });
 });

@@ -368,14 +368,31 @@ create table audit_events (     -- セキュリティ操作の追記専用ログ
 - **守れないこと**: Worker を乗っ取られて偽の受け取り画面を配られる場合と、受け取る人の端末が乗っ取られている場合。Web で暗号化する仕組みに共通の限界
 - **画面の言葉**: 受け取る画面だけ、`Accept-Language` で日本語と英語を切り替える
 
+### 先に置くリンク（share）
+
+2026-11-19 に足した。上の流れは、相手が開くのを待ってから送るので、やり取りが 2 往復になる。share は、送る側が先に暗号文を置き、相手はリンクを開いて「表示する」を押すだけで読める。1Password の共有や Bitwarden Send と同じく、鍵はリンクの `#` の後ろに入れる（ブラウザは `#` の後ろをサーバーに送らない）。さらに、最初に開いたブラウザだけが読めるようにする。
+
+1. エージェントが `secret_share`（CLI は `artifact secret share`）を呼ぶ。CLI が 32 バイトのリンクの秘密を作り、HKDF-SHA256（salt なし、info `artifact-secret share v1`）で AES-256-GCM の鍵にして、値を暗号化する（内側の封筒）。Worker には内側の封筒だけを送り、リンク `/secret/<token>#<リンクの秘密>` を受け取る
+2. ユーザーがリンクを相手へ送る
+3. 相手がリンクを開くと、画面は「表示する」ボタンを出すだけで、何も登録しない。チャットやメールの下見（プレビュー、ウイルス検査）もリンクを開くため
+4. ボタンを押すと、ブラウザが `#` からリンクの鍵を作り、ECDH P-256 の鍵の組を作って、どちらも取り出せない形で IndexedDB に置く。公開鍵を送る
+5. Worker は、内側の封筒を、その公開鍵あての封筒 v1（上と同じ暗号）で包み、内側の封筒と置き換える。登録と置き換えは 1 つの更新で行い、行がまだ内側の封筒を持っているときだけ通るので、同時に押しても 1 台だけが勝つ
+6. ブラウザは包んだ封筒を取り、自分の秘密鍵で開き、リンクの鍵で内側を開いて表示する。`#` はアドレスバーから消す。同じブラウザなら、あとで `#` なしで開いても読める
+
+- **守れること**: 開かれる前は、サーバーにあるのはリンクの鍵がないと開けない暗号文だけ。開かれたあとは、リンクを手に入れても、そのブラウザの秘密鍵がないと開けない。ほかのブラウザは登録で断られる
+- **守れないこと**: 相手より先にリンクを開いた人は読める（1Password の共有と同じ）。`secret_status` と `/settings` に開いた時刻・IP・ブラウザが出るので、違えば消して作り直す。Worker を乗っ取られた場合は、上と同じく守れない
+- **D1 に残るもの**: 開かれる前の内側の封筒は D1 に入る。D1 の Time Travel で過去の状態に戻すと読めるが、それでもリンクの秘密がないと開けない
+- **指紋は使わない**: 送る前に相手を確かめる手順がないため。確かめたいときは `secret_request` を使う
+- **`PUT /api/v1/secrets/:id/sealed` は share には使えない**（409 `share_mode`）。`GET /secret/:token/sealed` は、開かれる前は 409 を返し、内側の封筒を渡さない
+
 | パス | 認証 | 内容 |
 |---|---|---|
 | `GET /secret/:token` | URL のトークン | 受け取る画面 |
 | `GET /secret/:token/state` | 同上 | 状態と、登録された公開鍵 |
-| `POST /secret/:token/claim` | 同上と Origin | 公開鍵を登録する（1 回だけ。P-256 の点か確かめる） |
+| `POST /secret/:token/claim` | 同上と Origin | 公開鍵を登録する（1 回だけ。P-256 の点か確かめる）。share はここで暗号文を包む |
 | `GET /secret/:token/sealed` | 同上 | 暗号文。最初に取られた時刻を記録する |
 | `POST /secret/:token/received` | 同上と Origin | 受け取った。暗号文を消す |
-| `POST /api/v1/secrets`、`GET /api/v1/secrets` | 端末の署名 | 作る、一覧 |
+| `POST /api/v1/secrets`、`GET /api/v1/secrets` | 端末の署名 | 作る（`share` を付けると先に置くリンク）、一覧 |
 | `GET /api/v1/secrets/:id`、`DELETE /api/v1/secrets/:id` | 端末の署名 | 状態、消す |
 | `PUT /api/v1/secrets/:id/sealed` | 端末の署名 | 暗号文を置く（開かれたあと 1 回だけ） |
 | `POST /settings/secrets/:id/delete` | root | 消す |
@@ -396,6 +413,8 @@ create table secrets (          -- 0005_secrets.sql
   finished_at text,
   finished_by text                  -- recipient | owner | device | expiry
 );
+-- 0006_secret_share.sql
+alter table secrets add column mode text not null default 'request';  -- request | share。share は開かれるまで ciphertext に内側の封筒
 ```
 
 ## 料金
@@ -505,7 +524,7 @@ args = ["mcp"]
 
 ## AI から見た使い方
 
-AI にとって `artifact` は、**ページの MCP ツール4つ**（と秘密の受け渡しの4つ。「秘密の受け渡し」の節）と **skill 2つ**（`selfhost-artifact-design`、`selfhost-artifact-publish`）。
+AI にとって `artifact` は、**ページの MCP ツール4つ**（と秘密の受け渡しの5つ。「秘密の受け渡し」の節）と **skill 2つ**（`selfhost-artifact-design`、`selfhost-artifact-publish`）。
 
 ### ツール
 
@@ -517,6 +536,7 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 | `read` | `url`, `path?` | 公開中の中身を読む |
 | `list` | `limit?` | 一覧 |
 | `delete` | `url` | ゴミ箱へ移す。ツール説明に「ユーザーが頼んだときだけ」と書く |
+| `secret_share` | `label`, `file_path`, `keys?`, `expires_in_hours?` | ファイルの値を手元で暗号化して置き、`#` の後ろに鍵の入ったリンクを返す。最初に開いたブラウザだけが読める |
 | `secret_request` | `label`, `expires_in_hours?` | 秘密の受け取り用の URL を作る |
 | `secret_status` | `id?` | 開かれたか（時刻・IP・ブラウザ）と鍵の指紋。`id` なしで一覧 |
 | `secret_send` | `id`, `file_path`, `keys?` | ファイルの値を手元で暗号化して置く。値は引数にも結果にも出さない |

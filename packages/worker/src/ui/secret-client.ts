@@ -7,6 +7,11 @@ import { SECRET_CRYPTO_JS } from "@artifact/shared";
  * IndexedDB under the request id, and sends the public key. Later visits in the same browser find
  * the key, wait for the sender, then decrypt and show the items. Another browser sees only that
  * the link is taken. Everything is built with textContent, never innerHTML.
+ *
+ * Share mode: the ciphertext is already there, and its key comes from the part of the link after
+ * #, which the browser never sends. Nothing is registered until the person presses Show (link
+ * previews open links too). Then the AES key from the # is kept in IndexedDB as a key that cannot
+ * be exported, next to the ECDH key, and the # is taken out of the address bar.
  */
 export const SECRET_CLIENT_JS = `${SECRET_CRYPTO_JS}
 (() => {
@@ -15,6 +20,11 @@ export const SECRET_CLIENT_JS = `${SECRET_CRYPTO_JS}
   if (!root || !view) return;
   const T = JSON.parse(root.dataset.strings);
   const id = root.dataset.id;
+  const mode = root.dataset.mode || "request";
+  const linkSecret = /^[A-Za-z0-9_-]{43}$/.test(location.hash.slice(1)) ? location.hash.slice(1) : null;
+  const forgetHash = () => {
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  };
   const base = location.pathname.replace(/\\/+$/, "");
   for (const t of root.querySelectorAll("time[datetime]")) {
     t.textContent = new Date(t.dateTime).toLocaleString(document.documentElement.lang, { dateStyle: "medium", timeStyle: "short" });
@@ -108,6 +118,63 @@ export const SECRET_CLIENT_JS = `${SECRET_CRYPTO_JS}
     show(el("p", {}, T.ready), el("ul", { class: "secret-items" }, ...rows), el("div", {}, done));
   }
 
+  async function showSealed(rec) {
+    const sealed = await call("/sealed");
+    if (!sealed.ok) return say(T.gone);
+    let plain;
+    try {
+      plain = await secretCrypto.decrypt(rec.privateKey, rec.publicKey, id, sealed.json.envelope);
+      if (mode === "share") plain = await secretCrypto.openShare(rec.shareKey, plain);
+    } catch {
+      return say(T.decryptFailed, true);
+    }
+    items(plain.items || []);
+  }
+
+  // ---- Share mode: the ciphertext is already there; the first browser to press Show reads it ----
+  async function runShare(state, rec) {
+    if (state.json.status === "waiting") {
+      if (!linkSecret) return say(T.linkBroken, true);
+      const open = el("button", { type: "button", class: "primary" }, T.open);
+      open.addEventListener("click", () => {
+        open.disabled = true;
+        claimShare(rec).catch(() => say(T.error, true));
+      });
+      return show(el("p", {}, T.shareIntro), el("div", {}, open));
+    }
+    forgetHash();
+    if (!rec || !rec.shareKey || rec.publicKey !== state.json.public_key) {
+      if (rec) await dropKey();
+      return say(T.otherBrowser, true);
+    }
+    return showSealed(rec);
+  }
+
+  async function claimShare(rec) {
+    say(T.preparing);
+    let shareKey;
+    try {
+      shareKey = await secretCrypto.shareKey(linkSecret);
+    } catch {
+      return say(T.linkBroken, true);
+    }
+    try {
+      if (!rec) {
+        const pair = await secretCrypto.generate();
+        rec = { id, privateKey: pair.privateKey, publicKey: pair.publicKey, created_at: new Date().toISOString() };
+      }
+      rec.shareKey = shareKey;
+      await saveKey(rec);
+    } catch {
+      return say(T.storage, true);
+    }
+    const claim = await call("/claim", { public_key: rec.publicKey });
+    if (!claim.ok && claim.status !== 409) return say(T.error, true);
+    const state = await call("/state");
+    if (!state.ok) return say(T.gone);
+    return runShare(state, rec);
+  }
+
   async function run() {
     let state = await call("/state");
     if (!state.ok) return say(T.gone);
@@ -117,6 +184,7 @@ export const SECRET_CLIENT_JS = `${SECRET_CRYPTO_JS}
     } catch {
       return say(T.storage, true);
     }
+    if (mode === "share") return runShare(state, rec);
     if (state.json.status === "waiting") {
       say(T.preparing);
       if (!rec) {
@@ -142,15 +210,7 @@ export const SECRET_CLIENT_JS = `${SECRET_CRYPTO_JS}
       setTimeout(() => run().catch(() => say(T.error, true)), 5000);
       return;
     }
-    const sealed = await call("/sealed");
-    if (!sealed.ok) return say(T.gone);
-    let plain;
-    try {
-      plain = await secretCrypto.decrypt(rec.privateKey, rec.publicKey, id, sealed.json.envelope);
-    } catch {
-      return say(T.decryptFailed, true);
-    }
-    items(plain.items || []);
+    return showSealed(rec);
   }
 
   run().catch(() => say(T.error, true));

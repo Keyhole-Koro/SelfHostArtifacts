@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactError, artifactIdFromUrl, expectOk, session, sha256Hex, signedFetch, signedJson, type Session } from "./client.ts";
 import { forgetArtifact, loadState, rememberPublish } from "./profile.ts";
-import { encryptForRecipient, fingerprint, readSecretItems, type KeySelection } from "./secret.ts";
+import { encryptForLink, encryptForRecipient, fingerprint, readSecretItems, type KeySelection } from "./secret.ts";
 
 export interface PublishInput {
   /** An .html file, or a directory with index.html (every publishable file in it is included). */
@@ -241,6 +241,31 @@ export async function secretRequest(label: string, hours?: number): Promise<Secr
   return signedJson<SecretCreateResponse>(session(), "POST", "/api/v1/secrets", body);
 }
 
+export interface SecretShareResult extends SecretCreateResponse {
+  /** Names only, never values. */
+  names: string[];
+}
+
+/**
+ * Share mode: encrypts the values here under a fresh link secret, stores only the ciphertext, and
+ * returns the recipient's link with the link secret after #. The first browser that opens the
+ * link and presses Show reads it; no further step is needed.
+ */
+export async function secretShare(label: string, filePath: string, keys?: KeySelection, hours?: number): Promise<SecretShareResult> {
+  const items = readSecretItems(filePath, keys);
+  const { linkSecret, envelope } = await encryptForLink({ items });
+  const body: Record<string, unknown> = { label, share: envelope };
+  if (hours !== undefined) body["expires_in_hours"] = hours;
+  const s = session();
+  const r = await signedJson<SecretCreateResponse>(s, "POST", "/api/v1/secrets", body);
+  if (r.mode !== "share") {
+    // A Worker from before share links ignores `share` and makes an ordinary request: undo it.
+    await signedJson(s, "DELETE", `/api/v1/secrets/${r.id}`).catch(() => undefined);
+    throw new ArtifactError("This deployment does not support share links yet. Update the Worker (pnpm run deploy), then try again.", "unsupported");
+  }
+  return { ...r, url: `${r.url}#${linkSecret}`, names: items.map((i) => i.name) };
+}
+
 export async function secretStatus(id: string): Promise<SecretState> {
   return withFingerprint(await signedJson<SecretSummary>(session(), "GET", `/api/v1/secrets/${secretId(id)}`));
 }
@@ -269,6 +294,9 @@ export async function secretSend(id: string, filePath: string, keys?: KeySelecti
   const sid = secretId(id);
   const items = readSecretItems(filePath, keys);
   const state = await signedJson<SecretSummary>(s, "GET", `/api/v1/secrets/${sid}`);
+  if (state.mode === "share") {
+    throw new ArtifactError("This is a share link: its values were put when it was made. Make a new one with secret_share to send something else.", "share_mode");
+  }
   if (state.status !== "claimed" || !state.public_key) {
     throw new ArtifactError(NOT_READY[state.status] ?? `The request is ${state.status}.`, `secret_${state.status}`);
   }

@@ -1,7 +1,8 @@
-import type { SecretStatus, SecretSummary } from "@artifact/shared";
+import type { SecretMode, SecretStatus, SecretSummary } from "@artifact/shared";
 
 export interface SecretRow {
   id: string;
+  mode: SecretMode;
   token_hash: string;
   label: string;
   created_by: string;
@@ -40,6 +41,7 @@ export function secretOpen(row: SecretRow, now = Date.now()): boolean {
 export function secretSummary(row: SecretRow, now = Date.now()): SecretSummary {
   return {
     id: row.id,
+    mode: row.mode,
     label: row.label,
     status: secretStatus(row, now),
     created_at: row.created_at,
@@ -54,13 +56,14 @@ export function secretSummary(row: SecretRow, now = Date.now()): SecretSummary {
   };
 }
 
+/** In share mode, `ciphertext` is the inner envelope that only the link's secret opens. */
 export async function createSecret(
   db: D1Database,
-  input: { id: string; tokenHash: string; label: string; deviceId: string; expiresAt: string },
+  input: { id: string; tokenHash: string; label: string; deviceId: string; expiresAt: string; mode?: SecretMode; ciphertext?: string },
 ): Promise<void> {
   await db
-    .prepare("insert into secrets (id, token_hash, label, created_by, created_at, expires_at) values (?, ?, ?, ?, ?, ?)")
-    .bind(input.id, input.tokenHash, input.label, input.deviceId, new Date().toISOString(), input.expiresAt)
+    .prepare("insert into secrets (id, mode, token_hash, label, created_by, created_at, expires_at, ciphertext) values (?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(input.id, input.mode ?? "request", input.tokenHash, input.label, input.deviceId, new Date().toISOString(), input.expiresAt, input.ciphertext ?? null)
     .run();
 }
 
@@ -78,15 +81,35 @@ export async function listSecrets(db: D1Database, limit = 50): Promise<SecretRow
   return results;
 }
 
-/** Records the recipient's public key. Only the first browser wins; false when it was too late. */
+/** Request mode: records the recipient's public key. Only the first browser wins; false when it was too late. */
 export async function claimSecret(db: D1Database, id: string, publicKey: string, ip: string | null, userAgent: string | null): Promise<boolean> {
   const now = new Date().toISOString();
   const r = await db
     .prepare(
       `update secrets set claimed_at = ?, public_key = ?, claim_ip = ?, claim_user_agent = ?
-       where id = ? and claimed_at is null and finished_at is null and expires_at > ?`,
+       where id = ? and mode = 'request' and claimed_at is null and finished_at is null and expires_at > ?`,
     )
     .bind(now, publicKey, ip, userAgent?.slice(0, 256) ?? null, id, now)
+    .run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
+/**
+ * Share mode: records the first browser and, in the same update, replaces the inner envelope with
+ * `wrapped` (the inner envelope encrypted for that browser). The update only applies while the row
+ * still holds exactly `inner`, so two browsers cannot both win. False when it was too late.
+ */
+export async function claimShare(
+  db: D1Database,
+  input: { id: string; inner: string; wrapped: string; publicKey: string; ip: string | null; userAgent: string | null },
+): Promise<boolean> {
+  const now = new Date().toISOString();
+  const r = await db
+    .prepare(
+      `update secrets set claimed_at = ?, sealed_at = ?, public_key = ?, claim_ip = ?, claim_user_agent = ?, ciphertext = ?
+       where id = ? and mode = 'share' and claimed_at is null and finished_at is null and expires_at > ? and ciphertext = ?`,
+    )
+    .bind(now, now, input.publicKey, input.ip, input.userAgent?.slice(0, 256) ?? null, input.wrapped, input.id, now, input.inner)
     .run();
   return (r.meta.changes ?? 0) > 0;
 }
@@ -97,7 +120,7 @@ export async function sealSecret(db: D1Database, id: string, ciphertext: string)
   const r = await db
     .prepare(
       `update secrets set sealed_at = ?, ciphertext = ?
-       where id = ? and claimed_at is not null and sealed_at is null and finished_at is null and expires_at > ?`,
+       where id = ? and mode = 'request' and claimed_at is not null and sealed_at is null and finished_at is null and expires_at > ?`,
     )
     .bind(now, ciphertext, id, now)
     .run();
