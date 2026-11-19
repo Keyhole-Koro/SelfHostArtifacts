@@ -552,7 +552,7 @@ alter table secrets add column mode text not null default 'request';  -- request
 | 種類 | 書き方 | 流し方 | 確かめ方・記録 |
 |---|---|---|---|
 | Secret Manager | `gcp://<project>/<secret id>` | `gcloud secrets versions add … --data-file=-`（`ARTIFACT_GCLOUD` で wrapper を指定できる） | 作られた版番号。`--no-verify` を付けなければ `versions access` で読み戻し、SHA-256 を比べて捨てる |
-| CircleCI の context | `circleci://<gh\|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>]` | v2 API の `PUT /context/{id}/environment-variable/{name}`。token は金庫の秘密から読む（無ければ `CIRCLECI_TOKEN`） | 読み戻せない。一覧の `updated_at` を記録 |
+| CircleCI の context | `circleci://<gh\|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>]`。GitHub App でつないだ組織は slug が無いので `circleci://<組織の id>/<context>/<VARIABLE>` | v2 API の `PUT /context/{id}/environment-variable/{name}`。token は金庫の秘密から読む（無ければ `CIRCLECI_TOKEN`） | 読み戻せない。一覧の `updated_at` を記録 |
 | GitHub Actions の secret | `github://<owner>/<repo>/<NAME>[?environment=…]` | `gh secret set NAME`（標準入力） | 読み戻せない。`gh secret list` の `updatedAt` を記録 |
 | Cloudflare Worker | `wrangler://<worker>/<NAME>[?config=…&cwd=…]` | `wrangler secret put NAME`（標準入力）。Worker の新しいバージョンが出る | `wrangler secret list` に名前があるか |
 | 手元のファイル | `envfile:///絶対パス#KEY` | 600 のファイルの `KEY=` の行を書き換える | 読み戻して比べる。平文が残る唯一の口なので、登録に `--plaintext-ok` が要り、一覧に印が付く |

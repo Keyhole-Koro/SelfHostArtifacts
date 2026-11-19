@@ -254,7 +254,7 @@ artifact vault grant medishare-prod my-laptop   # after comparing `artifact vaul
 artifact vault revoke medishare-prod old-laptop # take it away and replace the collection key
 artifact vault recover --recovery-key-file ./recovery.txt   # a new computer, with the recovery key
 artifact vault target add medishare-prod RESEND_API_KEY gcp://medishare-492402/medishare-resend-api-key
-artifact vault target add medishare-prod RESEND_API_KEY "circleci://gh/Keyhole-Koro/medishare-prod/RESEND_API_KEY_PROD?token=tools/CIRCLECI_API_TOKEN"
+artifact vault target add medishare-prod RESEND_API_KEY "circleci://<organization id>/medishare-prod/RESEND_API_KEY_PROD?token=tools/CIRCLECI_API_TOKEN"
 artifact vault status medishare-prod      # which targets have the current version, which are stale
 artifact vault push medishare-prod --dry-run && artifact vault push medishare-prod   # deliver what is stale
 artifact vault import medishare-prod PAYJP_SECRET_KEY gcp://medishare-492402/medishare-payjp-secret-key   # take an existing value in

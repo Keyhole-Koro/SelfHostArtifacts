@@ -118,7 +118,7 @@ owner's recovery key) can open them. Values never pass through you.
   run `artifact vault grant <collection> <this device>`, or they use `artifact vault recover`
   with the recovery key.
 - Delivery: `vault_target({ collection, name, add })` records where a value must go
-  (`gcp://<project>/<secret id>`, `circleci://gh/<org>/<context>/<VAR>?token=<collection>/<name>`,
+  (`gcp://<project>/<secret id>`, `circleci://<organization id>/<context>/<VAR>?token=<collection>/<name>`,
   `github://<owner>/<repo>/<NAME>`, `wrangler://<worker>/<NAME>`, `envfile:///path/.env#KEY`
   with `plaintext_ok`). `vault_status({ collection })` shows which targets are stale.
   `vault_push({ collection })` only shows the plan; call it with `apply: true` when the user asked

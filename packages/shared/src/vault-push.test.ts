@@ -5,7 +5,10 @@ describe("delivery target addresses", () => {
   it("parses each kind and prints it back in canonical form", () => {
     expect(parseVaultTarget("gcp://medishare-492402/medishare-resend-api-key")).toEqual({ kind: "gcp", project: "medishare-492402", secret: "medishare-resend-api-key" });
     expect(parseVaultTarget("circleci://gh/Keyhole-Koro/medishare-stg/STG_SITE_PASSWORD?token=tools/CIRCLECI_API_TOKEN")).toEqual({
-      kind: "circleci", vcs: "gh", org: "Keyhole-Koro", context: "medishare-stg", variable: "STG_SITE_PASSWORD", tokenFrom: { collection: "tools", name: "CIRCLECI_API_TOKEN" },
+      kind: "circleci", owner: { vcs: "gh", org: "Keyhole-Koro" }, context: "medishare-stg", variable: "STG_SITE_PASSWORD", tokenFrom: { collection: "tools", name: "CIRCLECI_API_TOKEN" },
+    });
+    expect(parseVaultTarget("circleci://6846e78b-2408-4dce-814f-04f444fde6ca/medishare-stg/STG_SITE_PASSWORD")).toEqual({
+      kind: "circleci", owner: { id: "6846e78b-2408-4dce-814f-04f444fde6ca" }, context: "medishare-stg", variable: "STG_SITE_PASSWORD",
     });
     expect(parseVaultTarget("github://Keyhole-Koro/MediShare/SYNTHETIC_BOT_PASSWORD_STG?environment=stg")).toEqual({ kind: "github", owner: "Keyhole-Koro", repo: "MediShare", name: "SYNTHETIC_BOT_PASSWORD_STG", environment: "stg" });
     expect(parseVaultTarget("wrangler://artifacts/SESSION_SECRET?config=wrangler.local.toml&cwd=packages%2Fworker")).toEqual({ kind: "wrangler", worker: "artifacts", name: "SESSION_SECRET", config: "wrangler.local.toml", cwd: "packages/worker" });
@@ -13,6 +16,7 @@ describe("delivery target addresses", () => {
     for (const address of [
       "gcp://medishare-492402/medishare-resend-api-key",
       "circleci://gh/Keyhole-Koro/medishare-stg/STG_SITE_PASSWORD?token=tools/CIRCLECI_API_TOKEN",
+      "circleci://6846e78b-2408-4dce-814f-04f444fde6ca/medishare-stg/STG_SITE_PASSWORD",
       "github://Keyhole-Koro/MediShare/SYNTHETIC_BOT_PASSWORD_STG?environment=stg",
       "wrangler://artifacts/SESSION_SECRET?config=wrangler.local.toml&cwd=packages%2Fworker",
       "envfile:///home/me/app/.env.local#PAYJP_SECRET_KEY",

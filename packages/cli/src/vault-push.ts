@@ -216,15 +216,16 @@ async function circleciToken(s: Session, spec: Extract<VaultTargetSpec, { kind: 
 
 export async function deliverCircleci(s: Session, spec: Extract<VaultTargetSpec, { kind: "circleci" }>, value: Uint8Array): Promise<Delivered> {
   const token = await circleciToken(s, spec);
-  const slug = `${spec.vcs}/${spec.org}`;
+  const owner = "id" in spec.owner ? `owner-id=${encodeURIComponent(spec.owner.id)}` : `owner-slug=${encodeURIComponent(`${spec.owner.vcs}/${spec.owner.org}`)}`;
+  const ownerName = "id" in spec.owner ? `organization ${spec.owner.id}` : `${spec.owner.vcs}/${spec.owner.org}`;
   let contextId: string | undefined;
   let page: string | undefined;
   do {
-    const list = await circleci<{ items: { id: string; name: string }[]; next_page_token: string | null }>(token, "GET", `/context?owner-slug=${encodeURIComponent(slug)}&owner-type=organization${page ? `&page-token=${encodeURIComponent(page)}` : ""}`);
+    const list = await circleci<{ items: { id: string; name: string }[]; next_page_token: string | null }>(token, "GET", `/context?${owner}&owner-type=organization${page ? `&page-token=${encodeURIComponent(page)}` : ""}`);
     contextId = list.items.find((c) => c.name === spec.context)?.id;
     page = list.next_page_token ?? undefined;
   } while (!contextId && page);
-  if (!contextId) throw new ArtifactError(`CircleCI has no context named "${spec.context}" in ${slug}.`, "not_found");
+  if (!contextId) throw new ArtifactError(`CircleCI has no context named "${spec.context}" in ${ownerName}. An organization connected through the GitHub App is named by its id: circleci://<organization id>/<context>/<VARIABLE>.`, "not_found");
   await circleci(token, "PUT", `/context/${contextId}/environment-variable/${encodeURIComponent(spec.variable)}`, { value: fromUtf8(value) });
   const vars = await circleci<{ items: { variable: string; updated_at: string }[] }>(token, "GET", `/context/${contextId}/environment-variable`);
   const updated = vars.items.find((v) => v.variable === spec.variable)?.updated_at;
