@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { browserGet, browserPost, createDevice, publish, sessionCookie, signedFetch, signedJson } from "./helpers.ts";
 
@@ -7,6 +8,18 @@ async function project(id: string): Promise<string | null> {
   const device = await createDevice();
   const res = await signedFetch(device, "GET", `/api/v1/artifacts/${id}`);
   return ((await res.json()) as { project: string | null }).project;
+}
+
+/** A project's settings page. */
+const settings = (name: string) => `/projects/${encodeURIComponent(name)}`;
+
+async function spaceAccess(name: string): Promise<string | undefined> {
+  return (await env.DB.prepare("select access from spaces where name = ?").bind(name).first<{ access: string }>())?.access;
+}
+
+async function spaceMembers(name: string): Promise<string[]> {
+  const { results } = await env.DB.prepare("select user_id from space_members where space = ?").bind(name).all<{ user_id: string }>();
+  return results.map((r) => r.user_id);
 }
 
 describe("projects", () => {
@@ -108,5 +121,44 @@ describe("projects", () => {
     const viewer = await sessionCookie("viewer");
     expect(await (await browserGet(`/a/${page.body.id}`, viewer.cookie)).text()).not.toContain("/project\"");
     expect((await browserPost(`/a/${page.body.id}/project`, viewer.cookie, { csrf: viewer.csrf, project: "Eta" })).status).toBe(403);
+  });
+
+  it("opens and changes the settings of a project with % in its name", async () => {
+    const device = await createDevice();
+    await publish(device, PAGE, { project: "50% off" });
+    const owner = await sessionCookie("root");
+    const viewer = await sessionCookie("viewer");
+
+    const sale = await browserGet(settings("50% off"), owner.cookie);
+    expect(sale.status).toBe(200);
+    expect(await sale.text()).toContain("<h1>50% off</h1>");
+    const saved = await browserPost(settings("50% off"), owner.cookie, { csrf: owner.csrf, access: "members" });
+    expect(saved.status).toBe(303);
+    expect(saved.headers.get("location")).toBe("/projects/50%25%20off");
+    expect(await spaceAccess("50% off")).toBe("members");
+    expect((await browserPost(`${settings("50% off")}/members`, owner.cookie, { csrf: owner.csrf, user: viewer.userId, role: "editor" })).status).toBe(303);
+    expect(await spaceMembers("50% off")).toEqual([viewer.userId]);
+    expect((await browserPost(`${settings("50% off")}/members/remove`, owner.cookie, { csrf: owner.csrf, user: viewer.userId })).status).toBe(303);
+    expect(await spaceMembers("50% off")).toEqual([]);
+  });
+
+  it("does not take a project named a%20b for the project a b", async () => {
+    const device = await createDevice();
+    for (const name of ["a b", "a%20b"]) await publish(device, PAGE, { project: name });
+    const owner = await sessionCookie("root");
+
+    expect(await (await browserGet(settings("a%20b"), owner.cookie)).text()).toContain("<h1>a%20b</h1>");
+    expect((await browserPost(settings("a%20b"), owner.cookie, { csrf: owner.csrf, access: "members" })).status).toBe(303);
+    expect(await spaceAccess("a%20b")).toBe("members");
+    expect(await spaceAccess("a b")).toBe("everyone");
+  });
+
+  it("opens the settings of a project with a Japanese name", async () => {
+    const device = await createDevice();
+    await publish(device, PAGE, { project: "社内の資料" });
+    const owner = await sessionCookie("root");
+    const res = await browserGet(settings("社内の資料"), owner.cookie);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("<h1>社内の資料</h1>");
   });
 });
