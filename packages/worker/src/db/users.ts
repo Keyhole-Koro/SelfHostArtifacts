@@ -69,6 +69,7 @@ export async function deleteUser(db: D1Database, id: string): Promise<void> {
     // A deleted user's device must not become an unowned bootstrap device. Keep the foreign-key
     // cleanup, but revoke the key before deleting the user.
     db.prepare("update devices set revoked_at = coalesce(revoked_at, ?) where user_id = ?").bind(now, id),
+    db.prepare("update vault_members set revoked_at = coalesce(revoked_at, ?) where device_id in (select id from devices where user_id = ?)").bind(now, id),
     db.prepare("delete from users where id = ?").bind(id),
   ]);
 }

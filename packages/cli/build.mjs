@@ -13,7 +13,7 @@ await build({
   format: "esm",
   target: "node20",
   // Runtime dependencies stay external; @artifact/shared (workspace-only) is bundled in.
-  external: ["@modelcontextprotocol/sdk", "@modelcontextprotocol/sdk/*", "zod"],
+  external: ["@modelcontextprotocol/sdk", "@modelcontextprotocol/sdk/*", "@napi-rs/keyring", "zod"],
   banner: { js: "#!/usr/bin/env node" },
   define: { __ARTIFACT_VERSION__: JSON.stringify(version) },
 });

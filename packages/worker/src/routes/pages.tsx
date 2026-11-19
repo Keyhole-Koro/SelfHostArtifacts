@@ -8,6 +8,7 @@ import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../
 import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
 import { EDITOR_PATH, frameSrc, markdownLinks } from "../doc.ts";
 import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComment, listComments, openThreadCounts, setResolved, threadsOf, type CommentRow, type Thread } from "../db/comments.ts";
+import { revokeMembersOfDevice } from "../db/vault.ts";
 import { MAX_TEXT_CHARS, type VersionFile } from "@artifact/shared";
 import { z } from "zod";
 import { blobKey } from "./api.ts";
@@ -1979,6 +1980,8 @@ root.post("/settings/devices/:id/revoke", requireSameOriginForm(), async (c) => 
   const id = c.req.param("id");
   const device = await c.env.DB.prepare("select name from devices where id = ?").bind(id).first<{ name: string }>();
   await c.env.DB.prepare("update devices set revoked_at = ? where id = ?").bind(new Date().toISOString(), id).run();
+  // Its vault key can no longer open anything new; collections it could read should be rotated (`artifact vault rotate`).
+  await revokeMembersOfDevice(c.env.DB, id);
   await recordViewerAction(c, "device.revoke", "device", id, { name: device?.name ?? "unknown" });
   return c.redirect("/settings#devices", 303);
 });

@@ -21,6 +21,9 @@ Agent ──stdio MCP──▶ artifact (CLI on your computer) ──signed HTTP
   browser (`artifact login`), and signs every request.
 - **Pages are isolated**: they run in a CSP sandbox with an opaque origin, so a page's scripts
   cannot read your session, call the API as you, or reach other hosts unless you allow it.
+- **A vault** for API keys and passwords: values are encrypted on your computers (device keys in the
+  OS keyring, plus a recovery key), opened only there, and piped straight into `gcloud`, `gh`,
+  `wrangler` or `circleci`, so they never enter an agent's conversation or the server in plain text.
 - **Costs**: within Cloudflare's free tiers for personal use (estimate in [docs/design.md](docs/design.md)).
 
 ## What it looks like
@@ -184,6 +187,11 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `secret_status` | Whether the link was opened (when, from where) and the recipient's key fingerprint |
 | `secret_send` | Encrypt values from a local `.env`, JSON or text file for the recipient's browser |
 | `secret_delete` | End a secret request and delete its ciphertext |
+| `vault_list` | The vault's collections, or the secrets of one (names and the ledger, never values) |
+| `vault_put` | Encrypt a value from a local file (or one generated on the spot) and store it as a new version |
+| `vault_use` | Open a value on this computer and write it to a 0600 file, or pipe it into `gcloud`, `gh`, `wrangler` or `circleci` |
+| `vault_create`, `vault_grant`, `vault_devices` | Make a collection; let another computer read it (after comparing key fingerprints); list computers with a vault key |
+| `vault_destroy` | Destroy one version's value, or delete a secret, when the user asks |
 
 ### CLI
 
@@ -208,6 +216,15 @@ artifact secret share ./mail.env --label "Mail passwords" --key SMTP_PASSWORD=no
 artifact secret request --label "Mail passwords"        # prints the recipient's link
 artifact secret status <id>                              # opened? key fingerprint
 artifact secret send <id> ./mail.env --key SMTP_PASSWORD=notify@example.com
+artifact vault init                       # this computer's key and the owner key; prints the recovery key once
+artifact vault create medishare-prod      # a collection: one per project and environment
+artifact vault put medishare-prod RESEND_API_KEY --from ./resend.key --used-by "Cloud Run medishare-web"
+artifact vault put medishare-prod SESSION_SECRET --generate   # a new random value, never shown
+artifact vault use medishare-prod RESEND_API_KEY --run -- gcloud secrets versions add resend-api-key --data-file=-
+artifact vault use medishare-prod RESEND_API_KEY --out /tmp/resend.key   # a 0600 file
+artifact vault grant medishare-prod my-laptop   # after comparing `artifact vault key` fingerprints
+artifact vault revoke medishare-prod old-laptop # take it away and replace the collection key
+artifact vault recover --recovery-key-file ./recovery.txt   # a new computer, with the recovery key
 artifact uninstall                        # remove the MCP registrations and skills
 ```
 
