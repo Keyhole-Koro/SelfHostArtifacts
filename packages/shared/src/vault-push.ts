@@ -9,7 +9,9 @@ import { VAULT_NAME } from "./vault.ts";
  *
  *   gcp://<project>/<secret id>                       Secret Manager, a new version via gcloud
  *   circleci://<vcs>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>]
- *                                                     a context variable via the v2 API
+ *   circleci://<organization id>/<context>/<VARIABLE>[?token=…]
+ *                                                     a context variable via the v2 API (an org connected through
+ *                                                     the GitHub App has no vcs/org slug, only an id)
  *   github://<owner>/<repo>/<NAME>[?environment=<env>] an Actions secret via gh
  *   wrangler://<worker>/<NAME>[?config=<path>&cwd=<dir>] a Worker secret via wrangler
  *   envfile://<absolute path>#<KEY>                   a KEY= line in a 0600 file on this computer
@@ -19,7 +21,7 @@ export type VaultTargetKind = (typeof VAULT_TARGET_KINDS)[number];
 
 export type VaultTargetSpec =
   | { kind: "gcp"; project: string; secret: string }
-  | { kind: "circleci"; vcs: "gh" | "bb"; org: string; context: string; variable: string; tokenFrom?: { collection: string; name: string } }
+  | { kind: "circleci"; owner: { vcs: "gh" | "bb"; org: string } | { id: string }; context: string; variable: string; tokenFrom?: { collection: string; name: string } }
   | { kind: "github"; owner: string; repo: string; name: string; environment?: string }
   | { kind: "wrangler"; worker: string; name: string; config?: string; cwd?: string }
   | { kind: "envfile"; path: string; key: string };
@@ -31,6 +33,7 @@ const SECRET_ID = /^[A-Za-z0-9_-]{1,255}$/;
 const SLUG = /^[A-Za-z0-9_.-]{1,100}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,199}$/;
 const WORKER = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function fail(address: string, why: string): never {
   throw new Error(`"${address}" is not a delivery target: ${why}`);
@@ -67,11 +70,24 @@ export function parseVaultTarget(address: string): VaultTargetSpec {
       return { kind, project, secret };
     }
     case "circleci": {
-      const [vcs, org, context, variable, ...rest] = parts;
-      if (!vcs || !org || !context || !variable || rest.length) fail(address, "write circleci://<gh|bb>/<org>/<context>/<VARIABLE>");
-      if (vcs !== "gh" && vcs !== "bb") fail(address, `the VCS is gh or bb, not "${vcs}"`);
-      if (!SLUG.test(org) || !SLUG.test(context)) fail(address, "org and context use letters, digits, - _ .");
-      if (!ENV_NAME.test(variable)) fail(address, `"${variable}" is not a variable name`);
+      // circleci://<gh|bb>/<org>/<context>/<VARIABLE>, or circleci://<organization id>/<context>/<VARIABLE>
+      let owner: { vcs: "gh" | "bb"; org: string } | { id: string };
+      let context: string | undefined;
+      let variable: string | undefined;
+      if (parts.length === 3 && UUID.test(parts[0]!)) {
+        owner = { id: parts[0]! };
+        [, context, variable] = parts;
+      } else {
+        const [vcs, org, ctx, name, ...rest] = parts;
+        if (!vcs || !org || !ctx || !name || rest.length) fail(address, "write circleci://<gh|bb>/<org>/<context>/<VARIABLE>, or circleci://<organization id>/<context>/<VARIABLE>");
+        if (vcs !== "gh" && vcs !== "bb") fail(address, `the VCS is gh or bb, not "${vcs}" (an organization connected through the GitHub App is named by its id instead)`);
+        if (!SLUG.test(org)) fail(address, "the org uses letters, digits, - _ .");
+        owner = { vcs, org };
+        context = ctx;
+        variable = name;
+      }
+      if (!context || !SLUG.test(context)) fail(address, "the context name uses letters, digits, - _ .");
+      if (!variable || !ENV_NAME.test(variable)) fail(address, `"${variable ?? ""}" is not a variable name`);
       const options = params(query, address, ["token"]);
       let tokenFrom: { collection: string; name: string } | undefined;
       if (options["token"] !== undefined) {
@@ -79,7 +95,7 @@ export function parseVaultTarget(address: string): VaultTargetSpec {
         if (!collection || !name || more.length || !VAULT_NAME.test(collection) || !VAULT_NAME.test(name)) fail(address, "token=<collection>/<name> names a vault secret that holds the CircleCI API token");
         tokenFrom = { collection, name };
       }
-      return { kind, vcs, org, context, variable, ...(tokenFrom ? { tokenFrom } : {}) };
+      return { kind, owner, context, variable, ...(tokenFrom ? { tokenFrom } : {}) };
     }
     case "github": {
       const [owner, repo, name, ...rest] = parts;
@@ -116,7 +132,7 @@ export function formatVaultTarget(spec: VaultTargetSpec): string {
     case "gcp":
       return `gcp://${spec.project}/${spec.secret}`;
     case "circleci":
-      return `circleci://${spec.vcs}/${spec.org}/${spec.context}/${spec.variable}${spec.tokenFrom ? `?token=${spec.tokenFrom.collection}/${spec.tokenFrom.name}` : ""}`;
+      return `circleci://${"id" in spec.owner ? spec.owner.id : `${spec.owner.vcs}/${spec.owner.org}`}/${spec.context}/${spec.variable}${spec.tokenFrom ? `?token=${spec.tokenFrom.collection}/${spec.tokenFrom.name}` : ""}`;
     case "github":
       return `github://${spec.owner}/${spec.repo}/${spec.name}${spec.environment ? `?environment=${encodeURIComponent(spec.environment)}` : ""}`;
     case "wrangler": {
