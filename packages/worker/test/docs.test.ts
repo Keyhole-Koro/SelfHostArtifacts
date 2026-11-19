@@ -34,7 +34,7 @@ describe("pages written in the browser", () => {
     const md = `# Meeting notes\n\nWe agreed on the 枠 count. See [Other](/a/${other.body.id}).`;
     const saved = await save(created.id!, owner, { base_version: 1, title: "Meeting notes", markdown: md });
     expect(saved.status).toBe(200);
-    expect(await saved.json()).toEqual({ version: 2 });
+    expect(await saved.json()).toEqual({ version: 2, merged: false });
     expect(await file(created.id!, "index.md")).toBe(md);
     const detail = (await (await signedFetch(device, "GET", `/api/v1/artifacts/${other.body.id}`)).json()) as { linked_from: { id: string }[] };
     expect(detail.linked_from.map((l) => l.id)).toContain(created.id);
@@ -55,7 +55,7 @@ describe("pages written in the browser", () => {
     expect(detail).toMatchObject({ project: "WrittenTree", parent: top.body.id });
   });
 
-  it("lets the owner and the project's editors write, and nobody edit an agent's HTML page or save without the CSRF token", async () => {
+  it("lets the owner and the project's editors write, the source of an agent's HTML page too, and nobody save without the CSRF token", async () => {
     const device = await createDevice();
     const html = await publish(device, { "index.html": "<p>x</p>" }, { project: "WrittenAccess" });
     const owner = await sessionCookie("root");
@@ -70,7 +70,10 @@ describe("pages written in the browser", () => {
     expect((await save(mine.id!, editor, { base_version: 1, title: "x", markdown: "x" }, "https://evil.example")).status).toBe(403);
     expect((await save(mine.id!, { cookie: editor.cookie, csrf: "wrong" }, { base_version: 1, title: "x", markdown: "x" })).status).toBe(403);
     expect((await save(mine.id!, editor, { base_version: 1, title: "Yes", markdown: "# Yes\n\nok" })).status).toBe(200);
-    expect((await browserGet(`/a/${html.body.id}/edit`, owner.cookie)).status).toBe(400);
+    // An agent's HTML page opens in the source editor, for those who may change it.
+    expect((await browserGet(`/a/${html.body.id}/edit`, editor.cookie)).status).toBe(200);
+    expect((await browserGet(`/a/${html.body.id}/edit`, reader.cookie)).status).toBe(403);
+    expect((await save(html.body.id, editor, { base_version: 1, title: "x", files: { "index.html": "<p>y</p>" } }, "https://evil.example")).status).toBe(403);
   });
 
   it("shows a Markdown page through the renderer in the sandbox, and offers the editor only in the viewer", async () => {

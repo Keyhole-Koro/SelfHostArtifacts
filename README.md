@@ -122,6 +122,17 @@ a how-to, or any page of the project labeled `template`), and Markdown pages can
 **macros**, each on a line of its own: `{{toc}}`, `{{children}}`, `{{recent}}`,
 `{{label decision}}` and `{{include <page url>}}`. The editor's Insert menu adds them.
 
+A page can be **restricted**: only some people edit it, or only some people see it. The
+restriction holds for the pages under it too, and every list, search, feed and notification
+leaves out what a person may not see. The owner (and so every agent) sees everything.
+
+When two people edit the same page, each sees that the other is editing, and a page open in
+the browser says when a newer version is saved. Saving after someone else merges the two:
+changes to different lines are kept together, and lines both changed are marked to settle.
+
+Pages an agent wrote in HTML can be changed in the browser too: **Edit source** opens their
+text files in a code editor with a live preview, and saving makes a new version.
+
 To show a page to someone without an account, open it and choose **Share → Create public link**:
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
 it, replace it with a new link or turn it off; agents cannot make pages public.

@@ -22,6 +22,7 @@ export const TREE_STYLES = `
 a.chip:hover { color: var(--accent); background: var(--accent-soft); text-decoration: none; }
 .chip.current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .tree .node .chip { flex: none; }
+.tree .lock { color: var(--text-2); flex: none; display: inline-flex; }
 `;
 
 /** A page's labels, each leading to the pages with that label. */
@@ -54,6 +55,11 @@ export function PageTree(props: { rows: TreeRow[]; current?: string; open?: Set<
         <a href={`/a/${r.id}`} aria-current={r.id === props.current ? "page" : undefined}>
           {r.title}
         </a>
+        {r.restriction && (
+          <span class="lock" title={r.restriction === "view" ? "Only some people can view this page" : "Only some people can edit this page"}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+          </span>
+        )}
         <LabelChips labels={props.labels?.get(r.id)} />
         {props.meta && (
           <span class="meta">

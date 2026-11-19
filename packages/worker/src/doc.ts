@@ -159,7 +159,7 @@ export function editorHtml(entry: string): string {
 
 export const EDITOR_JS = `const host = document.getElementById("ed");
 const initial = await (await fetch(host.dataset.src)).text();
-let get, insert;
+let get, insert, set;
 try {
   const load = import(${JSON.stringify(EDITOR_MODULE)});
   const { default: Editor } = await Promise.race([load, new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 15000))]);
@@ -169,6 +169,8 @@ try {
   });
   get = () => ed.getMarkdown();
   insert = (text) => ed.insertText(text);
+  // A merge with conflict marks is shown as Markdown, where the marks are plain lines.
+  set = (md, mode) => { if (mode === "markdown" && ed.isWysiwygMode()) ed.changeMode("markdown", true); ed.setMarkdown(md, false); };
 } catch {
   // Without the editor's library, the Markdown is edited as text.
   const area = document.createElement("textarea");
@@ -176,12 +178,14 @@ try {
   host.replaceWith(area);
   get = () => area.value;
   insert = (text) => { area.setRangeText(text, area.selectionStart, area.selectionEnd, "end"); area.focus(); };
+  set = (md) => { area.value = md; };
 }
 window.addEventListener("message", (e) => {
   if (e.source !== window.parent) return;
   const d = e.data || {};
   if (d.type === "artifact:get") window.parent.postMessage({ type: "artifact:markdown", markdown: get() }, "*");
   if (d.type === "artifact:insert" && typeof d.text === "string") insert(d.text);
+  if (d.type === "artifact:set" && typeof d.markdown === "string") set(d.markdown, d.mode);
 });
 window.parent.postMessage({ type: "artifact:editor-ready" }, "*");
 `;

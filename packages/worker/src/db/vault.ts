@@ -2,7 +2,7 @@ import type { VaultDelivery, VaultEnvelope, VaultMember, VaultMemberKind, VaultO
 import { randomId } from "../lib/encoding.ts";
 
 /**
- * The vault's tables (migration 0014). Everything stored here is a public key, a wrapped key or a
+ * The vault's tables (migration 0016). Everything stored here is a public key, a wrapped key or a
  * ciphertext; see @artifact/shared vault.ts for the layers. Writes that must hold together (a
  * collection with its first grants, a key rotation) go through `db.batch`, which D1 runs as one
  * transaction.
@@ -403,7 +403,7 @@ export async function deleteSecret(db: D1Database, secretId: string): Promise<vo
   ]);
 }
 
-// ---- delivery targets and records (migration 0015) ----
+// ---- delivery targets and records (migration 0017) ----
 
 export interface TargetRow {
   id: string;
