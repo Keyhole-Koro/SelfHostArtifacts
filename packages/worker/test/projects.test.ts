@@ -84,7 +84,9 @@ describe("projects", () => {
     const gamma = await (await browserGet("/?project=Gamma", owner.cookie)).text();
     expect(gamma).toContain("Gamma page");
     expect(gamma).not.toContain("Delta page");
-    expect(gamma).toContain(" in Gamma, newest first");
+    // One project shows as the tree of its pages.
+    expect(gamma).toContain('class="tree"');
+    expect(gamma).toContain("1 page");
     expect(await (await browserGet("/?project=Nothing", owner.cookie)).text()).toContain("No page here.");
   });
 

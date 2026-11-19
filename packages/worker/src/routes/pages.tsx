@@ -8,9 +8,15 @@ import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../
 import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
 import { listRecentAuditEvents, recordAuditEvent } from "../db/audit.ts";
 import {
+  ancestorsOf,
   getArtifact,
   getVersion,
   listArtifacts,
+  listProjectPages,
+  placeAmongSiblings,
+  setParent,
+  siblingsOf,
+  subtreeOf,
   listConnecting,
   listProjects,
   listTrash,
@@ -21,6 +27,7 @@ import {
   setProject,
   setShare,
   type ArtifactRow,
+  type TreeRow,
 } from "../db/artifacts.ts";
 import { projectSchema } from "@artifact/shared";
 import { SHARE_DAYS, newShareNonce, shareActive, shareExpiry, shareKey, shareKeyValid, sharePath } from "../share.ts";
@@ -40,6 +47,8 @@ import { finishSecret, listSecrets, secretOpen, secretStatus } from "../db/secre
 import { renderSVG } from "uqr";
 import { pageSecurity } from "../ui/security.ts";
 import { CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
+import { PageTree, TREE_STYLES } from "../ui/tree.tsx";
+import { canEditProject, canSeeProject, getSpace, hiddenProjects } from "../db/spaces.ts";
 
 export const pages = new Hono<AppEnv>();
 
@@ -93,19 +102,38 @@ pages.get("/", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
   const query = c.req.query("project");
   const selected = query === undefined ? undefined : query.trim() || null;
-  const [artifacts, projects] = await Promise.all([listArtifacts(c.env.DB, 200, selected), listProjects(c.env.DB)]);
+  const hidden = await hiddenProjects(c.env.DB, viewer);
+  const blocked = typeof selected === "string" && hidden.has(selected);
+  const [all, allProjects] = await Promise.all([blocked ? [] : listArtifacts(c.env.DB, 200, selected), listProjects(c.env.DB)]);
+  const artifacts = all.filter((a) => !a.project || !hidden.has(a.project));
+  const projects = allProjects.filter((p) => !p.project || !hidden.has(p.project));
+  // One project is shown as the tree of its pages, with what the space says about itself.
+  const [tree, space] =
+    typeof selected === "string" && !blocked ? await Promise.all([listProjectPages(c.env.DB, selected), getSpace(c.env.DB, selected)]) : [undefined, null];
   const total = projects.reduce((n, p) => n + p.count, 0);
   const showProjects = projects.some((p) => p.project !== null);
   const scope = selected === undefined ? "" : selected === null ? " without a project" : ` in ${selected}`;
   return c.html(
     <Page title={typeof selected === "string" ? `${selected} · Artifacts` : "Artifacts"} viewer={viewer}>
-      <style>{raw(PROJECT_STYLES)}</style>
+      <style>{raw(PROJECT_STYLES + TREE_STYLES)}</style>
       <div class="page-head">
         <div>
-          <h1>Artifacts</h1>
+          <h1>{typeof selected === "string" ? selected : "Artifacts"}</h1>
           <p class="lead">
-            {artifacts.length} {artifacts.length === 1 ? "page" : "pages"}
-            {scope}, newest first
+            {tree ? (space?.description ?? `${tree.length} ${tree.length === 1 ? "page" : "pages"}`) : (
+              <>
+                {artifacts.length} {artifacts.length === 1 ? "page" : "pages"}
+                {scope}, newest first
+              </>
+            )}
+            {tree && viewer.role === "root" && (
+              <>
+                {" · "}
+                <a href={`/projects/${encodeURIComponent(selected as string)}`}>
+                  {space?.access === "members" ? "Members only" : "Everyone"} · Settings
+                </a>
+              </>
+            )}
           </p>
         </div>
         {artifacts.length > 0 && <input id="filter" class="search" type="search" placeholder="Search" aria-label="Search titles and descriptions" />}
@@ -136,6 +164,34 @@ pages.get("/", requireViewer(), async (c) => {
             the page appears here.
           </p>
         </div>
+      ) : tree ? (
+        <>
+          <div class="card">
+            <PageTree rows={tree} meta id="artifacts" />
+            <p class="empty muted small" id="no-match" hidden>
+              No page matches your search.
+            </p>
+          </div>
+          <script nonce={c.get("nonce")}>
+            {raw(`
+const input = document.getElementById("filter");
+const items = [...document.querySelectorAll("#artifacts li")].reverse();
+const none = document.getElementById("no-match");
+input.addEventListener("input", () => {
+  const q = input.value.trim().toLowerCase();
+  let shown = 0;
+  // A page stays when it or a page under it matches; the children come first in this order.
+  for (const li of items) {
+    const own = li.querySelector(":scope > .node, :scope > details > summary > .node").dataset.text.includes(q);
+    const below = [...li.querySelectorAll(":scope > details > ul > li")].some((x) => !x.hidden);
+    li.hidden = q !== "" && !own && !below;
+    if (q !== "" && !li.hidden) { const d = li.querySelector(":scope > details"); if (d) d.open = true; }
+    if (!li.hidden) shown++;
+  }
+  none.hidden = shown > 0;
+});`)}
+          </script>
+        </>
       ) : (
         <>
           <ul class="rows links" id="artifacts">
@@ -211,7 +267,19 @@ summary::-webkit-details-marker { display: none; }
 .panel a:hover { background: var(--surface-2); }
 .panel a.current { font-weight: 600; background: var(--accent-soft); color: var(--accent); }
 .panel span { color: var(--text-2); }
-iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+iframe { flex: 1; width: 100%; min-width: 0; border: 0; background: #fff; }
+.main { flex: 1; display: flex; min-height: 0; }
+.side { display: none; width: 268px; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--border); background: var(--surface); padding: var(--space-2); }
+body.with-side .side { display: block; }
+.side h2 { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-2); margin: var(--space-2) var(--space-2) var(--space-2); }
+.side h2 a:hover { color: var(--text); text-decoration: underline; }
+.crumbs { display: flex; align-items: baseline; gap: var(--space-1); min-width: 0; overflow: hidden; }
+.crumbs a { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.crumbs a:hover { color: var(--text); text-decoration: underline; }
+.crumbs .sep { color: var(--text-2); }
+.move { width: min(380px, calc(100vw - 24px)); }
+.move select { flex: 1; min-width: 0; font: inherit; padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.move h3 { margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
 .short { display: none; }
 .share { width: min(360px, calc(100vw - 24px)); padding: var(--space-3); display: grid; gap: var(--space-2); }
 .share p { margin: 0; color: var(--text-2); }
@@ -224,7 +292,8 @@ iframe { flex: 1; width: 100%; border: 0; background: #fff; }
 .share button.danger { color: var(--negative, #c0362c); }
 .badge.public { background: var(--accent-soft); color: var(--accent); }
 @media (max-width: 640px) {
-  .meta, .label, .divider { display: none; }
+  .meta, .label, .divider, .crumbs a, .crumbs .sep { display: none; }
+  body.with-side .side { position: fixed; top: 44px; bottom: 0; left: 0; z-index: 3; width: min(300px, 85vw); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); }
   .panel.share { position: fixed; top: 50px; left: 12px; right: 12px; width: auto; }
   .short { display: inline; }
 }
@@ -232,12 +301,16 @@ iframe { flex: 1; width: 100%; border: 0; background: #fff; }
 
 async function viewerPage(c: Context<AppEnv>, id: string, requested: number | undefined) {
   const artifact = await getArtifact(c.env.DB, id);
-  if (!artifact) return c.notFound();
+  const viewer = c.get("viewer");
+  // A page in a space the viewer is not let into is answered like a page that does not exist.
+  if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
   const versionNumber = requested ?? artifact.current_version;
   const version = await getVersion(c.env.DB, id, versionNumber);
   if (!version) return c.notFound();
   const versions = await listVersions(c.env.DB, id);
-  const viewer = c.get("viewer");
+  const tree = artifact.project ? await listProjectPages(c.env.DB, artifact.project) : undefined;
+  const trail = tree ? ancestorsOf(tree, id) : [];
+  const editor = viewer.role !== "root" && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, artifact.project));
   const projects = viewer.role === "root" ? await listProjects(c.env.DB) : [];
   const shareUrl = shareActive(artifact)
     ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
@@ -252,15 +325,36 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{artifact.title}</title>
-        <style>{raw(TOKENS + VIEWER_STYLES)}</style>
+        <style>{raw(TOKENS + VIEWER_STYLES + TREE_STYLES)}</style>
       </head>
       <body>
+        {tree && (
+          <script nonce={nonce}>
+            {raw(`(() => { let on = null; try { on = localStorage.getItem("artifact.side"); } catch {}
+  if (on === null ? window.innerWidth >= 900 : on === "1") document.body.classList.add("with-side"); })();`)}
+          </script>
+        )}
         <div class="bar">
+          {tree && (
+            <button type="button" id="side-toggle" class="tool" aria-controls="side" title="Pages in this project" style="border:0;background:none;font:inherit">
+              ☰
+            </button>
+          )}
           <a href={artifact.project ? projectHref(artifact.project) : "/"} class="back" aria-label={artifact.project ? `Pages in ${artifact.project}` : "All artifacts"}>
             ← <span class="label">{artifact.project ?? "Artifacts"}</span>
           </a>
           <span class="divider" aria-hidden="true" />
-          <span class="title">{artifact.title}</span>
+          <nav class="crumbs" aria-label="Where this page is">
+            {trail.map((t) => (
+              <>
+                <a href={`/a/${t.id}`}>{t.title}</a>
+                <span class="sep" aria-hidden="true">
+                  ›
+                </span>
+              </>
+            ))}
+            <span class="title">{artifact.title}</span>
+          </nav>
           <span class="meta">
             {isLatest ? `v${versionNumber}` : <span class="old">v{versionNumber} (latest is v{artifact.current_version})</span>} ·{" "}
             <Time iso={version.created_at} />
@@ -272,8 +366,15 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
           )}
           {shareUrl && <span class="badge public">public</span>}
           <span class="spacer" />
-          {viewer.role === "root" && (
-            <ProjectPanel id={id} project={artifact.project} projects={projects.flatMap((p) => (p.project ? [p.project] : []))} csrf={viewer.csrf} />
+          {(viewer.role === "root" || editor) && (
+            <MovePanel
+              id={id}
+              project={artifact.project}
+              projects={viewer.role === "root" ? projects.flatMap((p) => (p.project ? [p.project] : [])) : undefined}
+              csrf={viewer.csrf}
+              tree={tree}
+              parent={artifact.parent}
+            />
           )}
           {viewer.role === "root" && (
             <SharePanel id={id} artifact={artifact} shareUrl={shareUrl} csrf={viewer.csrf} open={c.req.query("share") === "1"} />
@@ -299,9 +400,29 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
             ↗ <span class="label">Open</span>
           </a>
         </div>
-        <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
+        <div class="main">
+          {tree && (
+            <nav id="side" class="side" aria-label={`Pages in ${artifact.project}`}>
+              <h2>
+                <a href={projectHref(artifact.project)}>{artifact.project}</a>
+              </h2>
+              <PageTree rows={tree} current={id} open={new Set([...trail.map((t) => t.id), id])} />
+            </nav>
+          )}
+          <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
+        </div>
         <script nonce={nonce}>
           {raw(`
+const toggle = document.getElementById("side-toggle");
+if (toggle) {
+  const sync = () => toggle.setAttribute("aria-expanded", String(document.body.classList.contains("with-side")));
+  sync();
+  toggle.addEventListener("click", () => {
+    const on = document.body.classList.toggle("with-side");
+    try { localStorage.setItem("artifact.side", on ? "1" : "0"); } catch {}
+    sync();
+  });
+}
 let exp = ${exp};
 const tokenUrl = ${JSON.stringify(`/a/${id}/token?v=${versionNumber}`)};
 async function refresh() {
@@ -384,16 +505,79 @@ function SharePanel(props: { id: string; artifact: ArtifactRow; shareUrl: string
 }
 
 /** Moves the page to another project. Shares the share panel's look. */
-function ProjectPanel(props: { id: string; project: string | null; projects: string[]; csrf: string }) {
-  const { id, project, projects, csrf } = props;
+/** The pages a page can go under: everything in its project but itself and the pages below it, indented by depth. */
+function parentChoices(tree: TreeRow[], id: string): { id: string; label: string }[] {
+  const below = subtreeOf(tree, id), out: { id: string; label: string }[] = [];
+  const walk = (rows: TreeRow[], depth: number) => {
+    for (const r of rows) {
+      if (below.has(r.id)) continue;
+      out.push({ id: r.id, label: `${"\u00a0\u00a0\u00a0".repeat(depth)}${r.title}` });
+      walk(tree.filter((x) => x.parent === r.id), depth + 1);
+    }
+  };
+  const ids = new Set(tree.map((r) => r.id));
+  walk(tree.filter((r) => !r.parent || !ids.has(r.parent)), 0);
+  return out;
+}
+
+/** `projects`: the owner's choice of projects; an editor (without it) only moves pages within the project. */
+function MovePanel(props: { id: string; project: string | null; projects?: string[]; csrf: string; tree?: TreeRow[]; parent: string | null }) {
+  const { id, project, projects, csrf, tree } = props;
+  const siblings = tree ? siblingsOf(tree, id) : [];
+  const place = siblings.findIndex((r) => r.id === id);
   return (
     <details>
       <summary class="tool">
-        <span class="label">Project</span>
+        <span class="label">Move</span>
         <span class="short">▤</span> ▾
       </summary>
-      <div class="panel share">
-        <p>{project ? `In ${project}. Move it to another project:` : "Not in a project. Put it in one:"}</p>
+      <div class="panel share move">
+        {tree && (
+          <>
+            <h3>Place in {project}</h3>
+            <form method="post" action={`/a/${id}/parent`} class="link">
+              <CsrfField token={csrf} />
+              <select name="parent" aria-label="Put this page under">
+                <option value="" selected={!props.parent}>
+                  At the top
+                </option>
+                {parentChoices(tree, id).map((o) => (
+                  <option value={o.id} selected={o.id === props.parent}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              <button type="submit" class="primary">
+                Put under
+              </button>
+            </form>
+            {siblings.length > 1 && (
+              <div class="actions">
+                {(["up", "down"] as const).map((dir) => (
+                  <form method="post" action={`/a/${id}/order`}>
+                    <CsrfField token={csrf} />
+                    <input type="hidden" name="dir" value={dir} />
+                    <button type="submit" disabled={dir === "up" ? place <= 0 : place >= siblings.length - 1}>
+                      {dir === "up" ? "↑ Earlier" : "↓ Later"}
+                    </button>
+                  </form>
+                ))}
+              </div>
+            )}
+            {projects && <h3>Project</h3>}
+          </>
+        )}
+        {projects && <ProjectMove id={id} project={project} projects={projects} csrf={csrf} />}
+      </div>
+    </details>
+  );
+}
+
+function ProjectMove(props: { id: string; project: string | null; projects: string[]; csrf: string }) {
+  const { id, project, projects, csrf } = props;
+  return (
+    <>
+        <p>{project ? `In ${project}, with the pages under it. Move them to another project:` : "Not in a project. Put it in one:"}</p>
         <form method="post" action={`/a/${id}/project`} class="link">
           <CsrfField token={csrf} />
           <input name="project" type="text" list="project-names" required maxlength={60} value={project ?? ""} aria-label="Project" />
@@ -415,8 +599,7 @@ function ProjectPanel(props: { id: string; project: string | null; projects: str
             </form>
           </div>
         )}
-      </div>
-    </details>
+    </>
   );
 }
 
@@ -428,7 +611,7 @@ pages.get("/a/:id/v/:version{[0-9]+}", requireViewer(), (c) => viewerPage(c, c.r
 pages.get("/a/:id/token", requireViewer(), async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
-  if (!artifact) return c.json({ error: "not found" }, 404);
+  if (!artifact || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.json({ error: "not found" }, 404);
   const version = await getVersion(c.env.DB, id, Number(c.req.query("v") ?? artifact.current_version));
   if (!version) return c.json({ error: "not found" }, 404);
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version);
@@ -467,6 +650,45 @@ pages.post("/a/:id/project", ...ownerForm, async (c) => {
   await recordViewerAction(c, "artifact.move", "artifact", id, { project: parsed.data });
   return c.redirect(`/a/${id}`, 303);
 });
+// The owner, and the editors of the page's project, rearrange its pages.
+const editorForm = [requireViewer("viewer", true), requireSameOriginForm()] as const;
+
+async function editable(c: Context<AppEnv>, id: string): Promise<ArtifactRow | Response> {
+  const artifact = await getArtifact(c.env.DB, id);
+  const viewer = c.get("viewer");
+  if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
+  if (!(await canEditProject(c.env.DB, viewer, artifact.project))) return c.text("Only the owner and this project's editors can move its pages.", 403);
+  return artifact;
+}
+
+/** Puts a page under another page of its project (empty: at the top). */
+pages.post("/a/:id/parent", ...editorForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await editable(c, id);
+  if (artifact instanceof Response) return artifact;
+  const form = await c.req.parseBody();
+  const parent = typeof form["parent"] === "string" && form["parent"] !== "" ? form["parent"] : null;
+  const tree = await listProjectPages(c.env.DB, artifact.project);
+  if (parent && (!tree.some((r) => r.id === parent) || subtreeOf(tree, id).has(parent))) {
+    return c.text("That page cannot hold this one: it is not in the same project, or it is this page or below it.", 400);
+  }
+  if (parent !== artifact.parent) await setParent(c.env.DB, id, parent);
+  await recordViewerAction(c, "artifact.move", "artifact", id, { parent });
+  return c.redirect(`/a/${id}`, 303);
+});
+
+/** Moves a page one place earlier or later among the pages with the same parent. */
+pages.post("/a/:id/order", ...editorForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await editable(c, id);
+  if (artifact instanceof Response) return artifact;
+  const form = await c.req.parseBody();
+  const tree = await listProjectPages(c.env.DB, artifact.project);
+  const at = siblingsOf(tree, id).findIndex((r) => r.id === id);
+  await placeAmongSiblings(c.env.DB, tree, id, at + 1 + (form["dir"] === "up" ? -1 : 1));
+  return c.redirect(`/a/${id}`, 303);
+});
+
 pages.post("/a/:id/share", ...ownerForm, (c) => shareAction(c, "open"));
 pages.post("/a/:id/share/reset", ...ownerForm, (c) => shareAction(c, "reset"));
 pages.post("/a/:id/share/off", ...ownerForm, (c) => shareAction(c, "off"));

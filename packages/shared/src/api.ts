@@ -26,6 +26,10 @@ export interface ArtifactSummary {
   description: string | null;
   /** The project it belongs to, or null. */
   project: string | null;
+  /** The page above it in its project's tree, or null at the top. */
+  parent: string | null;
+  /** Its place among the pages with the same parent, from 1. */
+  position: number;
   version: number;
   updated_at: string;
   allow_connect: string[];
@@ -74,3 +78,20 @@ export type PairPollResponse =
   | { status: "approved"; device_id: string }
   | { status: "denied" }
   | { status: "expired" };
+
+/** PATCH /api/v1/artifacts/:id: move a page without making a version. */
+export interface MoveRequest {
+  /** Another project (null: none). The pages under it move along, and it goes to the top. */
+  project?: string | null;
+  /** The page to go under, in the same project (null: the top). */
+  parent?: string | null;
+  /** Its place among its siblings, from 1. */
+  position?: number;
+}
+
+export interface MoveResponse {
+  id: string;
+  project: string | null;
+  parent: string | null;
+  position: number;
+}

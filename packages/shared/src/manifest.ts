@@ -51,12 +51,17 @@ export const projectSchema = z
   .max(MAX_PROJECT_NAME, `project is longer than ${MAX_PROJECT_NAME} characters`)
   .regex(/^[^\u0000-\u001f\u007f/\\]+$/, "project cannot contain slashes or control characters");
 
+/** An artifact's id, as in /a/<id>. */
+export const artifactIdSchema = z.string().regex(/^[0-9a-hjkmnp-tv-z]{16}$/, "an artifact id is the 16 characters after /a/ in its URL");
+
 export const manifestSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
     description: z.string().trim().max(1000).optional(),
     /** On create, the page's project. On update, only sent to move the page; leaving it out keeps the project. */
     project: projectSchema.optional(),
+    /** The page this one goes under, in the same project. On update, only sent to move the page. */
+    parent: artifactIdSchema.optional(),
     entry: z.string(),
     files: z.record(z.string(), z.string().regex(/^sha256:[0-9a-f]{64}$/, "file hashes look like sha256:<64 hex>")),
     allow_connect: allowConnectSchema.optional(),

@@ -6,6 +6,7 @@ import { api } from "./routes/api.ts";
 import { auth, invites } from "./routes/auth.tsx";
 import { content } from "./routes/content.ts";
 import { pages } from "./routes/pages.tsx";
+import { projectPages } from "./routes/projects.tsx";
 import { secretPages } from "./routes/secret.tsx";
 import { PASSKEY_CLIENT_JS } from "./ui/passkey-client.ts";
 import { SECRET_CLIENT_JS } from "./ui/secret-client.ts";
@@ -46,6 +47,7 @@ app.get("/assets/secret.js", (c) =>
 app.route("/auth", auth);
 app.route("/invite", invites);
 app.route("/secret", secretPages);
+app.route("/projects", projectPages);
 app.route("/", pages);
 
 export default {

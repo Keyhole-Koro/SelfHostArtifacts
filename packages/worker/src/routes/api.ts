@@ -5,8 +5,10 @@ import {
   SHA256_HEX,
   contentTypeFor,
   hashOf,
+  artifactIdSchema,
   manifestSchema,
   projectSchema,
+  type MoveResponse,
   type ArtifactDetail,
   type ArtifactSummary,
   type BlobCheckResponse,
@@ -34,9 +36,13 @@ import {
   getArtifact,
   getVersion,
   listArtifacts,
+  listProjectPages,
   listProjects,
   listVersions,
+  placeAmongSiblings,
+  setParent,
   setProject,
+  subtreeOf,
   trashArtifact,
   type ArtifactRow,
 } from "../db/artifacts.ts";
@@ -65,6 +71,8 @@ function summary(c: Context<AppEnv>, a: ArtifactRow, allowConnect: string[]): Ar
     title: a.title,
     description: a.description,
     project: a.project,
+    parent: a.parent,
+    position: a.position,
     version: a.current_version,
     updated_at: a.updated_at,
     allow_connect: allowConnect,
@@ -195,17 +203,42 @@ signed.put("/blobs/:sha256{[0-9a-f]{64}}", async (c) => {
   return c.body(null, 201);
 });
 
+/**
+ * Checks that `parentId` can hold `page` (undefined: a new page) in `project`: it exists, is in that
+ * project and is not the page or under it. Returns the error response, or undefined.
+ */
+async function parentProblem(c: Context<AppEnv>, parentId: string, project: string | null, page?: ArtifactRow): Promise<Response | undefined> {
+  const parent = await getArtifact(c.env.DB, parentId);
+  if (!parent) return apiError(c, 400, "bad_parent", "The parent page does not exist (or it is in the trash).");
+  if (parent.project !== project) {
+    return apiError(c, 400, "bad_parent", `The parent page is in ${parent.project ? `the project ${parent.project}` : "no project"}; a page and its parent share one.`);
+  }
+  if (page && subtreeOf(await listProjectPages(c.env.DB, project), page.id).has(parentId)) {
+    return apiError(c, 400, "bad_parent", "A page cannot go under itself or a page below it.");
+  }
+  return undefined;
+}
+
 signed.post("/artifacts", async (c) => {
   const parsed = await readJson(c, manifestSchema);
   if (!parsed.ok) return parsed.res;
   const manifest = parsed.value;
+  let project = manifest.project;
+  if (manifest.parent) {
+    // The parent's project is the page's; a different project named with it is a mistake.
+    const parent = await getArtifact(c.env.DB, manifest.parent);
+    project = project ?? parent?.project ?? undefined;
+    const problem = await parentProblem(c, manifest.parent, project ?? null);
+    if (problem) return problem;
+  }
   const resolved = await resolveFiles(c, manifest);
   if (!resolved.ok) return resolved.res;
   const id = randomId();
   await createArtifact(c.env.DB, id, {
     title: manifest.title,
     description: manifest.description,
-    project: manifest.project,
+    project,
+    parent: manifest.parent,
     entry: manifest.entry,
     files: resolved.files,
     allowConnect: manifest.allow_connect ?? [],
@@ -238,12 +271,16 @@ signed.put("/artifacts/:id", async (c) => {
   const manifest = parsed.value;
   const base = manifest.base_version ?? artifact.current_version;
   if (base !== artifact.current_version) return conflict(c, artifact.current_version);
+  const project = manifest.project ?? artifact.project;
+  if (manifest.parent) {
+    const problem = await parentProblem(c, manifest.parent, project, artifact);
+    if (problem) return problem;
+  }
   const resolved = await resolveFiles(c, manifest);
   if (!resolved.ok) return resolved.res;
   const added = await addVersion(c.env.DB, artifact.id, base, {
     title: manifest.title,
     description: manifest.description,
-    project: manifest.project,
     entry: manifest.entry,
     files: resolved.files,
     allowConnect: manifest.allow_connect ?? [],
@@ -253,6 +290,8 @@ signed.put("/artifacts/:id", async (c) => {
     const latest = await getArtifact(c.env.DB, artifact.id);
     return conflict(c, latest?.current_version ?? base + 1);
   }
+  if (project !== artifact.project) await setProject(c.env.DB, artifact.id, project);
+  if (manifest.parent && manifest.parent !== artifact.parent) await setParent(c.env.DB, artifact.id, manifest.parent);
   const device = c.get("device");
   await recordAuditEvent(c, {
     actorType: "device", actorId: device.id, actorLabel: device.name,
@@ -274,22 +313,42 @@ signed.get("/projects", async (c) => {
   return c.json<ProjectListResponse>({ projects: await listProjects(c.env.DB) });
 });
 
-const moveSchema = z.object({ project: projectSchema.nullable() });
+const moveSchema = z
+  .object({
+    project: projectSchema.nullable().optional(),
+    parent: artifactIdSchema.nullable().optional(),
+    position: z.number().int().positive().optional(),
+  })
+  .refine((m) => m.project !== undefined || m.parent !== undefined || m.position !== undefined, "send project, parent or position");
 
-/** Moves a page to another project without a new version. `null` leaves it without one. */
+/**
+ * Moves a page without a new version: to another project (with the pages under it, to its top;
+ * null leaves it without one), under another page (null: the top), or to a place among its siblings.
+ */
 signed.patch("/artifacts/:id", async (c) => {
   const artifact = await getArtifact(c.env.DB, c.req.param("id"));
   if (!artifact) return apiError(c, 404, "not_found", "No artifact has this id (or it is in the trash).");
   const parsed = await readJson(c, moveSchema);
   if (!parsed.ok) return parsed.res;
-  await setProject(c.env.DB, artifact.id, parsed.value.project);
+  const move = parsed.value;
+  const project = move.project === undefined ? artifact.project : move.project;
+  if (move.parent) {
+    const problem = await parentProblem(c, move.parent, project, artifact);
+    if (problem) return problem;
+  }
+  if (project !== artifact.project) await setProject(c.env.DB, artifact.id, project);
+  if (move.parent !== undefined && move.parent !== (project !== artifact.project ? null : artifact.parent)) {
+    await setParent(c.env.DB, artifact.id, move.parent);
+  }
+  if (move.position !== undefined) await placeAmongSiblings(c.env.DB, await listProjectPages(c.env.DB, project), artifact.id, move.position);
+  const moved = (await getArtifact(c.env.DB, artifact.id))!;
   const device = c.get("device");
   await recordAuditEvent(c, {
     actorType: "device", actorId: device.id, actorLabel: device.name,
     action: "artifact.move", targetType: "artifact", targetId: artifact.id,
-    metadata: { project: parsed.value.project },
+    metadata: { project: moved.project, parent: moved.parent, position: moved.position },
   });
-  return c.json({ id: artifact.id, project: parsed.value.project });
+  return c.json<MoveResponse>({ id: moved.id, project: moved.project, parent: moved.parent, position: moved.position });
 });
 
 signed.get("/artifacts/:id", async (c) => {

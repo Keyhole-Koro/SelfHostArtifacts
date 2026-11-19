@@ -32,9 +32,12 @@ Pages
   artifact publish <file.html|dir>  Publish; publishing the same file again updates the same URL
       --title <t> --description <d> --url <page url> --file <published=local> --allow-connect <host>
       --project <name>              A new page goes into the project named after this git repository unless given
+      --parent <url>                Put the page under another page, in that page's project
   artifact list [--limit n] [--project <name> | --none]
   artifact projects                 Projects and how many pages each has
-  artifact move <url> <project>     Move a page to another project (--none: out of any project)
+  artifact move <url> <project>     Move a page, with the pages under it, to another project (--none: out of any project)
+  artifact move <url> --parent <url|top> [--position n]
+                                    Put a page under another page of its project, or at the top, at place n
   artifact read <url> [path] [--version n]
   artifact delete <url>             Move to the trash (restorable for 30 days)
 
@@ -82,6 +85,8 @@ function parse() {
       hours: { type: "string" },
       key: { type: "string", multiple: true },
       project: { type: "string" },
+      parent: { type: "string" },
+      position: { type: "string" },
       none: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
@@ -219,6 +224,7 @@ async function main(): Promise<void> {
         url: o.url,
         allowConnect: o["allow-connect"],
         project: o.project,
+        parent: o.parent,
       });
       out(`${r.created ? "Published" : "Updated"}: ${r.url} (version ${r.version}, private${r.project ? `, in ${r.project}` : ""})`, r);
       return;
@@ -239,9 +245,17 @@ async function main(): Promise<void> {
     case "move": {
       const url = rest[0];
       const name = o.none ? null : (rest[1] ?? o.project);
-      if (!url || name === undefined) throw new ArtifactError("Usage: artifact move <url> <project>, or artifact move <url> --none", "bad_args");
-      const r = await move(url, name);
-      out(r.project ? `Moved to ${r.project}.` : "Now without a project.", r);
+      const position = o.position === undefined ? undefined : Number(o.position);
+      if (!url || (name === undefined && o.parent === undefined && position === undefined) || (position !== undefined && !(position >= 1))) {
+        throw new ArtifactError("Usage: artifact move <url> <project> | --none | --parent <url|top> [--position n]", "bad_args");
+      }
+      const r = await move(url, {
+        ...(name !== undefined ? { project: name } : {}),
+        ...(o.parent !== undefined ? { parent: o.parent === "top" ? null : o.parent } : {}),
+        ...(position !== undefined ? { position } : {}),
+      });
+      const where = r.project ? `in ${r.project}` : "without a project";
+      out(`Now ${where}${r.parent ? `, under ${r.parent}` : ", at the top"}, place ${r.position}.`, r);
       return;
     }
 

@@ -50,11 +50,15 @@ export function createServer(): McpServer {
           .string()
           .optional()
           .describe("Project to put the page in. Leave it out: a new page goes into the current git repository's project, an update stays where it is"),
+        parent: z
+          .string()
+          .optional()
+          .describe("URL of the page to put this one under, as a child page in that page's project. Use it to build a tree of related pages"),
       },
     },
-    ({ file_path, files, title, description, url, allow_connect, project }) =>
+    ({ file_path, files, title, description, url, allow_connect, project, parent }) =>
       run(async () => {
-        const r = await publish({ filePath: file_path, files, title, description, url, allowConnect: allow_connect, project });
+        const r = await publish({ filePath: file_path, files, title, description, url, allowConnect: allow_connect, project, parent });
         const where = r.project ? `, in ${r.project}` : "";
         return `${r.created ? "Published" : "Updated"}: ${r.url} (version ${r.version}, private${where}; ${r.files} files, ${r.uploaded} uploaded)`;
       }),
@@ -106,17 +110,22 @@ export function createServer(): McpServer {
   server.registerTool(
     "move",
     {
-      title: "Move a page to another project",
-      description: "Put a page in another project, or out of any project with project null. Does not make a new version.",
+      title: "Move a page",
+      description:
+        "Move a page without making a new version: to another project (the pages under it go along; null for none), under another page " +
+        "of its project (parent; null for the top), or to a place among its siblings (position, from 1).",
       inputSchema: {
         url: z.string().describe("The page URL"),
-        project: z.string().nullable().describe("The project name, or null for none"),
+        project: z.string().nullable().optional().describe("Another project, or null for none"),
+        parent: z.string().nullable().optional().describe("URL of the page to put it under, or null for the top of its project"),
+        position: z.number().int().positive().optional().describe("Its place among the pages with the same parent, from 1"),
       },
     },
-    ({ url, project }) =>
+    ({ url, project, parent, position }) =>
       run(async () => {
-        const r = await move(url, project);
-        return r.project ? `Moved to ${r.project}.` : "Now without a project.";
+        const r = await move(url, { project, parent, position });
+        const where = r.project ? `in ${r.project}` : "without a project";
+        return `Now ${where}${r.parent ? `, under ${r.parent}` : ", at the top"}, place ${r.position}.`;
       }),
   );
 

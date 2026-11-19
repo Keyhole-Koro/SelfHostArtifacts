@@ -190,7 +190,7 @@ Codex と Gemini を同じ端末で使うなら、鍵は1つで共有する。�
 | `POST` | `/api/v1/artifacts` | 新規作成。本文は `manifest`（JSON）だけ。参照するハッシュが全部 R2 にあることを確かめ、`{id, url, version}` を返す |
 | `PUT` | `/api/v1/artifacts/:id` | 新しい版を作る。`base_version` が最新と違えば 409 と最新の版番号を返す |
 | `GET` | `/api/v1/artifacts` | 一覧（更新日時の新しい順）。`?project=<名前>` でそのプロジェクトだけ、`?project=` で属さないものだけ |
-| `PATCH` | `/api/v1/artifacts/:id` | `{project}` でプロジェクトを移す（`null` で外す）。版は作らない |
+| `PATCH` | `/api/v1/artifacts/:id` | 版を作らずに動かす。`{project}` で別のプロジェクトへ（下のページごと。`null` で外す）、`{parent}` で同じプロジェクトの別のページの下へ（`null` で一番上）、`{position}` で兄弟の中の何番目か（1 から） |
 | `GET` | `/api/v1/projects` | プロジェクトとページ数（属さないものは `null`） |
 | `GET` | `/api/v1/artifacts/:id` | メタデータと版の一覧 |
 | `GET` | `/api/v1/artifacts/:id/files/*path` | ファイルを読む（`?version=` で過去の版） |
@@ -243,7 +243,9 @@ create table artifacts (
   deleted_at text,              -- ゴミ箱に入れた日時。TRASH_DAYS 日後に Cron で本当に消す
   share_nonce text,             -- 公開リンクの nonce。null なら公開していない
   share_expires_at text,        -- 公開リンクの期限
-  project text                  -- 0007。属するプロジェクト（1 つだけ）。null なら属さない
+  project text,                 -- 0007。属するプロジェクト（1 つだけ）。null なら属さない
+  parent text,                  -- 0008。同じプロジェクトの中の、上のページ。null なら一番上
+  position integer not null default 0 -- 0008。同じ親を持つページの中の順番
 );
 
 create table versions (
@@ -256,6 +258,20 @@ create table versions (
   created_by text not null references devices(id),
   created_at text not null,
   primary key (artifact_id, version)
+);
+
+create table spaces (           -- 0008。プロジェクトの説明と見せる相手。行の無いプロジェクトは everyone と同じ
+  name text primary key,        -- artifacts.project と同じ名前
+  description text,
+  access text not null default 'everyone',  -- everyone | members
+  created_at text not null
+);
+
+create table space_members (    -- 0008。Members only のプロジェクトを見られる人と、ブラウザから並べ替えられる人
+  space text not null references spaces(name) on delete cascade,
+  user_id text not null references users(id) on delete cascade,
+  role text not null,           -- viewer | editor
+  primary key (space, user_id)
 );
 
 create table devices (
@@ -535,10 +551,10 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 
 | ツール | 引数 | 内容 |
 |---|---|---|
-| `publish` | `file_path`, `files?`, `title?`, `description?`, `url?`, `allow_connect?`, `project?` | `url` なしで新規、ありで更新。`files` は `{公開パス: ローカルパス}`。`allow_connect` はページから通信してよいホスト。`project` を省くと、新規は作業中の git リポジトリの名前のプロジェクトに入り、更新はそのまま |
+| `publish` | `file_path`, `files?`, `title?`, `description?`, `url?`, `allow_connect?`, `project?`, `parent?` | `url` なしで新規、ありで更新。`files` は `{公開パス: ローカルパス}`。`allow_connect` はページから通信してよいホスト。`project` を省くと、新規は作業中の git リポジトリの名前のプロジェクトに入り、更新はそのまま。`parent`（ページの URL）を渡すと、そのページの下の子ページになり、そのページのプロジェクトに入る |
 | `read` | `url`, `path?` | 公開中の中身を読む |
 | `list` | `limit?`, `project?` | 一覧。`project` でそのプロジェクトだけ |
-| `move` | `url`, `project` | ページを別のプロジェクトへ移す（`null` で外す） |
+| `move` | `url`, `project?`, `parent?`, `position?` | 版を作らずに動かす。別のプロジェクトへ（下のページごと）、別のページの下へ、兄弟の中の順番へ |
 | `delete` | `url` | ゴミ箱へ移す。ツール説明に「ユーザーが頼んだときだけ」と書く |
 | `secret_share` | `label`, `file_path`, `keys?`, `expires_in_hours?` | ファイルの値を手元で暗号化して置き、`#` の後ろに鍵の入ったリンクを返す。最初に開いたブラウザだけが読める |
 | `secret_request` | `label`, `expires_in_hours?` | 秘密の受け取り用の URL を作る |
@@ -652,7 +668,25 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
 - 1 ページは 1 つのプロジェクトに入る（フォルダの形）。タグにしなかったのは、付け方がばらつくため
 - 新しいページは、CLI（MCP サーバー）が動いているフォルダの git リポジトリの名前のプロジェクトに入る。名前は `origin` の URL の最後（`git@github.com:Owner/MediShare.git` なら `MediShare`）。`origin` がなければ、元のチェックアウトのフォルダ名（worktree のフォルダ名は使わない）。git の外ならプロジェクトなし。`ARTIFACT_PROJECT` で上書きできる（空ならなし）
 - 更新はプロジェクトを変えない。`project` を渡したときだけ移す
-- 一覧（`/`）の上にプロジェクトのボタンを並べ、`/?project=<名前>` で絞る。ページの画面の「Project」から持ち主が移せる。閲覧者ごとに見せるプロジェクトを分けることはしない
+- 一覧（`/`）の上にプロジェクトのボタンを並べ、`/?project=<名前>` で絞る。ページの画面の「Move」から持ち主が移せる
+
+### スペース（プロジェクトの木と、見せる相手）
+
+2026-11-19 に足した。Confluence のスペースのように、プロジェクトをページの置き場として使えるようにする計画の 1 段目。計画は「フェーズ」の節にある。
+
+- プロジェクトの中のページは木になる。`artifacts.parent` が上のページ（同じプロジェクトの中だけ）、`position` が兄弟の中の順番。新しいページは兄弟の最後に付く
+  - エージェントは `publish` の `parent`（ページの URL）で子ページを作り、`move` の `parent` と `position` で動かす。親を渡すと、ページは親のプロジェクトに入る
+  - 自分自身や自分の下のページの下には置けない（Worker が確かめる）
+  - 別のプロジェクトへ移すと、下のページもいっしょに移り、移ったページはそのプロジェクトの一番上に付く
+  - ゴミ箱に入れると、下のページは 1 つ上へ上がる（木がゴミ箱の中を指さない）。戻したページは、親がもう無ければ一番上に戻る
+- `/?project=<名前>` は、そのプロジェクトを木で見せる（版と更新日時つき）。検索は、合ったページとその上のページを残す
+- ページの画面は、左にそのプロジェクトの木（今のページの上は開いておく）、上にパンくず（上のページ › … › 今のページ）を出す。左の木は「☰」で畳め、畳んだかどうかはブラウザに覚える（幅 900px 未満では最初から畳む）
+- プロジェクトの設定（`/projects/:name`、持ち主だけ）: 説明、見せる相手、メンバー
+  - 見せる相手は「Everyone」（閲覧者の全員。これまでと同じで、既定）か「Members only」（持ち主と、メンバーに入れた人だけ）
+  - Members only のプロジェクトのページは、メンバーでない閲覧者には、一覧にもプロジェクトのボタンにも出ず、`/a/:id` と `/a/:id/token` は 404（無いページと同じ答え）
+  - メンバーの役割は viewer か editor。editor は、そのプロジェクトのページの親と順番をブラウザから変えられる（別のプロジェクトへの移動は持ち主だけ）。ブラウザでページを書くこと（フェーズ 3）も editor に許す予定
+  - 公開リンク（`/s/:id/:key`）はプロジェクトの見せる相手に関係なく、リンクを知っている人が開ける。エージェント（端末の署名）は持ち主の代わりなので、すべてのプロジェクトを読める
+- D1: `spaces`（name、description、access）と `space_members`（space、user_id、role）。プロジェクトに初めてページが入ったときに `spaces` の行を作る。行の無いプロジェクトは Everyone と同じ。人を削除すると、その人のメンバーの行も消える
 
 ### 公開リンク（`/s/:id/:key`）
 
@@ -670,7 +704,8 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
 
 ### 閲覧（`/a/:id`）
 
-- 上に細いバー: タイトル、版、更新日時、「新しいタブで開く」（`/c/:token/` を直接開く。CSP の sandbox で隔離されたまま）、「版の履歴」
+- 上に細いバー: プロジェクトへ戻るリンク、パンくず、タイトル、版、更新日時、「新しいタブで開く」（`/c/:token/` を直接開く。CSP の sandbox で隔離されたまま）、「版の履歴」
+- プロジェクトのページなら、左にそのプロジェクトの木（スペースの節を参照）
 - 残りは全部 iframe
 - スマホではバーを畳み、タイトルだけの1行にする
 
@@ -732,7 +767,11 @@ npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）�
 1. **v1（最小）**: Worker（ログイン、root と閲覧者、API、閲覧の外枠とページ本体）、D1・R2、`artifact setup/login/publish/list/read/delete`、stdio MCP、skills。Codex と Gemini の両方から1枚公開して開けるところまで
 2. **v2**: 版の履歴と比較、ラベル、タイトル・説明の編集、端末の管理画面
 3. **v3（共有）**: Artifact ごとの共有リンク（署名付き、期限つき、失効できる）、Artifact ごとに見せる相手を絞る
-4. **v4（ページの機能）**: ページから使える共有 DB とページごとの保存領域（外枠が `postMessage` で受けて、Artifact ごとの Durable Object に読み書きする。sandbox のページは localStorage が使えないので、その代わり）、コメント
+4. **スペース（Confluence のように）**: 2026-11-19 に持ち主と決めた計画。段階ごとに本番に出す
+   1. プロジェクトの木と見せる相手（済み。「スペース」の節）
+   2. ページどうしのリンクと被リンク、本文の全文検索、版どうしの差分。本文とリンク先は公開のときに CLI が取り出して送る（Worker の CPU を使わない）
+   3. ブラウザで書くページ（Markdown を元にし、見たまま編集もできる）と、ページ全体・本文の一部へのコメント。エージェントは MCP でコメントを読んで返す
+5. **v4（ページの機能）**: ページから使える共有 DB とページごとの保存領域（外枠が `postMessage` で受けて、Artifact ごとの Durable Object に読み書きする。sandbox のページは localStorage が使えないので、その代わり）、コメント
 
 ## 決定事項
 

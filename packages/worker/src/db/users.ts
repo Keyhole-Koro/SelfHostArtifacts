@@ -65,6 +65,7 @@ export async function deleteUser(db: D1Database, id: string): Promise<void> {
     db.prepare("delete from passkeys where user_id = ?").bind(id),
     db.prepare("delete from sessions where user_id = ?").bind(id),
     db.prepare("delete from login_links where user_id = ?").bind(id),
+    db.prepare("delete from space_members where user_id = ?").bind(id),
     // A deleted user's device must not become an unowned bootstrap device. Keep the foreign-key
     // cleanup, but revoke the key before deleting the user.
     db.prepare("update devices set revoked_at = coalesce(revoked_at, ?) where user_id = ?").bind(now, id),

@@ -11,6 +11,8 @@ import {
   type SecretListResponse,
   type SecretSummary,
   type ProjectListResponse,
+  type MoveRequest,
+  type MoveResponse,
 } from "@artifact/shared";
 import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,6 +37,8 @@ export interface PublishInput {
    * this runs in; an update without it keeps the page's project.
    */
   project?: string;
+  /** URL (or id) of the page to put this one under; the page goes into that page's project. */
+  parent?: string;
 }
 
 export interface PublishResult {
@@ -145,7 +149,9 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
   }
 
   const entryFile = files.find((f) => f.published === entry)!;
-  const project = existing ? input.project : (input.project ?? detectProject());
+  const parent = input.parent ? artifactIdFromUrl(s, input.parent) : undefined;
+  // Under a parent, the page goes into the parent's project; the repository's name is only a default.
+  const project = existing || parent ? input.project : (input.project ?? detectProject());
   const manifest = {
     title: input.title ?? existing?.title ?? titleFrom(entryFile.bytes.toString("utf8"), basename(entryLocal)),
     description: input.description ?? existing?.description ?? undefined,
@@ -153,6 +159,7 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
     files: Object.fromEntries(files.map((f) => [f.published, `sha256:${f.sha256}`])),
     allow_connect: input.allowConnect ?? existing?.allow_connect ?? [],
     ...(project ? { project } : {}),
+    ...(parent ? { parent } : {}),
     // The version this computer last published. If another device has published since, the
     // server answers 409 instead of silently overwriting that work.
     base_version: existing ? (remembered?.id === existing.id ? remembered.version : existing.version) : undefined,
@@ -176,11 +183,21 @@ export async function projects(): Promise<ProjectListResponse> {
   return signedJson<ProjectListResponse>(session(), "GET", "/api/v1/projects");
 }
 
-/** Moves a page to another project (null: none) without making a new version. */
-export async function move(url: string, project: string | null): Promise<{ id: string; project: string | null }> {
+export interface MoveInput {
+  /** Another project (null: none); the pages under it go along. */
+  project?: string | null;
+  /** URL (or id) of the page to go under, in the same project (null: the top). */
+  parent?: string | null;
+  /** Its place among its siblings, from 1. */
+  position?: number;
+}
+
+/** Moves a page in or between projects without making a new version. */
+export async function move(url: string, to: MoveInput): Promise<MoveResponse> {
   const s = session();
   const id = artifactIdFromUrl(s, url);
-  return signedJson<{ id: string; project: string | null }>(s, "PATCH", `/api/v1/artifacts/${id}`, { project });
+  const body: MoveRequest = { ...to, ...(to.parent ? { parent: artifactIdFromUrl(s, to.parent) } : {}) };
+  return signedJson<MoveResponse>(s, "PATCH", `/api/v1/artifacts/${id}`, body);
 }
 
 export interface ReadResult {

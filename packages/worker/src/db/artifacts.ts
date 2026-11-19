@@ -1,10 +1,13 @@
 import type { ProjectCount, VersionFile } from "@artifact/shared";
+import { ensureSpace } from "./spaces.ts";
 
 export interface ArtifactRow {
   id: string;
   title: string;
   description: string | null;
   project: string | null;
+  parent: string | null; // the page above it in the same project; see the tree functions below
+  position: number;
   current_version: number;
   created_at: string;
   updated_at: string;
@@ -68,10 +71,22 @@ export async function listProjects(db: D1Database): Promise<ProjectCount[]> {
   return results;
 }
 
-/** Moves a page to another project (null: none). False when there is no such page. */
+/**
+ * Moves a page, with the pages under it, to another project (null: none), at that project's top.
+ * False when there is no such page.
+ */
 export async function setProject(db: D1Database, id: string, project: string | null): Promise<boolean> {
-  const r = await db.prepare("update artifacts set project = ? where id = ? and deleted_at is null").bind(project, id).run();
-  return r.meta.changes === 1;
+  const page = await getArtifact(db, id);
+  if (!page) return false;
+  if (page.project === project) return true;
+  const moving = [...subtreeOf(await listProjectPages(db, page.project), id)];
+  const marks = moving.map(() => "?").join(", ");
+  await db.batch([
+    ...(project ? [ensureSpace(db, project)] : []),
+    db.prepare(`update artifacts set project = ? where id in (${marks})`).bind(project, ...moving),
+  ]);
+  await setParent(db, id, null);
+  return true;
 }
 
 export async function listTrash(db: D1Database): Promise<ArtifactRow[]> {
@@ -113,6 +128,8 @@ export interface NewVersion {
   description: string | undefined;
   /** On create, the project. On update, undefined keeps the page's project. */
   project?: string | undefined;
+  /** On create, the page it goes under (already checked to be in `project`). */
+  parent?: string | undefined;
   entry: string;
   files: Record<string, VersionFile>;
   allowConnect: string[];
@@ -129,12 +146,15 @@ function versionInsert(db: D1Database, id: string, version: number, v: NewVersio
 
 export async function createArtifact(db: D1Database, id: string, v: NewVersion): Promise<void> {
   const now = new Date().toISOString();
+  const parent = v.parent ?? null;
   await db.batch([
+    ...(v.project ? [ensureSpace(db, v.project, now)] : []),
     db
       .prepare(
-        "insert into artifacts (id, title, description, project, current_version, created_at, updated_at) values (?, ?, ?, ?, 1, ?, ?)",
+        `insert into artifacts (id, title, description, project, parent, position, current_version, created_at, updated_at)
+         values (?, ?, ?, ?, ?, (select coalesce(max(position), 0) + 1 from artifacts where parent is ? and project is ? and deleted_at is null), 1, ?, ?)`,
       )
-      .bind(id, v.title, v.description ?? null, v.project ?? null, now, now),
+      .bind(id, v.title, v.description ?? null, v.project ?? null, parent, parent, v.project ?? null, now, now),
     versionInsert(db, id, 1, v, now),
   ]);
 }
@@ -149,6 +169,7 @@ export async function addVersion(db: D1Database, id: string, expected: number, v
   const next = expected + 1;
   try {
     await db.batch([
+      ...(v.project ? [ensureSpace(db, v.project, now)] : []),
       versionInsert(db, id, next, v, now),
       db
         .prepare("update artifacts set current_version = ?, title = ?, description = ?, project = coalesce(?, project), updated_at = ? where id = ?")
@@ -161,17 +182,117 @@ export async function addVersion(db: D1Database, id: string, expected: number, v
   }
 }
 
-/** Moving to the trash also turns the public link off, so restoring does not reopen it. */
+/**
+ * Moving to the trash also turns the public link off, so restoring does not reopen it. The pages
+ * under it move up to its parent, so the tree never points into the trash.
+ */
 export async function trashArtifact(db: D1Database, id: string): Promise<boolean> {
-  const r = await db
-    .prepare("update artifacts set deleted_at = ?, share_nonce = null, share_expires_at = null where id = ? and deleted_at is null")
-    .bind(new Date().toISOString(), id)
-    .run();
-  return r.meta.changes === 1;
+  const [, r] = await db.batch([
+    db.prepare("update artifacts set parent = (select parent from artifacts where id = ?) where parent = ? and deleted_at is null").bind(id, id),
+    db
+      .prepare("update artifacts set deleted_at = ?, share_nonce = null, share_expires_at = null where id = ? and deleted_at is null")
+      .bind(new Date().toISOString(), id),
+  ]);
+  return r!.meta.changes === 1;
 }
 
+/** A restored page comes back at the top of its project when its parent is gone. */
 export async function restoreArtifact(db: D1Database, id: string): Promise<void> {
-  await db.prepare("update artifacts set deleted_at = null where id = ?").bind(id).run();
+  await db.batch([
+    db.prepare("update artifacts set deleted_at = null where id = ?").bind(id),
+    db
+      .prepare(
+        `update artifacts set parent = null where id = ? and parent is not null and not exists
+         (select 1 from artifacts p where p.id = artifacts.parent and p.deleted_at is null and p.project is artifacts.project)`,
+      )
+      .bind(id),
+  ]);
+}
+
+// --- The tree of pages in a project ---
+
+export interface TreeRow {
+  id: string;
+  title: string;
+  parent: string | null;
+  position: number;
+  current_version: number;
+  updated_at: string;
+}
+
+/** Every page in a project (null: the pages without one), for building its tree. */
+export async function listProjectPages(db: D1Database, project: string | null): Promise<TreeRow[]> {
+  const { results } = await db
+    .prepare(
+      `select id, title, parent, position, current_version, updated_at from artifacts
+       where deleted_at is null and project is ? order by position, title`,
+    )
+    .bind(project)
+    .all<TreeRow>();
+  return results;
+}
+
+/** Children of each page, ordered; pages whose parent is not in `rows` are at the top (key null). */
+export function childrenOf(rows: TreeRow[]): Map<string | null, TreeRow[]> {
+  const ids = new Set(rows.map((r) => r.id));
+  const out = new Map<string | null, TreeRow[]>();
+  for (const r of rows) {
+    const key = r.parent && ids.has(r.parent) ? r.parent : null;
+    if (!out.has(key)) out.set(key, []);
+    out.get(key)!.push(r);
+  }
+  return out;
+}
+
+/** The pages from the top down to (not including) `id`. */
+export function ancestorsOf(rows: TreeRow[], id: string): TreeRow[] {
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const out: TreeRow[] = [];
+  let at = byId.get(id)?.parent;
+  while (at && byId.has(at) && !out.some((r) => r.id === at)) {
+    out.unshift(byId.get(at)!);
+    at = byId.get(at)!.parent;
+  }
+  return out;
+}
+
+/** `id` and every page under it. */
+export function subtreeOf(rows: TreeRow[], id: string): Set<string> {
+  const kids = childrenOf(rows), out = new Set<string>([id]), todo = [id];
+  while (todo.length) for (const k of kids.get(todo.pop()!) ?? []) if (!out.has(k.id)) { out.add(k.id); todo.push(k.id); }
+  return out;
+}
+
+/** The pages with the same parent as `id`, in order, its own entry included. */
+export function siblingsOf(rows: TreeRow[], id: string): TreeRow[] {
+  const self = rows.find((r) => r.id === id);
+  if (!self) return [];
+  return childrenOf(rows).get(rows.some((r) => r.id === self.parent) ? self.parent : null) ?? [];
+}
+
+/**
+ * Puts `id` under `parent` (null: at the top) as the last child. The caller has checked that
+ * `parent` is in the same project and not under `id`.
+ */
+export async function setParent(db: D1Database, id: string, parent: string | null): Promise<void> {
+  await db
+    .prepare(
+      `update artifacts set parent = ?, position = (select coalesce(max(position), 0) + 1 from artifacts
+       where parent is ? and project is (select project from artifacts where id = ?) and deleted_at is null and id != ?) where id = ?`,
+    )
+    .bind(parent, parent, id, id, id)
+    .run();
+}
+
+/** Puts `id` at `place` (from 1) among its siblings, and numbers them all again. */
+export async function placeAmongSiblings(db: D1Database, rows: TreeRow[], id: string, place: number): Promise<boolean> {
+  const order = siblingsOf(rows, id).map((r) => r.id);
+  const at = order.indexOf(id);
+  if (at < 0) return false;
+  order.splice(at, 1);
+  order.splice(Math.min(Math.max(place, 1), order.length + 1) - 1, 0, id);
+  await db.batch(order.map((sid, k) => db.prepare("update artifacts set position = ? where id = ?").bind(k + 1, sid)));
+  return true;
 }
 
 /** Removes outbound access from every version, until the next publish asks for it again. */

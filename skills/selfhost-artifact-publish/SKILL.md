@@ -31,6 +31,9 @@ CLI: `artifact publish <file.html|folder> [--title …] [--description …]`
 - A new page goes into the project named after the git repository you are working in, so the
   list stays sorted by itself. Pass `project` only when the page belongs somewhere else (the
   user names a project, or you work outside the repository it is about).
+- Related pages can form a tree, like chapters under a handbook. Pass `parent` (the URL of the
+  page to put it under) to publish a page as a child of another; it goes into that page's
+  project. `move` changes the parent or the order later.
 - Give the user the URL from the result. Do not paste the page's content back into the chat.
 
 ## Update

@@ -87,8 +87,11 @@ person opening it creates their own passkey. Add a passkey for each of your devi
 **Account** (passkeys synced by iCloud Keychain or Google Password Manager follow you anyway).
 
 Pages are grouped by **project**: a new page goes into the project named after the git
-repository the agent works in, and the list has a button for each project. Move a page from its
-**Project** menu or with `artifact move`.
+repository the agent works in, and the list has a button for each project. Inside a project,
+pages form a tree: publish a page with `parent` to put it under another, and the project shows as
+that tree, with the tree beside each page and a trail above it. Move a page from its **Move** menu
+or with `artifact move`. In a project's settings you describe it and choose who sees it: every
+viewer, or only the members you add (editors among them may also rearrange its pages).
 
 To show a page to someone without an account, open it and choose **Share → Create public link**:
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
@@ -158,7 +161,7 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `publish` | Publish a local `.html` file, or a folder with `index.html`; the same file again updates the same URL |
 | `read` | Read a published page or one of its files |
 | `list` | Recent pages, optionally of one project |
-| `move` | Move a page to another project |
+| `move` | Move a page to another project, under another page, or to another place among its siblings |
 | `delete` | Move a page to the trash (restorable in Settings for 30 days) |
 | `secret_share` | Encrypt values from a local file and make a link that only the first browser to open it can read |
 | `secret_request` | Make a link for handing a secret to someone |
@@ -174,6 +177,8 @@ artifact publish ./site --allow-connect api.example.com
 artifact list [--project MediShare]       # pages are grouped by project
 artifact projects                         # projects and how many pages each has
 artifact move https://artifacts.example.com/a/<id> MediShare
+artifact publish ./setup.html --parent https://artifacts.example.com/a/<id>   # a page under another
+artifact move https://artifacts.example.com/a/<id> --parent top --position 1
 artifact read https://artifacts.example.com/a/<id> data.json
 artifact delete https://artifacts.example.com/a/<id>
 artifact status
