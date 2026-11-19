@@ -33,13 +33,14 @@ export async function currentViewer(c: Context<AppEnv>): Promise<Viewer | undefi
   const id = getCookie(c, SESSION_COOKIE);
   if (!id) return undefined;
   const row = await c.env.DB.prepare(
-    `select s.csrf, s.expires_at, s.session_kind, u.id as user_id, u.name, u.role
+    `select s.csrf, s.expires_at, s.session_kind, u.id as user_id, u.name, u.role,
+            (select count(*) from notifications n where n.user_id = u.id and n.read_at is null) as unread
      from sessions s join users u on u.id = s.user_id where s.id = ?`,
   )
     .bind(id)
-    .first<{ csrf: string; expires_at: string; session_kind: SessionKind; user_id: string; name: string; role: Role }>();
+    .first<{ csrf: string; expires_at: string; session_kind: SessionKind; user_id: string; name: string; role: Role; unread: number }>();
   if (!row || Date.parse(row.expires_at) <= Date.now()) return undefined;
-  return { userId: row.user_id, name: row.name, role: row.role, sessionId: id, sessionKind: row.session_kind, csrf: row.csrf };
+  return { userId: row.user_id, name: row.name, role: row.role, sessionId: id, sessionKind: row.session_kind, csrf: row.csrf, unread: row.unread };
 }
 
 function loginRedirect(c: Context<AppEnv>) {

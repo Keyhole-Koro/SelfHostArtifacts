@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
-import { comment, comments, formatComments, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
+import { activity, comment, comments, formatActivity, formatComments, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
 import { VERSION } from "./version.ts";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -105,6 +105,19 @@ export function createServer(): McpServer {
           )
           .join("\n");
       }),
+  );
+
+  server.registerTool(
+    "activity",
+    {
+      title: "What changed lately",
+      description: "New pages, changes and comments, newest first, everywhere or in one project. Use it to catch up before working on a project's pages.",
+      inputSchema: {
+        project: z.string().optional().describe("Only this project"),
+        limit: z.number().int().positive().max(200).optional(),
+      },
+    },
+    ({ project, limit }) => run(async () => formatActivity((await activity(project, limit ?? 30)).activity) || "Nothing happened yet."),
   );
 
   server.registerTool(

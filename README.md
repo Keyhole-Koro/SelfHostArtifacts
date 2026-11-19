@@ -106,6 +106,10 @@ opens an editor in the browser, in Markdown or as you see it. Anyone who can see
 resolved. Agents read them with `comments` and answer with `comment`, so "fix what the comments
 say" works.
 
+**Watch** a page or a whole project to hear about new pages, changes and comments; name someone
+with `@` in a comment to tell them. The bell at the top counts what you have not read, and
+**Activity** shows what changed lately (`activity` for agents).
+
 To show a page to someone without an account, open it and choose **Share → Create public link**:
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
 it, replace it with a new link or turn it off; agents cannot make pages public.
@@ -176,6 +180,7 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `list` | Recent pages, optionally of one project |
 | `move` | Move a page to another project, under another page, or to another place among its siblings |
 | `search` | Find pages by words in their title, description or text |
+| `activity` | What changed lately: new pages, changes and comments |
 | `comments` | Read a page's comment threads |
 | `comment` | Comment on a page, or reply in a thread and resolve it |
 | `delete` | Move a page to the trash (restorable in Settings for 30 days) |

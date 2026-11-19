@@ -153,3 +153,19 @@ export interface CommentRequest {
   /** With reply_to: settle the thread after replying. */
   resolve?: boolean;
 }
+
+export interface ActivityItem {
+  at: string;
+  kind: "created" | "updated" | "commented" | "replied" | "resolved";
+  /** Who did it; by_agent when it was an agent's device. */
+  actor: string;
+  by_agent: boolean;
+  page: { id: string; url: string; title: string; project: string | null };
+  version: number | null;
+  /** The comment it is about (for a reply, its thread). */
+  comment_id: string | null;
+}
+
+export interface ActivityResponse {
+  activity: ActivityItem[];
+}

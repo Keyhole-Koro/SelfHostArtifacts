@@ -16,6 +16,8 @@ import {
   MAX_TEXT_CHARS,
   type SearchResponse,
   type CommentListResponse,
+  type ActivityItem,
+  type ActivityResponse,
   type CommentSummary,
   type CommentRequest,
 } from "@artifact/shared";
@@ -222,6 +224,19 @@ export async function reindex(onPage: (title: string, result: string) => void): 
     }
   }
   return { pages: artifacts.length, updated };
+}
+
+/** What changed lately, everywhere or in one project. */
+export async function activity(project?: string, limit = 30): Promise<ActivityResponse> {
+  const q = `?limit=${limit}${project ? `&project=${encodeURIComponent(project)}` : ""}`;
+  return signedJson<ActivityResponse>(session(), "GET", `/api/v1/activity${q}`);
+}
+
+export function formatActivity(items: ActivityItem[]): string {
+  const verb = { created: "made", updated: "changed", commented: "commented on", replied: "replied on", resolved: "resolved a thread on" } as const;
+  return items
+    .map((a) => `${a.at.slice(0, 16).replace("T", " ")}  ${a.actor}${a.by_agent ? " (agent)" : ""} ${verb[a.kind]} ${a.page.title}${a.version ? ` v${a.version}` : ""}  ${a.page.url}`)
+    .join("\n");
 }
 
 /** A page's comments, oldest first. */

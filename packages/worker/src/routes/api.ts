@@ -17,6 +17,7 @@ import {
   type ProjectListResponse,
   type SearchResponse,
   type CommentListResponse,
+  type ActivityResponse,
   type Manifest,
   type PairPollResponse,
   type PairStartResponse,
@@ -57,8 +58,9 @@ import { safeNext } from "../lib/internal-path.ts";
 import { recordAuditEvent } from "../db/audit.ts";
 import { MARK_END, MARK_START, indexStatements, linkStatements, linkedFrom, linksTo } from "../db/search.ts";
 import { hybridSearch, indexLater } from "../db/semantic.ts";
+import { listActivity, record } from "../db/activity.ts";
 import { semanticEnv } from "../env.ts";
-import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, getComment, listComments, setResolved } from "../db/comments.ts";
+import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, getComment, listComments, setResolved, threadPeople } from "../db/comments.ts";
 
 export const blobKey = (sha256: string) => `blobs/${sha256}`;
 
@@ -260,6 +262,7 @@ signed.post("/artifacts", async (c) => {
     metadata: { version: 1, externalHosts: manifest.allow_connect?.length ?? 0 },
   });
   indexLater(semanticEnv(c.env), c.executionCtx, id);
+  await record(c.env.DB, { artifactId: id, project: project ?? null, kind: "created", actor: { deviceId: device.id, name: device.name }, version: 1 });
   return c.json<PublishResponse>({ id, url: artifactUrl(c, id), version: 1 }, 201);
 });
 
@@ -311,6 +314,7 @@ signed.put("/artifacts/:id", async (c) => {
     metadata: { version: base + 1, externalHosts: manifest.allow_connect?.length ?? 0 },
   });
   indexLater(semanticEnv(c.env), c.executionCtx, artifact.id);
+  await record(c.env.DB, { artifactId: artifact.id, project, kind: "updated", actor: { deviceId: device.id, name: device.name }, version: base + 1 });
   return c.json<PublishResponse>({ id: artifact.id, url: artifactUrl(c, artifact.id), version: base + 1 });
 });
 
@@ -407,11 +411,28 @@ signed.post("/artifacts/:id/comments", async (c) => {
     author_user: null, author_device: device.id, author_name: device.name, body: req.body, quote: req.reply_to ? null : (req.quote || null),
   });
   if (req.reply_to && req.resolve) await setResolved(c.env.DB, req.reply_to, true);
+  const thread = req.reply_to ? await threadPeople(c.env.DB, req.reply_to) : [];
+  const actor = { deviceId: device.id, name: device.name };
+  await record(c.env.DB, { artifactId: artifact.id, project: artifact.project, kind: req.reply_to ? "replied" : "commented", actor, commentId: req.reply_to ?? id, thread });
+  if (req.reply_to && req.resolve) await record(c.env.DB, { artifactId: artifact.id, project: artifact.project, kind: "resolved", actor, commentId: req.reply_to, thread });
   await recordAuditEvent(c, {
     actorType: "device", actorId: device.id, actorLabel: device.name,
     action: "comment.create", targetType: "artifact", targetId: artifact.id, metadata: { comment: id, reply: !!req.reply_to },
   });
   return c.json({ id, url: `${artifactUrl(c, artifact.id)}?comments=1#c-${req.reply_to ?? id}` }, 201);
+});
+
+/** What changed lately: everywhere, in one project (?project=) or on one page (?page=). */
+signed.get("/activity", async (c) => {
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 30) || 30, 1), 200);
+  const rows = await listActivity(c.env.DB, { project: c.req.query("project") || undefined, artifactId: c.req.query("page") || undefined, limit });
+  return c.json<ActivityResponse>({
+    activity: rows.map((a) => ({
+      at: a.at, kind: a.kind, actor: a.actor_name, by_agent: a.actor_device !== null,
+      page: { id: a.artifact_id, url: artifactUrl(c, a.artifact_id), title: a.title, project: a.project },
+      version: a.version, comment_id: a.comment_id,
+    })),
+  });
 });
 
 signed.get("/projects", async (c) => {

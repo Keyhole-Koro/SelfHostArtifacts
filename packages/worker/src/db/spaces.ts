@@ -82,3 +82,17 @@ export async function canEditProject(db: D1Database, viewer: Pick<Viewer, "role"
   const row = await db.prepare("select role from space_members where space = ? and user_id = ?").bind(project, viewer.userId).first<{ role: string }>();
   return row?.role === "editor";
 }
+
+/** Everyone who may see a page of `project`, for naming them in a comment. */
+export async function peopleWhoCanSee(db: D1Database, project: string | null): Promise<{ id: string; name: string }[]> {
+  const { results } = await db
+    .prepare(
+      `select u.id, u.name from users u where u.role = 'root' or ? is null
+         or not exists (select 1 from spaces s where s.name = ? and s.access = 'members')
+         or exists (select 1 from space_members m where m.space = ? and m.user_id = u.id)
+       order by u.name`,
+    )
+    .bind(project, project, project)
+    .all<{ id: string; name: string }>();
+  return results;
+}

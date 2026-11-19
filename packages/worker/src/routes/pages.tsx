@@ -7,7 +7,8 @@ import { passkeyLabel, registrationOptions, takeCeremony, verifyRegistration } f
 import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../auth/session.ts";
 import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
 import { EDITOR_PATH, frameSrc, markdownLinks } from "../doc.ts";
-import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComment, listComments, openThreadCounts, setResolved, threadsOf, type CommentRow, type Thread } from "../db/comments.ts";
+import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComment, listComments, openThreadCounts, setResolved, threadPeople, threadsOf, type CommentRow, type Thread } from "../db/comments.ts";
+import { activityHref, listActivity, listNotifications, markRead, pageTarget, projectTarget, record, setWatch, watching, type ActivityRow } from "../db/activity.ts";
 import { MAX_TEXT_CHARS, type VersionFile } from "@artifact/shared";
 import { z } from "zod";
 import { blobKey } from "./api.ts";
@@ -55,9 +56,9 @@ import {
 import { finishSecret, listSecrets, secretOpen, secretStatus } from "../db/secrets.ts";
 import { renderSVG } from "uqr";
 import { pageSecurity } from "../ui/security.ts";
-import { CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
+import { Bell, CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
 import { PageTree, TREE_STYLES } from "../ui/tree.tsx";
-import { canEditProject, canSeeProject, getSpace, hiddenProjects } from "../db/spaces.ts";
+import { canEditProject, canSeeProject, getSpace, hiddenProjects, peopleWhoCanSee } from "../db/spaces.ts";
 import { MARK_END, MARK_START, linkedFrom, linksTo, type LinkedPage } from "../db/search.ts";
 import { INDEX_BATCH, hybridSearch, indexLater, indexPending, pendingPages, semanticOn } from "../db/semantic.ts";
 import { semanticEnv } from "../env.ts";
@@ -128,12 +129,15 @@ pages.get("/", requireViewer(), async (c) => {
   const [tree, space] =
     typeof selected === "string" && !blocked ? await Promise.all([listProjectPages(c.env.DB, selected), getSpace(c.env.DB, selected)]) : [undefined, null];
   const canWrite = tree !== undefined && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, selected as string));
+  const [projectWatched, recent] = tree
+    ? await Promise.all([watching(c.env.DB, viewer.userId, [projectTarget(selected as string)]), listActivity(c.env.DB, { project: selected as string, limit: 10 })])
+    : [new Set<string>(), []];
   const total = projects.reduce((n, p) => n + p.count, 0);
   const showProjects = projects.some((p) => p.project !== null);
   const scope = selected === undefined ? "" : selected === null ? " without a project" : ` in ${selected}`;
   return c.html(
     <Page title={typeof selected === "string" ? `${selected} · Artifacts` : "Artifacts"} viewer={viewer}>
-      <style>{raw(PROJECT_STYLES + TREE_STYLES)}</style>
+      <style>{raw(PROJECT_STYLES + TREE_STYLES + ACTIVITY_STYLES)}</style>
       <div class="page-head">
         <div>
           <h1>{typeof selected === "string" ? selected : "Artifacts"}</h1>
@@ -184,6 +188,16 @@ pages.get("/", requireViewer(), async (c) => {
         </div>
       ) : tree ? (
         <>
+          {viewer.sessionKind === "full" && (
+            <form method="post" action="/watch" style="margin:0 0 var(--space-3)">
+              <CsrfField token={viewer.csrf} />
+              <input type="hidden" name="project" value={selected as string} />
+              <input type="hidden" name="on" value={projectWatched.size ? "0" : "1"} />
+              <button type="submit" title="Hear about every new page, change and comment in this project">
+                {projectWatched.size ? "★ Watching this project" : "☆ Watch this project"}
+              </button>
+            </form>
+          )}
           {canWrite && (
             <form method="post" action="/new" class="field-row" style="margin-bottom:var(--space-4)">
               <CsrfField token={viewer.csrf} />
@@ -200,6 +214,26 @@ pages.get("/", requireViewer(), async (c) => {
               No page matches your search.
             </p>
           </div>
+          {recent.length > 0 && (
+            <section class="section">
+              <div class="section-head">
+                <h2>Recent activity</h2>
+                <a href="/activity" class="small">
+                  All activity
+                </a>
+              </div>
+              <ul class="feed">
+                {recent.map((a) => (
+                  <li>
+                    <ActivityLine a={a} />
+                    <span class="when">
+                      <Time iso={a.at} />
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <script nonce={c.get("nonce")}>
             {raw(`
 const input = document.getElementById("filter");
@@ -313,6 +347,11 @@ body.with-side .side { display: block; }
 .move { width: min(380px, calc(100vw - 24px)); }
 .move select { flex: 1; min-width: 0; font: inherit; padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
 .links { width: min(340px, calc(100vw - 24px)); }
+.bell { position: relative; } .bell-count { position: absolute; top: 0; right: 0; min-width: 15px; padding: 0 3px; border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; }
+.mention-list { list-style: none; margin: 0; padding: var(--space-1); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgb(0 0 0 / 0.15); min-width: 180px; }
+.mention-list li { padding: 4px var(--space-2); border-radius: var(--radius-sm); cursor: pointer; }
+.mention-list li.on, .mention-list li:hover { background: var(--accent-soft); color: var(--accent); }
+.c-body .mention { color: var(--accent); font-weight: 600; }
 .main { position: relative; }
 .count { font-size: var(--text-xs); font-weight: 600; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); text-align: center; }
 .comments { display: none; width: 340px; flex-shrink: 0; overflow: auto; border-left: 1px solid var(--border); background: var(--surface); padding: var(--space-3); }
@@ -378,6 +417,7 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const visible = (rows: LinkedPage[]) => rows.filter((r) => !r.project || !hidden.has(r.project));
   const [from, to, comments] = await Promise.all([linkedFrom(c.env.DB, id).then(visible), linksTo(c.env.DB, id).then(visible), listComments(c.env.DB, id)]);
   const threads = threadsOf(comments);
+  const [watched, people] = await Promise.all([watching(c.env.DB, viewer.userId, [pageTarget(id)]), peopleWhoCanSee(c.env.DB, artifact.project)]);
   const openThreads = threads.filter((t) => !t.first.resolved_at);
   const full = viewer.sessionKind === "full";
   const settles = (t: Thread) => full && (viewer.role === "root" || editor || t.first.author_user === viewer.userId);
@@ -456,6 +496,18 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
               ✎ <span class="label">Edit</span>
             </a>
           )}
+          {viewer.sessionKind === "full" && (
+            <form method="post" action="/watch" style="margin:0">
+              <CsrfField token={viewer.csrf} />
+              <input type="hidden" name="page" value={id} />
+              <input type="hidden" name="on" value={watched.size ? "0" : "1"} />
+              <button type="submit" class="tool" title={watched.size ? "Stop hearing about this page" : "Hear about changes and comments on this page"} style="border:0;background:none;font:inherit">
+                <span class="label">{watched.size ? "Watching" : "Watch"}</span>
+                <span class="short">{watched.size ? "★" : "☆"}</span>
+              </button>
+            </form>
+          )}
+          <Bell unread={viewer.unread} class="tool bell" />
           <button type="button" id="comments-toggle" class="tool" aria-controls="comments" title="Comments" style="border:0;background:none;font:inherit">
             <span class="label">Comments</span>
             <span class="short">✉</span>
@@ -545,6 +597,54 @@ selBtn.addEventListener("click", () => {
   selBtn.hidden = true;
 });
 for (const q of document.querySelectorAll("[data-focus]")) q.addEventListener("click", () => frame.contentWindow.postMessage({ type: "artifact:focus", id: q.dataset.focus }, "*"));
+// @ in a comment suggests the people who can see this page; choosing one records who was named.
+const people = ${jsonInScript(people)};
+for (const area of document.querySelectorAll(".comments textarea")) {
+  const ids = area.form.querySelector('input[name="mentions"]');
+  const list = document.createElement("ul"); list.className = "mention-list"; list.hidden = true;
+  area.after(list);
+  let at = -1, picks = [], on = 0;
+  const close = () => { list.hidden = true; at = -1; };
+  const choose = (p) => {
+    area.setRangeText("@" + p.name + " ", at, area.selectionStart, "end");
+    ids.value = [...new Set([...ids.value.split(",").filter(Boolean), p.id])].join(",");
+    close(); area.focus();
+  };
+  const show = () => {
+    list.replaceChildren(...picks.map((p, k) => { const li = document.createElement("li"); li.textContent = p.name; if (k === on) li.className = "on"; li.addEventListener("mousedown", (e) => { e.preventDefault(); choose(p); }); return li; }));
+    list.hidden = picks.length === 0;
+  };
+  area.addEventListener("input", () => {
+    const before = area.value.slice(0, area.selectionStart), m = /(^|\\s)@([^@\\n]{0,30})$/.exec(before);
+    if (!m) return close();
+    at = before.length - m[2].length - 1;
+    const q = m[2].toLowerCase();
+    picks = people.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 6); on = 0; show();
+  });
+  area.addEventListener("keydown", (e) => {
+    if (list.hidden) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); on = (on + (e.key === "ArrowDown" ? 1 : picks.length - 1)) % picks.length; show(); }
+    else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); choose(picks[on]); }
+    else if (e.key === "Escape") close();
+  });
+  area.addEventListener("blur", () => setTimeout(close, 150));
+}
+// Names in comments stand out: each text node is split at "@Name", nothing is parsed as HTML.
+for (const b of document.querySelectorAll(".c-body")) {
+  const text = b.textContent, names = people.map((p) => "@" + p.name).filter((n) => text.includes(n));
+  if (!names.length) continue;
+  const parts = [];
+  let rest = text;
+  while (rest) {
+    let best = -1, name = "";
+    for (const n of names) { const k = rest.indexOf(n); if (k >= 0 && (best < 0 || k < best)) { best = k; name = n; } }
+    if (best < 0) { parts.push(rest); break; }
+    if (best > 0) parts.push(rest.slice(0, best));
+    const span = document.createElement("span"); span.className = "mention"; span.textContent = name; parts.push(span);
+    rest = rest.slice(best + name.length);
+  }
+  b.replaceChildren(...parts);
+}
 // A link to another artifact, clicked inside the page (see NAV_JS in content.ts).
 window.addEventListener("message", (e) => {
   if (e.source !== document.getElementById("frame").contentWindow) return;
@@ -668,6 +768,7 @@ function CommentsPanel(props: { id: string; threads: Thread[]; csrf: string; can
             <form method="post" action={`/a/${id}/comments`}>
               <CsrfField token={csrf} />
               <input type="hidden" name="reply_to" value={t.first.id} />
+              <input type="hidden" name="mentions" value="" />
               <textarea name="body" required maxlength={4000} aria-label="Reply" />
               <button type="submit">Reply</button>
             </form>
@@ -690,6 +791,7 @@ function CommentsPanel(props: { id: string; threads: Thread[]; csrf: string; can
         <form method="post" action={`/a/${id}/comments`} class="c-new">
           <CsrfField token={csrf} />
           <input type="hidden" name="quote" id="c-quote" value="" />
+          <input type="hidden" name="mentions" value="" />
           <blockquote id="c-quote-show" hidden />
           <textarea name="body" id="c-body" required maxlength={4000} placeholder="Comment on this page, or select a passage in it first" aria-label="New comment" />
           <button type="submit" class="primary">
@@ -1087,6 +1189,8 @@ pages.post("/new", requireViewer("viewer", true), requireSameOriginForm(), async
   });
   await recordViewerAction(c, "artifact.create", "artifact", id, { version: 1, browser: true });
   indexLater(semanticEnv(c.env), c.executionCtx, id);
+  await record(c.env.DB, { artifactId: id, project, kind: "created", actor: { userId: viewer.userId, name: viewer.name }, version: 1 });
+  await setWatch(c.env.DB, viewer.userId, pageTarget(id), true);
   return c.redirect(`/a/${id}/edit`, 303);
 });
 
@@ -1228,6 +1332,9 @@ pages.post("/a/:id/edit", requireViewer("viewer", true), requireSameOriginJson()
   if (!added) return c.json({ error: "version_conflict", current_version: (await getArtifact(c.env.DB, id))?.current_version ?? base_version + 1 }, 409);
   await recordViewerAction(c, "artifact.update", "artifact", id, { version: base_version + 1, browser: true });
   indexLater(semanticEnv(c.env), c.executionCtx, id);
+  const viewer = c.get("viewer");
+  await record(c.env.DB, { artifactId: id, project: artifact.project, kind: "updated", actor: { userId: viewer.userId, name: viewer.name }, version: base_version + 1 });
+  await setWatch(c.env.DB, viewer.userId, pageTarget(id), true);
   return c.json({ version: base_version + 1 });
 });
 
@@ -1256,6 +1363,16 @@ pages.post("/a/:id/comments", ...commentForm, async (c) => {
     author_user: viewer.userId, author_device: null, author_name: viewer.name, body, quote,
   });
   await recordViewerAction(c, "comment.create", "artifact", id, { comment: cid, reply: !!replyTo });
+  // Mentions come from the box's suggestions as user ids; only people still named in the text count.
+  const named = typeof form["mentions"] === "string" ? form["mentions"].split(",").filter(Boolean).slice(0, 20) : [];
+  const people = named.length ? (await c.env.DB.prepare(`select id, name from users where id in (${named.map(() => "?").join(", ")})`).bind(...named).all<{ id: string; name: string }>()).results : [];
+  const mentions = people.filter((u) => body.includes(`@${u.name}`)).map((u) => u.id);
+  await record(c.env.DB, {
+    artifactId: id, project: artifact.project, kind: replyTo ? "replied" : "commented",
+    actor: { userId: viewer.userId, name: viewer.name }, commentId: replyTo ?? cid, mentions,
+    thread: replyTo ? await threadPeople(c.env.DB, replyTo) : [],
+  });
+  await setWatch(c.env.DB, viewer.userId, pageTarget(id), true);
   return c.redirect(`/a/${id}?comments=1#c-${replyTo ?? cid}`, 303);
 });
 
@@ -1273,7 +1390,12 @@ pages.post("/a/:id/comments/:cid/resolve", ...commentForm, async (c) => {
   if (!artifact || !comment || comment.artifact_id !== id || comment.reply_to || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.notFound();
   if (!(await mayManage(c, artifact, comment, "settle"))) return c.text("Only the owner, the project's editors and the thread's author can settle it.", 403);
   const form = await c.req.parseBody();
-  await setResolved(c.env.DB, comment.id, form["resolved"] !== "0");
+  const resolved = form["resolved"] !== "0";
+  await setResolved(c.env.DB, comment.id, resolved);
+  if (resolved) {
+    const viewer = c.get("viewer");
+    await record(c.env.DB, { artifactId: id, project: artifact.project, kind: "resolved", actor: { userId: viewer.userId, name: viewer.name }, commentId: comment.id, thread: await threadPeople(c.env.DB, comment.id) });
+  }
   return c.redirect(`/a/${id}?comments=1#c-${comment.id}`, 303);
 });
 
@@ -1286,6 +1408,138 @@ pages.post("/a/:id/comments/:cid/delete", ...commentForm, async (c) => {
   await deleteComment(c.env.DB, comment.id);
   await recordViewerAction(c, "comment.delete", "artifact", id, { comment: comment.id });
   return c.redirect(`/a/${id}?comments=1`, 303);
+});
+
+
+// --- Activity, watches and notifications ---
+
+const ACTIVITY_STYLES = `
+.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+.feed li { display: flex; gap: var(--space-2); align-items: baseline; flex-wrap: wrap; padding: var(--space-2) 0; border-bottom: 1px solid var(--border); }
+.feed li.unread { font-weight: 600; }
+.feed li.unread::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; align-self: center; }
+.feed .why { font-size: var(--text-xs); }
+.feed .when { color: var(--text-2); font-size: var(--text-sm); margin-left: auto; font-weight: 400; }
+`;
+
+const VERB: Record<ActivityRow["kind"], string> = {
+  created: "made",
+  updated: "changed",
+  commented: "commented on",
+  replied: "replied on",
+  resolved: "resolved a thread on",
+};
+
+/** "Alex changed Handbook (v3)", linking to the page or its comment. */
+function ActivityLine(props: { a: ActivityRow; href?: string; project?: boolean }) {
+  const { a } = props;
+  return (
+    <>
+      <span>
+        {a.actor_name}
+        {a.actor_device && <span class="muted"> (agent)</span>} {VERB[a.kind]}{" "}
+        <a href={props.href ?? activityHref(a)}>{a.title}</a>
+        {(a.kind === "updated" || a.kind === "created") && a.version !== null && <span class="muted"> v{a.version}</span>}
+      </span>
+      {props.project && a.project && <span class="badge">{a.project}</span>}
+    </>
+  );
+}
+
+const REASON: Record<string, string> = { mentioned: "mentioned you", thread: "in your thread", watching: "watching" };
+
+pages.get("/notifications", requireViewer(), async (c) => {
+  const viewer = c.get("viewer");
+  const hidden = await hiddenProjects(c.env.DB, viewer);
+  const rows = (await listNotifications(c.env.DB, viewer.userId)).filter((n) => !n.project || !hidden.has(n.project));
+  return c.html(
+    <Page title="Notifications" viewer={viewer}>
+      <style>{raw(ACTIVITY_STYLES)}</style>
+      <div class="page-head">
+        <div>
+          <h1>Notifications</h1>
+          <p class="lead">What happened on pages you watch, in threads you wrote in, and where someone mentioned you.</p>
+        </div>
+        {viewer.unread > 0 && viewer.sessionKind === "full" && (
+          <form method="post" action="/notifications/read">
+            <CsrfField token={viewer.csrf} />
+            <button type="submit">Mark all as read</button>
+          </form>
+        )}
+      </div>
+      {rows.length === 0 ? (
+        <p class="muted">Nothing yet. Watch a page or a project to hear about its changes and comments.</p>
+      ) : (
+        <ul class="feed">
+          {rows.map((n) => (
+            <li class={n.read_at ? undefined : "unread"}>
+              <ActivityLine a={n} href={`/notifications/${n.notification_id}/open`} project />
+              <span class="badge why">{REASON[n.reason]}</span>
+              <span class="when">
+                <Time iso={n.at} />
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Page>,
+  );
+});
+
+/** Opens what a notification is about and marks it read. */
+pages.get("/notifications/:nid/open", requireViewer(), async (c) => {
+  const viewer = c.get("viewer");
+  const row = (await listNotifications(c.env.DB, viewer.userId, 500)).find((n) => n.notification_id === c.req.param("nid"));
+  if (!row) return c.redirect("/notifications", 303);
+  // Reading changes nothing else, so a view-only session may mark it too.
+  await markRead(c.env.DB, viewer.userId, row.notification_id);
+  return c.redirect(activityHref(row), 303);
+});
+
+pages.post("/notifications/read", requireViewer("viewer", true), requireSameOriginForm(), async (c) => {
+  await markRead(c.env.DB, c.get("viewer").userId);
+  return c.redirect("/notifications", 303);
+});
+
+pages.get("/activity", requireViewer(), async (c) => {
+  const viewer = c.get("viewer");
+  const hidden = await hiddenProjects(c.env.DB, viewer);
+  const rows = (await listActivity(c.env.DB, { limit: 100 })).filter((a) => !a.project || !hidden.has(a.project));
+  return c.html(
+    <Page title="Activity" viewer={viewer}>
+      <style>{raw(ACTIVITY_STYLES)}</style>
+      <h1>Activity</h1>
+      <p class="lead">What changed lately, on every page you can see.</p>
+      <ul class="feed">
+        {rows.map((a) => (
+          <li>
+            <ActivityLine a={a} project />
+            <span class="when">
+              <Time iso={a.at} />
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Page>,
+  );
+});
+
+/** Starts or stops watching a page or a project. */
+pages.post("/watch", requireViewer("viewer", true), requireSameOriginForm(), async (c) => {
+  const viewer = c.get("viewer");
+  const form = await c.req.parseBody();
+  const page = typeof form["page"] === "string" ? form["page"] : "";
+  const project = typeof form["project"] === "string" ? form["project"] : "";
+  const on = form["on"] !== "0";
+  if (page) {
+    const artifact = await getArtifact(c.env.DB, page);
+    if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
+    await setWatch(c.env.DB, viewer.userId, pageTarget(page), on);
+    return c.redirect(`/a/${page}`, 303);
+  }
+  if (!project || !projectSchema.safeParse(project).success || !(await canSeeProject(c.env.DB, viewer, project))) return c.notFound();
+  await setWatch(c.env.DB, viewer.userId, projectTarget(project), on);
+  return c.redirect(projectHref(project), 303);
 });
 
 

@@ -13,7 +13,7 @@ import {
   type Agent,
 } from "./commands/setup.ts";
 import { describeSecret, serveMcp } from "./mcp.ts";
-import { comment, comments, formatComments, list, loginLink, move, projects, publish, read, reindex, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
+import { activity, comment, comments, formatActivity, formatComments, list, loginLink, move, projects, publish, read, reindex, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
@@ -38,6 +38,8 @@ Pages
   artifact comments <url> [--all]   Open comment threads on a page (--all: settled ones too)
   artifact comment <url> <text…> [--reply-to <id>] [--resolve]
                                     Comment on a page, or reply in a thread and settle it
+  artifact activity [--project <name>] [--limit n]
+                                    What changed lately: new pages, changes, comments
   artifact reindex                  Send every page's text and links again, for search (no new versions)
   artifact search <words…> [--limit n]
                                     Pages whose title or text has every word
@@ -259,6 +261,12 @@ async function main(): Promise<void> {
       if (!url || !text) throw new ArtifactError("Usage: artifact comment <url> <text…> [--reply-to <id>] [--resolve]", "bad_args");
       const r = await comment(url, { body: text, ...(o["reply-to"] ? { reply_to: o["reply-to"] } : {}), ...(o.resolve ? { resolve: true } : {}) });
       out(`Commented: ${r.url}`, r);
+      return;
+    }
+
+    case "activity": {
+      const r = await activity(o.project, o.limit ? Number(o.limit) : 30);
+      out(formatActivity(r.activity) || "Nothing happened yet.", r);
       return;
     }
 

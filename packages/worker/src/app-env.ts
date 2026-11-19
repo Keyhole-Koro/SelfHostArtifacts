@@ -11,6 +11,8 @@ export interface Viewer {
   /** Device-link sessions can view artifacts but cannot change account or owner settings. */
   sessionKind: SessionKind;
   csrf: string;
+  /** Notifications not read yet. */
+  unread: number;
 }
 
 export interface Device {
