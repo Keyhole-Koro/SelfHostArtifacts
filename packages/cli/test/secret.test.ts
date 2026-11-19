@@ -1,17 +1,19 @@
-import { SECRET_CRYPTO_JS, secretEnvelopeSchema } from "@artifact/shared";
+import { SECRET_CRYPTO_JS, SECRET_LINK_KEY, secretEnvelopeSchema, secretShareEnvelopeSchema } from "@artifact/shared";
 import type { webcrypto } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ArtifactError } from "../src/client.ts";
-import { encryptForRecipient, fingerprint, parseEnv, parseJson, readSecretItems, selectItems, validateItems } from "../src/secret.ts";
+import { encryptForLink, encryptForRecipient, fingerprint, parseEnv, parseJson, readSecretItems, selectItems, validateItems } from "../src/secret.ts";
 
 /** The exact code the recipient's browser runs (/assets/secret.js), evaluated in Node. */
 interface BrowserCrypto {
   generate(): Promise<{ privateKey: webcrypto.CryptoKey; publicKey: string }>;
   fingerprint(publicKey: string): Promise<string>;
   decrypt(privateKey: webcrypto.CryptoKey, publicKey: string, id: string, envelope: unknown): Promise<unknown>;
+  shareKey(linkSecret: string): Promise<webcrypto.CryptoKey>;
+  openShare(key: webcrypto.CryptoKey, inner: unknown): Promise<unknown>;
 }
 const browser = new Function(`${SECRET_CRYPTO_JS}; return secretCrypto;`)() as BrowserCrypto;
 
@@ -62,6 +64,41 @@ describe("encryption", () => {
     const recipient = await browser.generate();
     const items = Array.from({ length: 5 }, (_, i) => ({ name: `k${i}`, value: "x".repeat(4000) }));
     await expect(encryptForRecipient("abcdefghjkmnpqrs", recipient.publicKey, { items })).rejects.toThrow(/at most 16384/);
+  });
+});
+
+describe("share links", () => {
+  it("are opened by the browser's code with the part after #, and nothing else", async () => {
+    const plaintext = { items: [{ name: "manage@example.com", value: SECRET_VALUE }] };
+    const { linkSecret, envelope } = await encryptForLink(plaintext);
+    expect(linkSecret).toMatch(SECRET_LINK_KEY);
+    expect(secretShareEnvelopeSchema.safeParse(envelope).success).toBe(true);
+    expect(JSON.stringify(envelope)).not.toContain(SECRET_VALUE);
+    const key = await browser.shareKey(linkSecret);
+    expect(key.extractable).toBe(false);
+    expect(await browser.openShare(key, envelope)).toEqual(plaintext);
+
+    const other = await encryptForLink(plaintext);
+    expect(other.linkSecret).not.toBe(linkSecret);
+    await expect(browser.openShare(await browser.shareKey(other.linkSecret), envelope)).rejects.toThrow();
+    const ct = Buffer.from(envelope.ct, "base64url");
+    ct[0]! ^= 1;
+    await expect(browser.openShare(key, { ...envelope, ct: ct.toString("base64url") })).rejects.toThrow();
+  });
+
+  it("still read after the server wraps them for the browser that opened the link", async () => {
+    // The Worker wraps the inner envelope with envelope v1 for the browser's key (the same algorithm as encryptForRecipient).
+    const plaintext = { items: [{ name: "a", value: SECRET_VALUE }] };
+    const { linkSecret, envelope } = await encryptForLink(plaintext);
+    const recipient = await browser.generate();
+    const wrapped = await encryptForRecipient("abcdefghjkmnpqrs", recipient.publicKey, envelope as never);
+    const inner = await browser.decrypt(recipient.privateKey, recipient.publicKey, "abcdefghjkmnpqrs", wrapped);
+    expect(await browser.openShare(await browser.shareKey(linkSecret), inner)).toEqual(plaintext);
+  });
+
+  it("refuses more than 16 KB", async () => {
+    const items = Array.from({ length: 5 }, (_, i) => ({ name: `k${i}`, value: "x".repeat(4000) }));
+    await expect(encryptForLink({ items })).rejects.toThrow(/at most 16384/);
   });
 });
 

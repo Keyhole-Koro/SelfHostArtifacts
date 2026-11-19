@@ -4,7 +4,9 @@ import {
   MAX_SECRET_PLAINTEXT_BYTES,
   MAX_SECRET_VALUE,
   SECRET_INFO,
+  SECRET_SHARE_INFO,
   type SecretEnvelope,
+  type SecretShareEnvelope,
   type SecretItem,
   type SecretPlaintext,
 } from "@artifact/shared";
@@ -33,12 +35,17 @@ export async function fingerprint(publicKey: string): Promise<string> {
   return `${s.slice(0, 4)} ${s.slice(4, 8)} ${s.slice(8)}`;
 }
 
-/** Envelope v1 (see @artifact/shared secret.ts): one-time ECDH P-256 → HKDF-SHA256 → AES-256-GCM. */
-export async function encryptForRecipient(id: string, recipientPublicKey: string, plaintext: SecretPlaintext): Promise<SecretEnvelope> {
+function encodePlaintext(plaintext: SecretPlaintext): Uint8Array {
   const data = new TextEncoder().encode(JSON.stringify(plaintext));
   if (data.length > MAX_SECRET_PLAINTEXT_BYTES) {
     throw new ArtifactError(`The secret is ${data.length} bytes; at most ${MAX_SECRET_PLAINTEXT_BYTES} can be sent.`, "too_large");
   }
+  return data;
+}
+
+/** Envelope v1 (see @artifact/shared secret.ts): one-time ECDH P-256 → HKDF-SHA256 → AES-256-GCM. */
+export async function encryptForRecipient(id: string, recipientPublicKey: string, plaintext: SecretPlaintext): Promise<SecretEnvelope> {
+  const data = encodePlaintext(plaintext);
   const rpk = new Uint8Array(Buffer.from(recipientPublicKey, "base64url"));
   const recipient = await subtle.importKey("raw", rpk, P256, false, []);
   const sender = (await subtle.generateKey(P256, true, ["deriveBits"])) as webcrypto.CryptoKeyPair;
@@ -53,6 +60,21 @@ export async function encryptForRecipient(id: string, recipientPublicKey: string
   const iv = webcrypto.getRandomValues(new Uint8Array(12));
   const ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv, additionalData: context }, key, data));
   return { v: 1, epk: b64(epk), iv: b64(iv), ct: b64(ct) };
+}
+
+/**
+ * Share mode (see @artifact/shared secret.ts): a fresh 32-byte link secret → HKDF-SHA256 → AES-256-GCM.
+ * The link secret goes after the # of the recipient's link and never to the server.
+ */
+export async function encryptForLink(plaintext: SecretPlaintext): Promise<{ linkSecret: string; envelope: SecretShareEnvelope }> {
+  const data = encodePlaintext(plaintext);
+  const secret = webcrypto.getRandomValues(new Uint8Array(32));
+  const info = new TextEncoder().encode(SECRET_SHARE_INFO);
+  const ikm = await subtle.importKey("raw", secret, "HKDF", false, ["deriveKey"]);
+  const key = await subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info }, ikm, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv, additionalData: info }, key, data));
+  return { linkSecret: b64(secret), envelope: { v: 1, iv: b64(iv), ct: b64(ct) } };
 }
 
 function unquote(value: string): string {

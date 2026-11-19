@@ -764,8 +764,8 @@ root.get("/settings", async (c) => {
           <div>
             <h2>Secrets</h2>
             <p>
-              Requests made with <code>artifact secret request</code>. Only the recipient's browser can decrypt; this list shows who
-              opened each link. Ended requests are kept here for 30 days without their contents.
+              Links made with <code>artifact secret request</code> or <code>artifact secret share</code>. Only the recipient's browser can
+              decrypt; this list shows who opened each link. Ended ones are kept here for 30 days without their contents.
             </p>
           </div>
         </div>
@@ -777,7 +777,8 @@ root.get("/settings", async (c) => {
               <li>
                 <div class="main">
                   <div class="title">
-                    {r.label} <span class={`badge ${status === "sealed" || status === "claimed" ? "accent" : ""}`}>{SECRET_STATUS_LABEL[status]}</span>
+                    {r.label} <span class={`badge ${status === "sealed" || status === "claimed" ? "accent" : ""}`}>{r.mode === "share" && status === "sealed" ? "Opened" : SECRET_STATUS_LABEL[status]}</span>
+                    {r.mode === "share" && <span class="badge">Share link</span>}
                   </div>
                   <div class="desc">
                     Created <Time iso={r.created_at} />

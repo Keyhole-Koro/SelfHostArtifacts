@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
-import { list, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretStatus, type SecretState } from "./operations.ts";
+import { list, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
 import { VERSION } from "./version.ts";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -108,6 +108,38 @@ export function createServer(): McpServer {
   );
 
   server.registerTool(
+    "secret_share",
+    {
+      title: "Make a link that hands a secret to the first browser that opens it",
+      description:
+        "Hand a secret (a password, an API key) to someone in one step. Encrypts values from a local file here, stores only the " +
+        "ciphertext, and returns a link whose key is after the # (browsers never send that part to the server). The first browser " +
+        "that opens the link and presses Show reads the values; from then on no other browser can, even with the link. The file can be " +
+        ".env (KEY=VALUE), JSON ({\"NAME\": \"value\"}) or any text file (one item). Never write a secret value into the arguments or " +
+        "the conversation. The link itself lets whoever opens it first read the secret: give it only to the user to pass on, and " +
+        "check secret_status afterwards to see who opened it. Prefer this to secret_request unless the user wants to compare key fingerprints.",
+      inputSchema: {
+        label: z.string().describe("What is being handed over, shown to the recipient (not secret), e.g. \"Mail passwords\""),
+        file_path: z.string().describe("Absolute path of the file that holds the values"),
+        keys: z
+          .union([z.array(z.string()), z.record(z.string(), z.string())])
+          .optional()
+          .describe('Items to send: ["KEY", …] keeps the names; {"KEY": "Shown name"} renames them. All items by default'),
+        expires_in_hours: z.number().int().min(1).max(168).optional().describe("How long the link works; 72 by default, at most 168"),
+      },
+    },
+    ({ label, file_path, keys, expires_in_hours }) =>
+      run(async () => {
+        const r = await secretShare(label, file_path, keys, expires_in_hours);
+        return (
+          `Created share link ${r.id} ("${r.label}") with ${r.names.length} item${r.names.length === 1 ? "" : "s"} (${r.names.join(", ")}). ` +
+          `Give this whole link, including the part after #, to the user to pass on: ${r.url}\n` +
+          `It works until ${r.expires_at}. The first browser that opens it and presses Show is the only one that can read it.`
+        );
+      }),
+  );
+
+  server.registerTool(
     "secret_request",
     {
       title: "Ask for a secret handoff link",
@@ -206,12 +238,18 @@ const NEXT_STEP: Record<string, string> = {
   expired: "Expired. Make a new request if it is still needed.",
 };
 
+const SHARE_NEXT_STEP: Record<string, string> = {
+  waiting: "Nobody has pressed Show yet. Make sure the recipient got the whole link.",
+  sealed: "Opened: only that browser can read it now. If that was not the recipient, delete it and make a new link.",
+};
+
 export function describeSecret(x: SecretState): string {
-  const lines = [`${x.label} — ${x.status}`, `Created ${x.created_at}, works until ${x.expires_at}`];
+  const share = x.mode === "share";
+  const lines = [`${x.label} — ${x.status}${share ? " (share link)" : ""}`, `Created ${x.created_at}, works until ${x.expires_at}`];
   if (x.claimed_at) lines.push(`Opened ${x.claimed_at} from ${x.claim_ip ?? "unknown IP"} (${x.claim_user_agent ?? "unknown browser"})`);
-  if (x.fingerprint) lines.push(`Key fingerprint: ${x.fingerprint} (the recipient's page shows the same digits)`);
+  if (x.fingerprint && !share) lines.push(`Key fingerprint: ${x.fingerprint} (the recipient's page shows the same digits)`);
   if (x.opened_at) lines.push(`Recipient fetched the secret ${x.opened_at}`);
-  lines.push(NEXT_STEP[x.status] ?? "");
+  lines.push((share ? SHARE_NEXT_STEP[x.status] : undefined) ?? NEXT_STEP[x.status] ?? "");
   return lines.filter(Boolean).join("\n");
 }
 

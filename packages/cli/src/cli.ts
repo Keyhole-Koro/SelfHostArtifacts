@@ -13,7 +13,7 @@ import {
   type Agent,
 } from "./commands/setup.ts";
 import { describeSecret, serveMcp } from "./mcp.ts";
-import { list, loginLink, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretStatus } from "./operations.ts";
+import { list, loginLink, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
@@ -36,6 +36,8 @@ Pages
   artifact delete <url>             Move to the trash (restorable for 30 days)
 
 Secrets (only the recipient's browser can decrypt)
+  artifact secret share <file> --label <l> [--key NAME[=Shown name]]... [--hours n]
+                                    Encrypt values now and print a link; the first browser that opens it reads them
   artifact secret request --label <l> [--hours n]   Make a link for the recipient (72 h by default, at most 168)
   artifact secret status [id]                       Who opened it and the key fingerprint; without id, recent requests
   artifact secret send <id> <file> [--key NAME[=Shown name]]...
@@ -248,6 +250,17 @@ async function main(): Promise<void> {
           out(`Request ${r.id}. Give this link to the recipient:\n${r.url}\nIt works until ${r.expires_at}.`, r);
           return;
         }
+        case "share": {
+          const path = id;
+          if (!path || !o.label) throw new ArtifactError("Usage: artifact secret share <file> --label <what it is> [--key NAME[=Shown name]]... [--hours n]", "bad_args");
+          const r = await secretShare(o.label, path, keysFrom(o.key), o.hours ? Number(o.hours) : undefined);
+          out(
+            `Share link ${r.id} (${r.names.join(", ")}). Give this whole link, including the part after #, to the recipient:\n${r.url}\n` +
+              `The first browser that opens it and presses Show is the only one that can read it. It works until ${r.expires_at}.`,
+            r,
+          );
+          return;
+        }
         case "status": {
           if (!id) {
             const r = await secretList(o.limit ? Number(o.limit) : 25);
@@ -271,7 +284,7 @@ async function main(): Promise<void> {
           return;
         }
         default:
-          throw new ArtifactError("Usage: artifact secret request|status|send|delete. Run `artifact help`.", "bad_args");
+          throw new ArtifactError("Usage: artifact secret share|request|status|send|delete. Run `artifact help`.", "bad_args");
       }
     }
 

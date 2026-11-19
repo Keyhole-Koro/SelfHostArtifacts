@@ -9,8 +9,18 @@ import { z } from "zod";
  * HKDF-SHA256 (salt = sender public key || recipient public key, info = SECRET_INFO "\0" id) to an
  * AES-256-GCM key, and encrypts the JSON plaintext with a random 12-byte IV and SECRET_INFO "\0" id
  * as additional data, so a ciphertext cannot be moved to another request.
+ *
+ * Share mode (a link made ahead of time): the sender makes a random 32-byte link secret, puts it
+ * after the # of the link (browsers never send that part), and encrypts the JSON plaintext with
+ * AES-256-GCM under HKDF-SHA256(link secret, salt empty, info SECRET_SHARE_INFO); the additional
+ * data is SECRET_SHARE_INFO too. The Worker stores that inner envelope. When the first browser
+ * registers its public key, the Worker wraps the inner envelope in an envelope v1 for that key and
+ * keeps only the result, so reading it needs both the link and that browser's private key.
  */
 export const SECRET_INFO = "artifact-secret v1";
+export const SECRET_SHARE_INFO = "artifact-secret share v1";
+/** 32 random bytes in base64url: the part of a share link after #. */
+export const SECRET_LINK_KEY = /^[A-Za-z0-9_-]{43}$/;
 
 export const SECRET_DEFAULT_HOURS = 72;
 /** Safari deletes a site's storage (and so the recipient's key) after 7 days without a visit. */
@@ -25,18 +35,33 @@ const B64URL = /^[A-Za-z0-9_-]+$/;
 /** Uncompressed P-256 point (65 bytes) in base64url. */
 export const P256_PUBLIC_KEY = /^[A-Za-z0-9_-]{87}$/;
 
+/** AES-GCM adds a 16-byte tag; base64url grows by 4/3. */
+const MAX_CT = Math.ceil(((MAX_SECRET_PLAINTEXT_BYTES + 16) * 4) / 3);
+
+/** The inner envelope of share mode, encrypted under the key from the link secret. */
+export const secretShareEnvelopeSchema = z.object({
+  v: z.literal(1),
+  iv: z.string().regex(/^[A-Za-z0-9_-]{16}$/, "iv must be 12 bytes"),
+  ct: z.string().regex(/^[A-Za-z0-9_-]+$/).max(MAX_CT, "the secret is too large"),
+});
+export type SecretShareEnvelope = z.infer<typeof secretShareEnvelopeSchema>;
+
 export const secretCreateSchema = z.object({
   label: z.string().trim().min(1, "label is empty").max(MAX_SECRET_LABEL, `label is longer than ${MAX_SECRET_LABEL} characters`),
   expires_in_hours: z.number().int().min(1).max(SECRET_MAX_HOURS, `a request lasts at most ${SECRET_MAX_HOURS} hours`).optional(),
+  /** Present for share mode: the ciphertext is put now, and the first browser that opens the link reads it. */
+  share: secretShareEnvelopeSchema.optional(),
 });
 export type SecretCreate = z.infer<typeof secretCreateSchema>;
+
+/** request: the recipient opens the link, then the sender encrypts for their key. share: the sender put the ciphertext first. */
+export type SecretMode = "request" | "share";
 
 export const secretEnvelopeSchema = z.object({
   v: z.literal(1),
   epk: z.string().regex(P256_PUBLIC_KEY, "epk must be a P-256 public key"),
   iv: z.string().regex(/^[A-Za-z0-9_-]{16}$/, "iv must be 12 bytes"),
-  // AES-GCM adds a 16-byte tag; base64url grows by 4/3.
-  ct: z.string().regex(B64URL).max(Math.ceil(((MAX_SECRET_PLAINTEXT_BYTES + 16) * 4) / 3), "the secret is too large"),
+  ct: z.string().regex(B64URL).max(MAX_CT, "the secret is too large"),
 });
 export type SecretEnvelope = z.infer<typeof secretEnvelopeSchema>;
 
@@ -56,14 +81,16 @@ export interface SecretPlaintext {
 
 /**
  * waiting: nobody opened the link yet. claimed: a browser opened it and sent its public key.
- * sealed: the sender put the ciphertext. received: the recipient deleted it after reading.
+ * sealed: the ciphertext is there for that browser (in share mode, from the moment it opened).
+ * received: the recipient deleted it after reading.
  * deleted: the owner or an agent deleted it. expired: the time ran out.
  */
 export type SecretStatus = "waiting" | "claimed" | "sealed" | "received" | "deleted" | "expired";
 
 export interface SecretCreateResponse {
   id: string;
-  /** The link for the recipient. It is shown only here: the server keeps a hash of its token. */
+  mode: SecretMode;
+  /** The link for the recipient. It is shown only here: the server keeps a hash of its token. In share mode the sender appends #<link secret>. */
   url: string;
   label: string;
   expires_at: string;
@@ -71,6 +98,7 @@ export interface SecretCreateResponse {
 
 export interface SecretSummary {
   id: string;
+  mode: SecretMode;
   label: string;
   status: SecretStatus;
   created_at: string;
@@ -92,11 +120,12 @@ export interface SecretListResponse {
 /**
  * Browser code shared by the recipient's page (/assets/secret.js) and the CLI tests, so the tests
  * decrypt with exactly what the browser runs. Defines `secretCrypto` with generate(),
- * fingerprint(), decrypt(). Plain JS, Web Crypto only.
+ * fingerprint(), decrypt(), shareKey(), openShare(). Plain JS, Web Crypto only.
  */
 export const SECRET_CRYPTO_JS = `
 const secretCrypto = (() => {
   const INFO = ${JSON.stringify(SECRET_INFO)};
+  const SHARE_INFO = ${JSON.stringify(SECRET_SHARE_INFO)};
   const enc = new TextEncoder();
   const b64 = {
     toBytes(s) {
@@ -149,6 +178,25 @@ const secretCrypto = (() => {
     return JSON.parse(new TextDecoder().decode(plain));
   }
 
-  return { b64, generate, fingerprint, decrypt };
+  /** The AES key of a share link, from the part after #. It cannot be exported, so it can be kept in IndexedDB. */
+  async function shareKey(linkSecret) {
+    const ikm = await crypto.subtle.importKey("raw", b64.toBytes(linkSecret), "HKDF", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey(
+      { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: enc.encode(SHARE_INFO) },
+      ikm,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"],
+    );
+  }
+
+  /** Opens the inner envelope of a share link (what decrypt() returns for share mode). */
+  async function openShare(key, inner) {
+    if (!inner || inner.v !== 1) throw new Error("Unsupported envelope");
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b64.toBytes(inner.iv), additionalData: enc.encode(SHARE_INFO) }, key, b64.toBytes(inner.ct));
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+
+  return { b64, generate, fingerprint, decrypt, shareKey, openShare };
 })();
 `;
