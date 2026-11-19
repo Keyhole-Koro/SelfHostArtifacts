@@ -93,6 +93,11 @@ that tree, with the tree beside each page and a trail above it. Move a page from
 or with `artifact move`. In a project's settings you describe it and choose who sees it: every
 viewer, or only the members you add (editors among them may also rearrange its pages).
 
+Every page is searchable by its text, Japanese included: use the box at the top, or `search` from
+an agent. The CLI reads a page's text and links when it publishes, so a page shows which pages
+link to it (**Links**), a link to another page opens it in the viewer, and **Versions → Compare
+versions** shows what changed in the text.
+
 To show a page to someone without an account, open it and choose **Share → Create public link**:
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
 it, replace it with a new link or turn it off; agents cannot make pages public.
@@ -162,6 +167,7 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `read` | Read a published page or one of its files |
 | `list` | Recent pages, optionally of one project |
 | `move` | Move a page to another project, under another page, or to another place among its siblings |
+| `search` | Find pages by words in their title, description or text |
 | `delete` | Move a page to the trash (restorable in Settings for 30 days) |
 | `secret_share` | Encrypt values from a local file and make a link that only the first browser to open it can read |
 | `secret_request` | Make a link for handing a secret to someone |
@@ -176,6 +182,7 @@ artifact publish ./report.html            # or a folder; prints the URL
 artifact publish ./site --allow-connect api.example.com
 artifact list [--project MediShare]       # pages are grouped by project
 artifact projects                         # projects and how many pages each has
+artifact search 要求の列 ring                # pages with every word, Japanese included
 artifact move https://artifacts.example.com/a/<id> MediShare
 artifact publish ./setup.html --parent https://artifacts.example.com/a/<id>   # a page under another
 artifact move https://artifacts.example.com/a/<id> --parent top --position 1

@@ -2,6 +2,7 @@ import type { Config, Env } from "./env.ts";
 import { AUDIT_RETENTION_DAYS } from "./db/audit.ts";
 import { SECRET_HISTORY_DAYS } from "./db/secrets.ts";
 import { blobKey } from "./routes/api.ts";
+import { purgeStatements } from "./db/search.ts";
 
 /** Blobs younger than this are kept even when unreferenced: their publish may still be running. */
 const BLOB_GRACE_MS = 24 * 60 * 60 * 1000;
@@ -34,10 +35,11 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
   // Empty the trash.
   const cutoff = new Date(now.getTime() - config.trashDays * 864e5).toISOString();
   const purged = await db.batch([
+    ...purgeStatements(db, cutoff),
     db.prepare("delete from versions where artifact_id in (select id from artifacts where deleted_at is not null and deleted_at <= ?)").bind(cutoff),
     db.prepare("delete from artifacts where deleted_at is not null and deleted_at <= ?").bind(cutoff),
   ]);
-  const purgedArtifacts = purged[1]?.meta.changes ?? 0;
+  const purgedArtifacts = purged[purged.length - 1]?.meta.changes ?? 0;
 
   // Keep only the newest KEEP_VERSIONS versions of each artifact (0 keeps all). The current
   // version is always the newest, so it is never pruned.

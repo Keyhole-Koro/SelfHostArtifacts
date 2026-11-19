@@ -13,6 +13,8 @@ import {
   type ProjectListResponse,
   type MoveRequest,
   type MoveResponse,
+  MAX_TEXT_CHARS,
+  type SearchResponse,
 } from "@artifact/shared";
 import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +22,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactError, artifactIdFromUrl, expectOk, session, sha256Hex, signedFetch, signedJson, type Session } from "./client.ts";
 import { forgetArtifact, loadState, rememberPublish } from "./profile.ts";
 import { detectProject } from "./project.ts";
+import { pageLinks, pageText } from "./text.ts";
 import { encryptForLink, encryptForRecipient, fingerprint, readSecretItems, type KeySelection } from "./secret.ts";
 
 export interface PublishInput {
@@ -149,6 +152,10 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
   }
 
   const entryFile = files.find((f) => f.published === entry)!;
+  // What the page says and links to, from every HTML file, the entry first.
+  const pagesHtml = [entryFile, ...files.filter((f) => f !== entryFile && f.published.endsWith(".html"))].map((f) => f.bytes.toString("utf8"));
+  const text = pagesHtml.map(pageText).join("\n").slice(0, MAX_TEXT_CHARS);
+  const links = [...new Set(pagesHtml.flatMap((h) => pageLinks(h, s.origin)))].slice(0, 1000);
   const parent = input.parent ? artifactIdFromUrl(s, input.parent) : undefined;
   // Under a parent, the page goes into the parent's project; the repository's name is only a default.
   const project = existing || parent ? input.project : (input.project ?? detectProject());
@@ -160,6 +167,8 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
     allow_connect: input.allowConnect ?? existing?.allow_connect ?? [],
     ...(project ? { project } : {}),
     ...(parent ? { parent } : {}),
+    text,
+    links,
     // The version this computer last published. If another device has published since, the
     // server answers 409 instead of silently overwriting that work.
     base_version: existing ? (remembered?.id === existing.id ? remembered.version : existing.version) : undefined,
@@ -177,6 +186,11 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
 export async function list(limit = 25, project?: string | null): Promise<ListResponse> {
   const filter = project === undefined ? "" : `&project=${encodeURIComponent(project ?? "")}`;
   return signedJson<ListResponse>(session(), "GET", `/api/v1/artifacts?limit=${limit}${filter}`);
+}
+
+/** Pages whose title, description or text has every word of `query`. */
+export async function search(query: string, limit = 20): Promise<SearchResponse> {
+  return signedJson<SearchResponse>(session(), "GET", `/api/v1/search?q=${encodeURIComponent(query)}&limit=${limit}`);
 }
 
 export async function projects(): Promise<ProjectListResponse> {

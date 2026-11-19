@@ -13,7 +13,7 @@ import {
   type Agent,
 } from "./commands/setup.ts";
 import { describeSecret, serveMcp } from "./mcp.ts";
-import { list, loginLink, move, projects, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
+import { list, loginLink, move, projects, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
@@ -35,6 +35,8 @@ Pages
       --parent <url>                Put the page under another page, in that page's project
   artifact list [--limit n] [--project <name> | --none]
   artifact projects                 Projects and how many pages each has
+  artifact search <words…> [--limit n]
+                                    Pages whose title or text has every word
   artifact move <url> <project>     Move a page, with the pages under it, to another project (--none: out of any project)
   artifact move <url> --parent <url|top> [--position n]
                                     Put a page under another page of its project, or at the top, at place n
@@ -233,6 +235,14 @@ async function main(): Promise<void> {
     case "list": {
       const r = await list(o.limit ? Number(o.limit) : 25, o.none ? null : o.project);
       out(r.artifacts.map((a) => `${a.url}  v${a.version}  ${a.project ? `[${a.project}] ` : ""}${a.title}`).join("\n") || "Nothing here.", r);
+      return;
+    }
+
+    case "search": {
+      const query = rest.join(" ").trim();
+      if (!query) throw new ArtifactError("Usage: artifact search <words…>", "bad_args");
+      const r = await search(query, o.limit ? Number(o.limit) : 20);
+      out(r.results.map((h) => `${h.url}  ${h.project ? `[${h.project}] ` : ""}${h.title}\n    ${h.snippet.replace(/\s+/g, " ")}`).join("\n") || "No page has every one of these words.", r);
       return;
     }
 

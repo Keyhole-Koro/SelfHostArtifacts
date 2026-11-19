@@ -47,6 +47,9 @@ code { font: var(--text-sm)/1.5 var(--font-mono); background: var(--surface-2); 
 .brand { display: flex; align-items: center; gap: var(--space-2); font-weight: 650; color: var(--text); }
 .brand:hover { text-decoration: none; }
 .menu { margin-left: auto; position: relative; }
+.top-search { margin: 0 0 0 auto; display: flex; }
+.top-search + .menu { margin-left: 0; }
+.top-search input[type=search] { width: min(240px, 36vw); font-size: var(--text-sm); padding: 5px var(--space-3); border: 1px solid var(--border); border-radius: 999px; }
 .menu > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); color: var(--text-2); font-size: var(--text-sm); }
 .menu > summary::-webkit-details-marker { display: none; }
 .menu > summary:hover { background: var(--surface-2); color: var(--text); }
@@ -153,6 +156,11 @@ export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boo
             <a class="brand" href="/">
               Artifacts
             </a>
+            {viewer && (
+              <form class="top-search" method="get" action="/search" role="search">
+                <input type="search" name="q" placeholder="Search pages" aria-label="Search pages" />
+              </form>
+            )}
             {viewer && (
               <details class="menu">
                 <summary>

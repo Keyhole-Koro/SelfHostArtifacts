@@ -43,6 +43,9 @@ export const allowConnectSchema = z
 
 export const MAX_PROJECT_NAME = 60;
 
+/** At most this much of a page's text is kept for search and comparing versions. */
+export const MAX_TEXT_CHARS = 100_000;
+
 /** A project name: one line, no slashes (it appears in URLs and the list). */
 export const projectSchema = z
   .string()
@@ -62,6 +65,10 @@ export const manifestSchema = z
     project: projectSchema.optional(),
     /** The page this one goes under, in the same project. On update, only sent to move the page. */
     parent: artifactIdSchema.optional(),
+    /** The page's text, as the CLI read it from its HTML: what search finds and what versions are compared by. */
+    text: z.string().max(MAX_TEXT_CHARS).optional(),
+    /** The pages it links to (their ids), so each page can show what links to it. */
+    links: z.array(artifactIdSchema).max(1000).optional(),
     entry: z.string(),
     files: z.record(z.string(), z.string().regex(/^sha256:[0-9a-f]{64}$/, "file hashes look like sha256:<64 hex>")),
     allow_connect: allowConnectSchema.optional(),

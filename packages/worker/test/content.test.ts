@@ -4,6 +4,14 @@ import { CONTENT_TOKEN_SECONDS, mintContentToken } from "../src/content.ts";
 import { sign } from "../src/lib/signed.ts";
 import { ORIGIN, ROOT, browserGet, contentSrc, createDevice, publish, sessionCookie } from "./helpers.ts";
 
+/** A page's own bytes: the HTML the viewer gets ends with the link script. */
+function withoutNav(body: string): string {
+  const at = body.lastIndexOf("\n<script src=");
+  expect(at).toBeGreaterThan(-1);
+  expect(body.slice(at)).toMatch(/^\n<script src="\/c\/[^"]+\/!artifact\/nav\.js"><\/script>\n$/);
+  return body.slice(0, at);
+}
+
 const SECRET = "test-content-secret";
 
 async function published(files: Record<string, string> = { "index.html": "<h1>hi</h1>", "css/site.css": "h1{}" }, extra = {}) {
@@ -27,7 +35,8 @@ describe("artifact content", () => {
     const src = await contentSrc(id, cookie);
     const page = await SELF.fetch(`${ORIGIN}${src}`);
     expect(page.status).toBe(200);
-    expect(await page.text()).toBe("<h1>hi</h1>");
+    // The viewer's link script follows the page's own bytes (see NAV_JS in content.ts).
+    expect(withoutNav(await page.text())).toBe("<h1>hi</h1>");
     const css = await SELF.fetch(new URL("css/site.css", `${ORIGIN}${src}`));
     expect(css.headers.get("content-type")).toBe("text/css; charset=utf-8");
   });
@@ -70,9 +79,9 @@ describe("artifact content", () => {
     const { id, cookie, device } = await published({ "index.html": "v1", "old.txt": "old" });
     await publish(device, { "index.html": "v2" }, { id, base_version: 1 });
     const v1 = await contentSrc(id, cookie, 1);
-    expect(await (await SELF.fetch(`${ORIGIN}${v1}`)).text()).toBe("v1");
+    expect(withoutNav(await (await SELF.fetch(`${ORIGIN}${v1}`)).text())).toBe("v1");
     const v2 = await contentSrc(id, cookie);
-    expect(await (await SELF.fetch(`${ORIGIN}${v2}`)).text()).toBe("v2");
+    expect(withoutNav(await (await SELF.fetch(`${ORIGIN}${v2}`)).text())).toBe("v2");
     expect((await SELF.fetch(new URL("old.txt", `${ORIGIN}${v2}`))).status).toBe(404);
   });
 

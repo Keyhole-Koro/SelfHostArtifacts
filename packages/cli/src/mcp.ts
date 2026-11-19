@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
-import { list, move, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
+import { list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
 import { VERSION } from "./version.ts";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -103,6 +103,28 @@ export function createServer(): McpServer {
             (a) =>
               `${a.title} — ${a.url} (v${a.version}, updated ${a.updated_at}${a.project ? `, ${a.project}` : ""})${a.description ? `\n  ${a.description}` : ""}`,
           )
+          .join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "search",
+    {
+      title: "Search pages",
+      description:
+        "Find published pages whose title, description or text has every word of the query (any part of a word, Japanese included). " +
+        "Use it before writing a page, to link to what exists instead of repeating it.",
+      inputSchema: {
+        query: z.string().describe("Words to find, separated by spaces"),
+        limit: z.number().int().positive().max(100).optional(),
+      },
+    },
+    ({ query, limit }) =>
+      run(async () => {
+        const { results } = await search(query, limit ?? 20);
+        if (results.length === 0) return "No page has every one of these words.";
+        return results
+          .map((h) => `${h.title} — ${h.url}${h.project ? ` (${h.project})` : ""}\n  ${h.snippet.replace(/\s+/g, " ")}`)
           .join("\n");
       }),
   );

@@ -11,6 +11,7 @@ import {
   ancestorsOf,
   getArtifact,
   getVersion,
+  versionText,
   listArtifacts,
   listProjectPages,
   placeAmongSiblings,
@@ -49,6 +50,7 @@ import { pageSecurity } from "../ui/security.ts";
 import { CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
 import { PageTree, TREE_STYLES } from "../ui/tree.tsx";
 import { canEditProject, canSeeProject, getSpace, hiddenProjects } from "../db/spaces.ts";
+import { MARK_END, MARK_START, linkedFrom, linksTo, searchPages, type LinkedPage } from "../db/search.ts";
 
 export const pages = new Hono<AppEnv>();
 
@@ -136,7 +138,7 @@ pages.get("/", requireViewer(), async (c) => {
             )}
           </p>
         </div>
-        {artifacts.length > 0 && <input id="filter" class="search" type="search" placeholder="Search" aria-label="Search titles and descriptions" />}
+        {artifacts.length > 0 && <input id="filter" class="search" type="search" placeholder="Filter this list" aria-label="Filter this list by title and description" />}
       </div>
       {showProjects && (
         <nav class="projects" aria-label="Projects">
@@ -279,6 +281,9 @@ body.with-side .side { display: block; }
 .crumbs .sep { color: var(--text-2); }
 .move { width: min(380px, calc(100vw - 24px)); }
 .move select { flex: 1; min-width: 0; font: inherit; padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.links { width: min(340px, calc(100vw - 24px)); }
+.links h3 { margin: var(--space-2) var(--space-3) var(--space-1); font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.panel a.compare { border-top: 1px solid var(--border); border-radius: 0; margin-top: var(--space-1); color: var(--accent); }
 .move h3 { margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
 .short { display: none; }
 .share { width: min(360px, calc(100vw - 24px)); padding: var(--space-3); display: grid; gap: var(--space-2); }
@@ -311,6 +316,9 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const tree = artifact.project ? await listProjectPages(c.env.DB, artifact.project) : undefined;
   const trail = tree ? ancestorsOf(tree, id) : [];
   const editor = viewer.role !== "root" && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, artifact.project));
+  const hidden = await hiddenProjects(c.env.DB, viewer);
+  const visible = (rows: LinkedPage[]) => rows.filter((r) => !r.project || !hidden.has(r.project));
+  const [from, to] = await Promise.all([linkedFrom(c.env.DB, id).then(visible), linksTo(c.env.DB, id).then(visible)]);
   const projects = viewer.role === "root" ? await listProjects(c.env.DB) : [];
   const shareUrl = shareActive(artifact)
     ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
@@ -379,6 +387,7 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
           {viewer.role === "root" && (
             <SharePanel id={id} artifact={artifact} shareUrl={shareUrl} csrf={viewer.csrf} open={c.req.query("share") === "1"} />
           )}
+          {(from.length > 0 || to.length > 0) && <LinksPanel from={from} to={to} />}
           <details>
             <summary class="tool">
               <span class="label">Versions</span>
@@ -394,6 +403,11 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
                   </span>
                 </a>
               ))}
+              {versions.length > 1 && (
+                <a href={`/a/${id}/diff?from=${versions[1]!.version}&to=${versions[0]!.version}`} class="compare">
+                  Compare versions…
+                </a>
+              )}
             </div>
           </details>
           <a id="open" href={src} target="_blank" rel="noopener noreferrer" class="tool" title="Open in a new tab">
@@ -425,6 +439,12 @@ if (toggle) {
 }
 let exp = ${exp};
 const tokenUrl = ${JSON.stringify(`/a/${id}/token?v=${versionNumber}`)};
+// A link to another artifact, clicked inside the page (see NAV_JS in content.ts).
+window.addEventListener("message", (e) => {
+  if (e.source !== document.getElementById("frame").contentWindow) return;
+  const d = e.data;
+  if (d && d.type === "artifact:navigate" && typeof d.path === "string" && /^\/a\/[0-9a-z]{16}(\/v\/[0-9]+)?\/?(#[^\s<>"]*)?$/.test(d.path)) location.href = d.path;
+});
 async function refresh() {
   if (Date.now() / 1000 < exp - 120) return;
   const res = await fetch(tokenUrl, { credentials: "same-origin" });
@@ -505,6 +525,33 @@ function SharePanel(props: { id: string; artifact: ArtifactRow; shareUrl: string
 }
 
 /** Moves the page to another project. Shares the share panel's look. */
+/** The pages that link to this one and the pages it links to (only those the viewer may see). */
+function LinksPanel(props: { from: LinkedPage[]; to: LinkedPage[] }) {
+  const list = (rows: LinkedPage[]) => rows.map((r) => <a href={`/a/${r.id}`}>{r.title}{r.project && <span>{r.project}</span>}</a>);
+  return (
+    <details>
+      <summary class="tool" title="Pages linked from and to this one">
+        <span class="label">Links</span>
+        <span class="short">⇄</span> {props.from.length + props.to.length} ▾
+      </summary>
+      <div class="panel links">
+        {props.from.length > 0 && (
+          <>
+            <h3>Linked from</h3>
+            {list(props.from)}
+          </>
+        )}
+        {props.to.length > 0 && (
+          <>
+            <h3>Links to</h3>
+            {list(props.to)}
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
 /** The pages a page can go under: everything in its project but itself and the pages below it, indented by depth. */
 function parentChoices(tree: TreeRow[], id: string): { id: string; label: string }[] {
   const below = subtreeOf(tree, id), out: { id: string; label: string }[] = [];
@@ -617,6 +664,176 @@ pages.get("/a/:id/token", requireViewer(), async (c) => {
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version);
   return c.json({ src: `/c/${token}/${encodeURI(version.entry)}`, exp });
 });
+
+/** A version's text as recorded when it was published, for comparing versions. */
+pages.get("/a/:id/text", requireViewer(), async (c) => {
+  const id = c.req.param("id");
+  const artifact = await getArtifact(c.env.DB, id);
+  if (!artifact || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.json({ error: "not found" }, 404);
+  const version = Number(c.req.query("v") ?? artifact.current_version);
+  const text = await versionText(c.env.DB, id, version);
+  if (text === undefined) return c.json({ error: "not found" }, 404);
+  return c.json({ version, text });
+});
+
+const DIFF_STYLES = `
+.diff-pick { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); }
+.diff-pick select { font: inherit; padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.diff { font: var(--text-sm)/1.6 var(--font-sans); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.diff div { padding: 2px var(--space-3); white-space: pre-wrap; word-break: break-word; }
+.diff .add { background: color-mix(in srgb, var(--positive, #1a7f37) 12%, var(--surface)); }
+.diff .del { background: color-mix(in srgb, var(--negative, #c0362c) 12%, var(--surface)); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--negative, #c0362c) 60%, transparent); }
+.diff .add::before { content: "+ "; color: var(--text-2); } .diff .del::before { content: "− "; color: var(--text-2); }
+.diff .same { color: var(--text-2); }
+.diff .gap { color: var(--text-2); text-align: center; font-size: var(--text-xs); background: var(--surface-2); }
+`;
+
+/**
+ * Two versions' text as one list of lines: removed, added, and the unchanged ones around them.
+ * The browser compares them; the Worker only hands out the texts.
+ */
+pages.get("/a/:id/diff", requireViewer(), async (c) => {
+  const id = c.req.param("id");
+  const artifact = await getArtifact(c.env.DB, id);
+  const viewer = c.get("viewer");
+  if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
+  const versions = await listVersions(c.env.DB, id);
+  const pick = (q: string | undefined, fallback: number) => (versions.some((v) => v.version === Number(q)) ? Number(q) : fallback);
+  const to = pick(c.req.query("to"), artifact.current_version);
+  const from = pick(c.req.query("from"), versions.find((v) => v.version < to)?.version ?? to);
+  return c.html(
+    <Page title={`${artifact.title} · Compare`} viewer={viewer}>
+      <style>{raw(DIFF_STYLES)}</style>
+      <div class="page-head">
+        <div>
+          <h1>{artifact.title}</h1>
+          <p class="lead">
+            What changed in the page's text. <a href={`/a/${id}`}>Back to the page</a>
+          </p>
+        </div>
+      </div>
+      <form class="diff-pick" method="get">
+        <label>
+          From{" "}
+          <select name="from">
+            {versions.map((v) => (
+              <option value={String(v.version)} selected={v.version === from}>
+                v{v.version}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          to{" "}
+          <select name="to">
+            {versions.map((v) => (
+              <option value={String(v.version)} selected={v.version === to}>
+                v{v.version}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button type="submit">Compare</button>
+      </form>
+      <div class="diff" id="diff" aria-live="polite">
+        <div class="gap">Comparing…</div>
+      </div>
+      <script nonce={c.get("nonce")}>
+        {raw(`
+const from = ${from}, to = ${to}, base = ${JSON.stringify(`/a/${id}/text?v=`)};
+const box = document.getElementById("diff");
+const row = (cls, text) => { const d = document.createElement("div"); d.className = cls; d.textContent = text; return d; };
+// Longest common subsequence of lines; a text is at most 100,000 characters.
+function diff(a, b) {
+  const n = a.length, m = b.length;
+  if (n * m > 4e6) return [...a.map((t) => ["del", t]), ...b.map((t) => ["add", t])];
+  const lcs = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) lcs[i][j] = a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push(["same", a[i]]); i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) out.push(["del", a[i++]]);
+    else out.push(["add", b[j++]]);
+  }
+  while (i < n) out.push(["del", a[i++]]);
+  while (j < m) out.push(["add", b[j++]]);
+  return out;
+}
+(async () => {
+  const [x, y] = await Promise.all([from, to].map(async (v) => { const r = await fetch(base + v, { credentials: "same-origin" }); return r.ok ? (await r.json()).text : null; }));
+  box.replaceChildren();
+  if (x === null || y === null) {
+    box.append(row("gap", "No text was recorded for v" + (x === null ? from : to) + ": it was published before versions kept their text, or by an older artifact CLI."));
+    return;
+  }
+  const lines = diff(x.split("\\n"), y.split("\\n"));
+  if (!lines.some(([k]) => k !== "same")) { box.append(row("gap", "The text did not change.")); return; }
+  // Unchanged lines more than 2 away from a change fold into one row.
+  const near = lines.map((_, k) => lines.slice(Math.max(0, k - 2), k + 3).some(([t]) => t !== "same"));
+  let skipped = 0;
+  const flush = () => { if (skipped) { box.append(row("gap", skipped + " unchanged line" + (skipped === 1 ? "" : "s"))); skipped = 0; } };
+  lines.forEach(([kind, text], k) => {
+    if (kind === "same" && !near[k]) { skipped++; return; }
+    flush();
+    box.append(row(kind, text));
+  });
+  flush();
+})();`)}
+      </script>
+    </Page>,
+  );
+});
+
+// --- Search ---
+
+const SEARCH_STYLES = `
+.hits { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-4); }
+.hits a.title { font-weight: 600; font-size: var(--text-md); }
+.hits .snip { margin: var(--space-1) 0 0; color: var(--text-2); font-size: var(--text-sm); }
+.hits mark { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); border-radius: 2px; padding: 0 1px; }
+.searchbar { display: flex; gap: var(--space-2); margin-bottom: var(--space-5); }
+.searchbar input { flex: 1; }
+`;
+
+/** Escapes `text` for HTML and turns the search marks into <mark>. */
+function marked(text: string): string {
+  // The marks are \u0001 and \u0002; every other character that HTML could read as markup is escaped.
+  const esc = text.replace(/[&<>"'\u0000\u0003-\u0008]/g, (ch) => `&#${ch.charCodeAt(0)};`);
+  return esc.replaceAll(MARK_START, "<mark>").replaceAll(MARK_END, "</mark>");
+}
+
+pages.get("/search", requireViewer(), async (c) => {
+  const viewer = c.get("viewer");
+  const q = (c.req.query("q") ?? "").trim().slice(0, 200);
+  const hidden = await hiddenProjects(c.env.DB, viewer);
+  const hits = q ? (await searchPages(c.env.DB, q, 100)).filter((h) => !h.project || !hidden.has(h.project)) : [];
+  return c.html(
+    <Page title={q ? `${q} · Search` : "Search"} viewer={viewer}>
+      <style>{raw(SEARCH_STYLES)}</style>
+      <h1>Search</h1>
+      <form class="searchbar" method="get" action="/search" role="search">
+        <input class="search" type="search" name="q" value={q} placeholder="Words in a page's title or text" aria-label="Search pages" autofocus />
+        <button type="submit" class="primary">
+          Search
+        </button>
+      </form>
+      {q && <p class="muted small">{hits.length === 0 ? "No page has every one of these words." : `${hits.length} ${hits.length === 1 ? "page" : "pages"}`}</p>}
+      <ul class="hits">
+        {hits.map((h) => (
+          <li>
+            <a class="title" href={`/a/${h.id}`}>
+              {h.title}
+            </a>{" "}
+            {h.project && <span class="badge">{h.project}</span>} <span class="muted small">· <Time iso={h.updated_at} /></span>
+            {h.snippet && <p class="snip">{raw(marked(h.snippet))}</p>}
+          </li>
+        ))}
+      </ul>
+    </Page>,
+  );
+});
+
 
 // --- Public links (owner turns them on; anyone with the link views) ---
 

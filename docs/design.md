@@ -192,6 +192,7 @@ Codex と Gemini を同じ端末で使うなら、鍵は1つで共有する。�
 | `GET` | `/api/v1/artifacts` | 一覧（更新日時の新しい順）。`?project=<名前>` でそのプロジェクトだけ、`?project=` で属さないものだけ |
 | `PATCH` | `/api/v1/artifacts/:id` | 版を作らずに動かす。`{project}` で別のプロジェクトへ（下のページごと。`null` で外す）、`{parent}` で同じプロジェクトの別のページの下へ（`null` で一番上）、`{position}` で兄弟の中の何番目か（1 から） |
 | `GET` | `/api/v1/projects` | プロジェクトとページ数（属さないものは `null`） |
+| `GET` | `/api/v1/search?q=` | タイトル・説明・本文に、言葉を全部含むページ（スペース区切り）。抜粋では見つかった所を `[[` と `]]` で囲む |
 | `GET` | `/api/v1/artifacts/:id` | メタデータと版の一覧 |
 | `GET` | `/api/v1/artifacts/:id/files/*path` | ファイルを読む（`?version=` で過去の版） |
 | `DELETE` | `/api/v1/artifacts/:id` | ゴミ箱へ移す（`TRASH_DAYS` 日後に本当に消える） |
@@ -255,6 +256,7 @@ create table versions (
   files text not null,          -- JSON: { path: { sha256, size, type } }
   label text,
   allow_connect text,           -- JSON: ["api.example.com"]。null なら外部通信なし
+  text text,                    -- 0009。CLI が読んだページの本文。検索と版の比較に使う
   created_by text not null references devices(id),
   created_at text not null,
   primary key (artifact_id, version)
@@ -273,6 +275,14 @@ create table space_members (    -- 0008。Members only のプロジェクトを�
   role text not null,           -- viewer | editor
   primary key (space, user_id)
 );
+
+create table links (            -- 0009。今の版が指すページ
+  from_id text not null,
+  to_id text not null,
+  primary key (from_id, to_id)
+);
+-- 0009。今の版のタイトル・説明・本文の全文検索
+-- create virtual table page_text using fts5(id unindexed, title, description, body, tokenize = 'trigram');
 
 create table devices (
   id text primary key,
@@ -555,6 +565,7 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 | `read` | `url`, `path?` | 公開中の中身を読む |
 | `list` | `limit?`, `project?` | 一覧。`project` でそのプロジェクトだけ |
 | `move` | `url`, `project?`, `parent?`, `position?` | 版を作らずに動かす。別のプロジェクトへ（下のページごと）、別のページの下へ、兄弟の中の順番へ |
+| `search` | `query`, `limit?` | タイトル・説明・本文の全文検索。書く前に、既にあるページを探してリンクするため |
 | `delete` | `url` | ゴミ箱へ移す。ツール説明に「ユーザーが頼んだときだけ」と書く |
 | `secret_share` | `label`, `file_path`, `keys?`, `expires_in_hours?` | ファイルの値を手元で暗号化して置き、`#` の後ろに鍵の入ったリンクを返す。最初に開いたブラウザだけが読める |
 | `secret_request` | `label`, `expires_in_hours?` | 秘密の受け取り用の URL を作る |
@@ -688,6 +699,22 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
   - 公開リンク（`/s/:id/:key`）はプロジェクトの見せる相手に関係なく、リンクを知っている人が開ける。エージェント（端末の署名）は持ち主の代わりなので、すべてのプロジェクトを読める
 - D1: `spaces`（name、description、access）と `space_members`（space、user_id、role）。プロジェクトに初めてページが入ったときに `spaces` の行を作る。行の無いプロジェクトは Everyone と同じ。人を削除すると、その人のメンバーの行も消える
 
+### 検索・リンク・版の比較
+
+2026-11-19 に足した。スペースの 2 段目。
+
+- 公開のとき、CLI がページの HTML（入口と、ほかの .html）から本文とリンク先を読み、`manifest` の `text`（10万字まで）と `links`（`/a/<id>` の id）で送る。Worker は解析しない（CPU の節を参照）。本文は script・style・コメントを除き、ブロックごとに 1 行にする。ページの script が実行時に書く文字は入らない
+  - 古い CLI は `text` も `links` も送らない。そのときは前の本文とリンクを残す（タイトルと説明は更新する）
+- 本文は版ごとに `versions.text` に置く（版の比較のため。版を整理すると一緒に消える）。今の版の本文は FTS5 の `page_text`（`trigram`）にも入れる。trigram は 3 文字の並びで引くので、単語の間に空白の無い日本語も、言葉の一部で見つかる
+  - 検索はスペース区切りの言葉を全部含むページ。2 文字以下の言葉が混ざると trigram が使えないので、`like` で全部を見る（個人の規模なら十分速い）
+  - 並びは bm25 で、タイトル、説明、本文の順に重くする。ゴミ箱のページは出さず、本当に消すときに索引からも消す
+  - 画面: 上のバーの検索欄と `/search?q=`。抜粋は見つかった所に印を付け、残りは全部エスケープする。Members only のプロジェクトのページは、見られる人にしか出ない。エージェント（`GET /api/v1/search`、MCP の `search`、`artifact search`）は全部を探せる
+- リンクは `links`（from_id、to_id）に今の版の分だけ置く。ページの画面の「Links」に、このページを指すページ（Linked from）と、このページが指すページ（Links to）を出す。見られないページは出さない
+- ページの中のリンクで別のページへ移れるようにする。sandbox はページから外枠を動かさせないので、`/c/*` が HTML の最後のバイトの後ろに `<script src="/c/<token>/!artifact/nav.js">` を足す（解析しないので CPU は使わない。`</html>` の後ろでも body として動く）。この script は、同じホストの `/a/<id>` へのリンクのクリックを受けて、外枠に `postMessage` で頼む。外枠は、送り主が自分の iframe であることとパスの形を確かめてから移る
+  - `!` は公開できるファイル名に使えないので、ページのファイルと重ならない
+  - 公開リンクの iframe と、新しいタブで直接開いたページには足さない・働かない（そのときはふつうのリンクとして動く）。`target="_blank"` のリンクは今までどおり新しいタブで開く
+- 版の比較（`/a/:id/diff?from=&to=`）: ブラウザが 2 つの版の本文（`/a/:id/text?v=`）を取り、行ごとに比べる（最長共通部分列）。変わった行の前後 2 行だけ見せ、残りは畳む。本文の無い版（0009 より前、古い CLI）はそう伝える
+
 ### 公開リンク（`/s/:id/:key`）
 
 ログインしていない人にも見せたいとき（応募書類に載せる URL など）のための、リンクを知っている人なら誰でも開ける URL。2026-11-02 に追加。
@@ -769,7 +796,7 @@ npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）�
 3. **v3（共有）**: Artifact ごとの共有リンク（署名付き、期限つき、失効できる）、Artifact ごとに見せる相手を絞る
 4. **スペース（Confluence のように）**: 2026-11-19 に持ち主と決めた計画。段階ごとに本番に出す
    1. プロジェクトの木と見せる相手（済み。「スペース」の節）
-   2. ページどうしのリンクと被リンク、本文の全文検索、版どうしの差分。本文とリンク先は公開のときに CLI が取り出して送る（Worker の CPU を使わない）
+   2. ページどうしのリンクと被リンク、本文の全文検索、版どうしの差分（済み。「検索・リンク・版の比較」の節）
    3. ブラウザで書くページ（Markdown を元にし、見たまま編集もできる）と、ページ全体・本文の一部へのコメント。エージェントは MCP でコメントを読んで返す
 5. **v4（ページの機能）**: ページから使える共有 DB とページごとの保存領域（外枠が `postMessage` で受けて、Artifact ごとの Durable Object に読み書きする。sandbox のページは localStorage が使えないので、その代わり）、コメント
 

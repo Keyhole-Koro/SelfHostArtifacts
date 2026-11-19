@@ -63,8 +63,32 @@ export interface VersionSummary {
   created_at: string;
 }
 
+export interface LinkSummary {
+  id: string;
+  url: string;
+  title: string;
+}
+
 export interface ArtifactDetail extends ArtifactSummary {
   versions: VersionSummary[];
+  /** Pages whose current version links to this one. */
+  linked_from: LinkSummary[];
+  /** Pages this one's current version links to. */
+  links_to: LinkSummary[];
+}
+
+export interface SearchResult {
+  id: string;
+  url: string;
+  title: string;
+  project: string | null;
+  updated_at: string;
+  /** Text around the match; the matched words are between [[ and ]]. */
+  snippet: string;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
 }
 
 export interface PairStartResponse {

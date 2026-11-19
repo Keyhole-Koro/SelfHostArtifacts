@@ -1,5 +1,6 @@
 import type { ProjectCount, VersionFile } from "@artifact/shared";
 import { ensureSpace } from "./spaces.ts";
+import { indexStatements, linkStatements } from "./search.ts";
 
 export interface ArtifactRow {
   id: string;
@@ -130,6 +131,9 @@ export interface NewVersion {
   project?: string | undefined;
   /** On create, the page it goes under (already checked to be in `project`). */
   parent?: string | undefined;
+  /** The page's text and the pages it links to, as the CLI read them; undefined from an older CLI. */
+  text?: string | undefined;
+  links?: string[] | undefined;
   entry: string;
   files: Record<string, VersionFile>;
   allowConnect: string[];
@@ -139,9 +143,9 @@ export interface NewVersion {
 function versionInsert(db: D1Database, id: string, version: number, v: NewVersion, now: string): D1PreparedStatement {
   return db
     .prepare(
-      "insert into versions (artifact_id, version, entry, files, allow_connect, created_by, created_at) values (?, ?, ?, ?, ?, ?, ?)",
+      "insert into versions (artifact_id, version, entry, files, allow_connect, text, created_by, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(id, version, v.entry, JSON.stringify(v.files), v.allowConnect.length ? JSON.stringify(v.allowConnect) : null, v.deviceId, now);
+    .bind(id, version, v.entry, JSON.stringify(v.files), v.allowConnect.length ? JSON.stringify(v.allowConnect) : null, v.text ?? null, v.deviceId, now);
 }
 
 export async function createArtifact(db: D1Database, id: string, v: NewVersion): Promise<void> {
@@ -156,6 +160,8 @@ export async function createArtifact(db: D1Database, id: string, v: NewVersion):
       )
       .bind(id, v.title, v.description ?? null, v.project ?? null, parent, parent, v.project ?? null, now, now),
     versionInsert(db, id, 1, v, now),
+    ...indexStatements(db, id, { title: v.title, description: v.description ?? null, text: v.text ?? "" }),
+    ...linkStatements(db, id, v.links),
   ]);
 }
 
@@ -174,6 +180,8 @@ export async function addVersion(db: D1Database, id: string, expected: number, v
       db
         .prepare("update artifacts set current_version = ?, title = ?, description = ?, project = coalesce(?, project), updated_at = ? where id = ?")
         .bind(next, v.title, v.description ?? null, v.project ?? null, now, id),
+      ...indexStatements(db, id, { title: v.title, description: v.description ?? null, text: v.text }),
+      ...linkStatements(db, id, v.links),
     ]);
     return true;
   } catch (e) {
@@ -307,4 +315,10 @@ export async function setShare(db: D1Database, id: string, nonce: string, expire
 
 export async function clearShare(db: D1Database, id: string): Promise<void> {
   await db.prepare("update artifacts set share_nonce = null, share_expires_at = null where id = ?").bind(id).run();
+}
+
+/** A version's text as the CLI read it, or null when none was recorded. */
+export async function versionText(db: D1Database, id: string, version: number): Promise<string | null | undefined> {
+  const row = await db.prepare("select text from versions where artifact_id = ? and version = ?").bind(id, version).first<{ text: string | null }>();
+  return row ? row.text : undefined;
 }

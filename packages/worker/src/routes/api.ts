@@ -14,6 +14,7 @@ import {
   type BlobCheckResponse,
   type ListResponse,
   type ProjectListResponse,
+  type SearchResponse,
   type Manifest,
   type PairPollResponse,
   type PairStartResponse,
@@ -52,6 +53,7 @@ import { pairingCode, randomId, randomToken, sha256Hex } from "../lib/encoding.t
 import { createSecret, finishSecret, getSecret, listSecrets, sealSecret, secretStatus, secretSummary } from "../db/secrets.ts";
 import { safeNext } from "../lib/internal-path.ts";
 import { recordAuditEvent } from "../db/audit.ts";
+import { MARK_END, MARK_START, linkedFrom, linksTo, searchPages } from "../db/search.ts";
 
 export const blobKey = (sha256: string) => `blobs/${sha256}`;
 
@@ -239,6 +241,8 @@ signed.post("/artifacts", async (c) => {
     description: manifest.description,
     project,
     parent: manifest.parent,
+    text: manifest.text,
+    links: manifest.links,
     entry: manifest.entry,
     files: resolved.files,
     allowConnect: manifest.allow_connect ?? [],
@@ -281,6 +285,8 @@ signed.put("/artifacts/:id", async (c) => {
   const added = await addVersion(c.env.DB, artifact.id, base, {
     title: manifest.title,
     description: manifest.description,
+    text: manifest.text,
+    links: manifest.links,
     entry: manifest.entry,
     files: resolved.files,
     allowConnect: manifest.allow_connect ?? [],
@@ -307,6 +313,23 @@ signed.get("/artifacts", async (c) => {
   const project = c.req.query("project");
   const rows = await listArtifacts(c.env.DB, limit, project === undefined ? undefined : project.trim() || null);
   return c.json<ListResponse>({ artifacts: rows.map((a) => summary(c, a, a.allow_connect)) });
+});
+
+/** Pages whose title, description or text has every word of `q`. An agent sees every project. */
+signed.get("/search", async (c) => {
+  const q = (c.req.query("q") ?? "").slice(0, 200);
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 20) || 20, 1), 100);
+  const hits = await searchPages(c.env.DB, q, limit);
+  return c.json<SearchResponse>({
+    results: hits.map((h) => ({
+      id: h.id,
+      url: artifactUrl(c, h.id),
+      title: h.title,
+      project: h.project,
+      updated_at: h.updated_at,
+      snippet: h.snippet.replaceAll(MARK_START, "[[").replaceAll(MARK_END, "]]"),
+    })),
+  });
 });
 
 signed.get("/projects", async (c) => {
@@ -354,10 +377,13 @@ signed.patch("/artifacts/:id", async (c) => {
 signed.get("/artifacts/:id", async (c) => {
   const artifact = await getArtifact(c.env.DB, c.req.param("id"));
   if (!artifact) return apiError(c, 404, "not_found", "No artifact has this id (or it is in the trash).");
-  const versions = await listVersions(c.env.DB, artifact.id);
+  const [versions, from, to] = await Promise.all([listVersions(c.env.DB, artifact.id), linkedFrom(c.env.DB, artifact.id), linksTo(c.env.DB, artifact.id)]);
   const current = versions.find((v) => v.version === artifact.current_version);
+  const link = (p: { id: string; title: string }) => ({ id: p.id, url: artifactUrl(c, p.id), title: p.title });
   return c.json<ArtifactDetail>({
     ...summary(c, artifact, current?.allow_connect ?? []),
+    linked_from: from.map(link),
+    links_to: to.map(link),
     versions: versions.map((v) => ({
       version: v.version,
       entry: v.entry,
