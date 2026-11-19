@@ -38,6 +38,10 @@ CLI: `artifact publish <file.html|folder> [--title …] [--description …] [--l
   work, or a word the user uses. Reuse the labels already in use (`list` shows them); `labels`
   adds and removes them later, and `search` with `label:<name>` finds a label's pages.
 - Before you start on a project's pages, `activity` shows what people and agents changed lately.
+- A Markdown page (an `.md` file) can hold macros, each on a line of its own: `{{toc}}` (its
+  sections), `{{children}}` (the pages under it), `{{recent}}`, `{{label <name>}}` and
+  `{{include <page url>}}` (a Markdown page of the same project, shown in place). Use them for
+  hub pages instead of keeping lists of links by hand.
 - Before writing a page about something, `search` for pages that cover it already and link to
   them with their URLs (`https://<host>/a/<id>`) instead of repeating them. Links between pages
   show up on both pages, and clicking one opens the other in the viewer.

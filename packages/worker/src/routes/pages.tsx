@@ -9,6 +9,7 @@ import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
 import { EDITOR_PATH, frameSrc, markdownLinks } from "../doc.ts";
 import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComment, listComments, openThreadCounts, setResolved, threadPeople, threadsOf, type CommentRow, type Thread } from "../db/comments.ts";
 import { changeLabels, labelCounts, labeledSearch, labelsOf } from "../db/labels.ts";
+import { BUILT_IN_TEMPLATES, TEMPLATE_LABEL, fromTemplatePage, markdownPages, type MarkdownPage } from "../templates.ts";
 import { activityHref, listActivity, listNotifications, markRead, pageTarget, projectTarget, record, setWatch, watching, type ActivityRow } from "../db/activity.ts";
 import { MAX_TEXT_CHARS, type VersionFile, labelSchema, labelsSchema, MAX_LABELS } from "@artifact/shared";
 import { z } from "zod";
@@ -141,6 +142,7 @@ pages.get("/", requireViewer(), async (c) => {
     typeof selected === "string" && !blocked && !label ? await Promise.all([listProjectPages(c.env.DB, selected), getSpace(c.env.DB, selected)]) : [undefined, null];
   const labels = await labelsOf(c.env.DB, tree ? tree.map((r) => r.id) : artifacts.map((a) => a.id));
   const canWrite = tree !== undefined && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, selected as string));
+  const templates = canWrite ? await markdownPages(c.env.DB, selected as string, TEMPLATE_LABEL) : [];
   const [projectWatched, recent] = tree
     ? await Promise.all([watching(c.env.DB, viewer.userId, [projectTarget(selected as string)]), listActivity(c.env.DB, { project: selected as string, limit: 10 })])
     : [new Set<string>(), []];
@@ -231,6 +233,7 @@ pages.get("/", requireViewer(), async (c) => {
               <CsrfField token={viewer.csrf} />
               <input type="hidden" name="project" value={selected as string} />
               <input name="title" type="text" required maxlength={200} placeholder="Title of a new page" aria-label="Title of a new page" />
+              <TemplateChoice pages={templates} />
               <button type="submit" class="primary">
                 Write a page
               </button>
@@ -420,7 +423,9 @@ body.with-comments .sel-btn { right: 356px; }
 .panel a.compare { border-top: 1px solid var(--border); border-radius: 0; margin-top: var(--space-1); color: var(--accent); }
 .move h3 { margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
 .short { display: none; }
-.share { width: min(360px, calc(100vw - 24px)); padding: var(--space-3); display: grid; gap: var(--space-2); }
+.share { width: min(360px, calc(100vw - 24px)); padding: var(--space-3); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+.share .new-page { flex-wrap: wrap; }
+.share .new-page input[name=title] { flex: 1 1 100%; }
 .share p { margin: 0; color: var(--text-2); }
 .share .link { display: flex; gap: var(--space-2); }
 .share input { flex: 1; min-width: 0; font: inherit; font-size: var(--text-xs); padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
@@ -467,10 +472,11 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const settles = (t: Thread) => full && (viewer.role === "root" || editor || t.first.author_user === viewer.userId);
   const deletes = (x: CommentRow) => full && (viewer.role === "root" || x.author_user === viewer.userId);
   const projects = viewer.role === "root" ? await listProjects(c.env.DB) : [];
+  const templates = tree && (viewer.role === "root" || editor) ? await markdownPages(c.env.DB, artifact.project, TEMPLATE_LABEL) : [];
   const shareUrl = shareActive(artifact)
     ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
     : undefined;
-  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, versionNumber);
+  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, versionNumber, undefined, viewer.userId);
   const src = frameSrc(token, version.entry);
   const nonce = c.get("nonce");
   const isLatest = versionNumber === artifact.current_version;
@@ -538,6 +544,7 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
               csrf={viewer.csrf}
               tree={tree}
               parent={artifact.parent}
+              templates={templates}
             />
           )}
           {viewer.role === "root" && (
@@ -949,7 +956,25 @@ function LabelPanel(props: { id: string; labels: string[]; csrf: string; open: b
 }
 
 /** `projects`: the owner's choice of projects; an editor (without it) only moves pages within the project. */
-function MovePanel(props: { id: string; project: string | null; projects?: string[]; csrf: string; tree?: TreeRow[]; parent: string | null }) {
+/** Which template a new page starts from: the built-in ones, then the project's template pages. */
+function TemplateChoice(props: { pages: MarkdownPage[] }) {
+  return (
+    <select name="template" aria-label="Start from a template">
+      {BUILT_IN_TEMPLATES.map((t) => (
+        <option value={t.id}>{t.name}</option>
+      ))}
+      {props.pages.length > 0 && (
+        <optgroup label="This project's templates">
+          {props.pages.map((p) => (
+            <option value={`page:${p.id}`}>{p.title}</option>
+          ))}
+        </optgroup>
+      )}
+    </select>
+  );
+}
+
+function MovePanel(props: { id: string; project: string | null; projects?: string[]; csrf: string; tree?: TreeRow[]; parent: string | null; templates?: MarkdownPage[] }) {
   const { id, project, projects, csrf, tree } = props;
   const siblings = tree ? siblingsOf(tree, id) : [];
   const place = siblings.findIndex((r) => r.id === id);
@@ -993,10 +1018,11 @@ function MovePanel(props: { id: string; project: string | null; projects?: strin
               </div>
             )}
             <h3>New page under this one</h3>
-            <form method="post" action="/new" class="link">
+            <form method="post" action="/new" class="link new-page">
               <CsrfField token={csrf} />
               <input type="hidden" name="parent" value={id} />
               <input name="title" type="text" required maxlength={200} placeholder="Title" aria-label="Title of the new page" />
+              <TemplateChoice pages={props.templates ?? []} />
               <button type="submit">Write</button>
             </form>
             {projects && <h3>Project</h3>}
@@ -1049,7 +1075,7 @@ pages.get("/a/:id/token", requireViewer(), async (c) => {
   if (!artifact || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.json({ error: "not found" }, 404);
   const version = await getVersion(c.env.DB, id, Number(c.req.query("v") ?? artifact.current_version));
   if (!version) return c.json({ error: "not found" }, 404);
-  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version);
+  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version, undefined, c.get("viewer").userId);
   return c.json({ src: frameSrc(token, version.entry), exp });
 });
 
@@ -1269,7 +1295,23 @@ pages.post("/new", requireViewer("viewer", true), requireSameOriginForm(), async
   if (!(await canSeeProject(c.env.DB, viewer, project)) || !(await canEditProject(c.env.DB, viewer, project))) {
     return c.text("Only the owner and this project's editors can add pages to it.", 403);
   }
-  const markdown = `# ${title.data}\n\n`;
+  // What it starts from: a built-in template, or a template page of the same project.
+  const chosen = typeof form["template"] === "string" ? form["template"] : "blank";
+  let markdown: string;
+  let labels: string[];
+  if (chosen.startsWith("page:")) {
+    const source = await getArtifact(c.env.DB, chosen.slice(5));
+    const sourceVersion = source && source.project === project ? await getVersion(c.env.DB, source.id, source.current_version) : null;
+    const file = sourceVersion?.entry.endsWith(".md") ? sourceVersion.files[sourceVersion.entry] : undefined;
+    const text = file ? await (await c.env.BLOBS.get(blobKey(file.sha256)))?.text() : undefined;
+    if (!source || text === undefined) return c.text("That template is not a Markdown page of this project.", 400);
+    markdown = fromTemplatePage(text, title.data);
+    labels = ((await labelsOf(c.env.DB, [source.id])).get(source.id) ?? []).filter((l) => l !== TEMPLATE_LABEL);
+  } else {
+    const template = BUILT_IN_TEMPLATES.find((t) => t.id === chosen) ?? BUILT_IN_TEMPLATES[0]!;
+    markdown = template.body(title.data, new Date().toISOString().slice(0, 10));
+    labels = template.labels;
+  }
   const id = randomId();
   await createArtifact(c.env.DB, id, {
     title: title.data,
@@ -1281,7 +1323,8 @@ pages.post("/new", requireViewer("viewer", true), requireSameOriginForm(), async
     allowConnect: [],
     deviceId: await browserDevice(c),
     text: markdown,
-    links: [],
+    links: markdownLinks(markdown, c.get("config").origin),
+    labels,
   });
   await recordViewerAction(c, "artifact.create", "artifact", id, { version: 1, browser: true });
   indexLater(semanticEnv(c.env), c.executionCtx, id);
@@ -1322,7 +1365,11 @@ pages.get("/a/:id/edit", requireViewer("viewer", true), async (c) => {
   const { artifact, version } = found;
   const viewer = c.get("viewer");
   const tree = artifact.project ? await listProjectPages(c.env.DB, artifact.project) : [];
-  const { token } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version);
+  const { token } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version, undefined, viewer.userId);
+  const [inUse, embeddable] = await Promise.all([
+    hiddenProjects(c.env.DB, viewer).then((hidden) => labelCounts(c.env.DB, hidden)),
+    markdownPages(c.env.DB, artifact.project).then((rows) => rows.filter((r) => r.id !== id)),
+  ]);
   const nonce = c.get("nonce");
   return c.html(
     <html lang="en">
@@ -1345,6 +1392,26 @@ pages.get("/a/:id/edit", requireViewer("viewer", true), async (c) => {
                 ))}
             </select>
           )}
+          <select id="insert" aria-label="Insert a list or another page">
+            <option value="">Insert…</option>
+            <option value="{{toc}}">Table of contents</option>
+            <option value="{{children}}">Pages under this one</option>
+            <option value="{{recent}}">Recently changed pages</option>
+            {inUse.length > 0 && (
+              <optgroup label="Pages with a label">
+                {inUse.slice(0, 40).map((l) => (
+                  <option value={`{{label ${l.label}}}`}>{l.label}</option>
+                ))}
+              </optgroup>
+            )}
+            {embeddable.length > 0 && (
+              <optgroup label="Embed a page">
+                {embeddable.slice(0, 100).map((p) => (
+                  <option value={`{{include /a/${p.id}}}`}>{p.title}</option>
+                ))}
+              </optgroup>
+            )}
+          </select>
           <span class="status" id="status" aria-live="polite">
             Editing v{version.version}
           </span>
@@ -1370,6 +1437,13 @@ const markdown = () => new Promise((ok, fail) => {
   waiting = ok;
   frame.contentWindow.postMessage({ type: "artifact:get" }, "*");
   setTimeout(() => { if (waiting) { waiting = null; fail(new Error("The editor did not answer.")); } }, 5000);
+});
+// A macro goes on a line of its own; the page fills it in when it is shown.
+const insert = document.getElementById("insert");
+insert.addEventListener("change", () => {
+  if (!insert.value) return;
+  frame.contentWindow.postMessage({ type: "artifact:insert", text: "\\n" + insert.value + "\\n" }, "*");
+  insert.value = "";
 });
 const link = document.getElementById("link");
 if (link) link.addEventListener("change", () => {

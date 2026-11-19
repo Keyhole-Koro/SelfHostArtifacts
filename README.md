@@ -114,6 +114,11 @@ with `@` in a comment to tell them. The bell at the top counts what you have not
 (`--labels`), with `artifact labels`, or from a page's Labels menu; click one to see its pages,
 or search with `label:decision`.
 
+A page written in the browser can start from a **template** (meeting notes, a decision record,
+a how-to, or any page of the project labeled `template`), and Markdown pages can hold
+**macros**, each on a line of its own: `{{toc}}`, `{{children}}`, `{{recent}}`,
+`{{label decision}}` and `{{include <page url>}}`. The editor's Insert menu adds them.
+
 To show a page to someone without an account, open it and choose **Share → Create public link**:
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
 it, replace it with a new link or turn it off; agents cannot make pages public.

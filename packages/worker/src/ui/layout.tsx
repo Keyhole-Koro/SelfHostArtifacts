@@ -106,6 +106,7 @@ button.danger { border-color: transparent; background: none; color: var(--negati
 button.danger:hover { background: color-mix(in srgb, var(--negative) 10%, transparent); }
 button:disabled { opacity: 0.6; cursor: default; }
 input[type=text], input[type=email], input[type=search] { width: 100%; font: inherit; font-size: var(--text-md); padding: 7px var(--space-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.field-row select { font: inherit; font-size: var(--text-md); padding: 7px var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); max-width: 40%; }
 input::placeholder { color: var(--text-3); }
 label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(--text-2); margin-bottom: var(--space-1); }
 form.inline { display: inline; }
