@@ -1,6 +1,7 @@
 /** Labels on pages. Setting a page's labels replaces them all. */
 import { MAX_LABELS, labelSchema } from "@artifact/shared";
 import { hybridSearch, type HybridHit, type SemanticEnv } from "./semantic.ts";
+import type { Access } from "./access.ts";
 
 export function setLabelsStatements(db: D1Database, id: string, labels: string[]): D1PreparedStatement[] {
   return [
@@ -63,13 +64,13 @@ export async function changeLabels(db: D1Database, id: string, change: { set?: s
  * Every label in use on the pages one may see, with how many pages have it, the most used first:
  * of one project if given (null: the pages without one), else of all.
  */
-export async function labelCounts(db: D1Database, hidden: Set<string>, project?: string | null): Promise<{ label: string; count: number }[]> {
+export async function labelCounts(db: D1Database, access: Access, project?: string | null): Promise<{ label: string; count: number }[]> {
   const { results } = await db
-    .prepare("select l.label, a.project from labels l join artifacts a on a.id = l.artifact_id where a.deleted_at is null")
-    .all<{ label: string; project: string | null }>();
+    .prepare("select l.label, l.artifact_id as id, a.project from labels l join artifacts a on a.id = l.artifact_id where a.deleted_at is null")
+    .all<{ label: string; id: string; project: string | null }>();
   const counts = new Map<string, number>();
   for (const r of results) {
-    if (r.project && hidden.has(r.project)) continue;
+    if (!access.sees(r)) continue;
     if (project !== undefined && r.project !== project) continue;
     counts.set(r.label, (counts.get(r.label) ?? 0) + 1);
   }

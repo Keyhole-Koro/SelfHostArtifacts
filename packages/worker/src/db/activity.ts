@@ -5,6 +5,7 @@
  * Nobody is told about their own doing, and nobody about a page they may not see.
  */
 import { randomId } from "../lib/encoding.ts";
+import { pageAudience } from "./access.ts";
 
 export type ActivityKind = "created" | "updated" | "commented" | "replied" | "resolved";
 export type Reason = "mentioned" | "thread" | "watching";
@@ -21,21 +22,25 @@ export const NOTIFICATION_DAYS = 90;
 export const pageTarget = (id: string) => `a:${id}`;
 export const projectTarget = (name: string) => `p:${name}`;
 
-/** Users (not `except`) among `ids` who may see a page of `project`: the owner, or anyone in an open project, or its members. */
-async function mayOpen(db: D1Database, ids: string[], project: string | null, except: string | undefined): Promise<Set<string>> {
+/**
+ * Users (not `except`) among `ids` who may see the page: the owner, or anyone in an open project
+ * or among its members, whom the restrictions on the page and above it let in.
+ */
+async function mayOpen(db: D1Database, ids: string[], artifactId: string, project: string | null, except: string | undefined): Promise<Set<string>> {
   const wanted = [...new Set(ids)].filter((id) => id !== except);
   if (wanted.length === 0) return new Set();
   const marks = wanted.map(() => "?").join(", ");
   const { results } = await db
     .prepare(
-      `select u.id from users u where u.id in (${marks}) and (
+      `select u.id, u.role from users u where u.id in (${marks}) and (
          u.role = 'root' or ? is null
          or not exists (select 1 from spaces s where s.name = ? and s.access = 'members')
          or exists (select 1 from space_members m where m.space = ? and m.user_id = u.id))`,
     )
     .bind(...wanted, project, project, project)
-    .all<{ id: string }>();
-  return new Set(results.map((r) => r.id));
+    .all<{ id: string; role: string }>();
+  const audience = await pageAudience(db, artifactId);
+  return new Set(results.filter(audience).map((r) => r.id));
 }
 
 export interface Happening {
@@ -64,7 +69,7 @@ export async function record(db: D1Database, h: Happening): Promise<string> {
   for (const w of watchers) reasons.set(w.user_id, "watching");
   for (const t of h.thread ?? []) reasons.set(t, "thread");
   for (const m of h.mentions ?? []) reasons.set(m, "mentioned");
-  const allowed = await mayOpen(db, [...reasons.keys()], h.project, h.actor.userId);
+  const allowed = await mayOpen(db, [...reasons.keys()], h.artifactId, h.project, h.actor.userId);
   await db.batch([
     db
       .prepare(
@@ -108,6 +113,8 @@ export interface ActivityRow {
   version: number | null;
   comment_id: string | null;
   title: string;
+  /** The page's project now (project is where it was when this happened). */
+  page_project: string | null;
 }
 
 /** The newest activity, of one project or one page if given, on pages not in the trash. */
@@ -115,7 +122,7 @@ export async function listActivity(db: D1Database, opts: { project?: string; art
   const where = opts.artifactId ? "and v.artifact_id = ?" : opts.project ? "and v.project = ?" : "";
   const { results } = await db
     .prepare(
-      `select v.*, a.title from activity v join artifacts a on a.id = v.artifact_id
+      `select v.*, a.title, a.project as page_project from activity v join artifacts a on a.id = v.artifact_id
        where a.deleted_at is null ${where} order by v.at desc limit ?`,
     )
     .bind(...(opts.artifactId ? [opts.artifactId] : opts.project ? [opts.project] : []), opts.limit ?? 50)
@@ -132,7 +139,7 @@ export interface NotificationRow extends ActivityRow {
 export async function listNotifications(db: D1Database, userId: string, limit = 100): Promise<NotificationRow[]> {
   const { results } = await db
     .prepare(
-      `select n.id as notification_id, n.reason, n.read_at, v.*, a.title
+      `select n.id as notification_id, n.reason, n.read_at, v.*, a.title, a.project as page_project
        from notifications n join activity v on v.id = n.activity_id join artifacts a on a.id = v.artifact_id
        where n.user_id = ? and a.deleted_at is null order by n.created_at desc limit ?`,
     )

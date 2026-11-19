@@ -16,6 +16,7 @@ export interface ArtifactRow {
   deleted_at: string | null;
   share_nonce: string | null; // public link; see share.ts
   share_expires_at: string | null;
+  restriction: "edit" | "view" | null; // see db/access.ts
 }
 
 export interface VersionRow {
@@ -232,13 +233,14 @@ export interface TreeRow {
   position: number;
   current_version: number;
   updated_at: string;
+  restriction?: "edit" | "view" | null;
 }
 
 /** Every page in a project (null: the pages without one), for building its tree. */
 export async function listProjectPages(db: D1Database, project: string | null): Promise<TreeRow[]> {
   const { results } = await db
     .prepare(
-      `select id, title, parent, position, current_version, updated_at from artifacts
+      `select id, title, parent, position, current_version, updated_at, restriction from artifacts
        where deleted_at is null and project is ? order by position, title`,
     )
     .bind(project)

@@ -61,6 +61,7 @@ import { pageSecurity } from "../ui/security.ts";
 import { Bell, CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
 import { LabelChips, PageTree, TREE_STYLES } from "../ui/tree.tsx";
 import { canEditProject, canSeeProject, getSpace, hiddenProjects, peopleWhoCanSee } from "../db/spaces.ts";
+import { accessFor, canEditPage, canSeePage, listAccess, pageAudience, restrictionsOn, setAccess, setRestriction, type Access, type PathRestriction } from "../db/access.ts";
 import { MARK_END, MARK_START, linkedFrom, linksTo, type LinkedPage } from "../db/search.ts";
 import { INDEX_BATCH, hybridSearch, indexLater, indexPending, pendingPages, semanticOn } from "../db/semantic.ts";
 import { semanticEnv } from "../env.ts";
@@ -127,25 +128,32 @@ pages.get("/", requireViewer(), async (c) => {
   const selected = query === undefined ? undefined : query.trim() || null;
   const wanted = labelSchema.safeParse(c.req.query("label") ?? "");
   const label = wanted.success ? wanted.data : undefined;
-  const hidden = await hiddenProjects(c.env.DB, viewer);
+  const access = await accessFor(c.env.DB, viewer);
+  const hidden = access.hiddenProjects;
   const blocked = typeof selected === "string" && hidden.has(selected);
   const [all, allProjects, open, inUse] = await Promise.all([
     blocked ? [] : listArtifacts(c.env.DB, 200, selected, label),
     listProjects(c.env.DB),
     openThreadCounts(c.env.DB),
-    labelCounts(c.env.DB, hidden, selected),
+    labelCounts(c.env.DB, access, selected),
   ]);
-  const artifacts = all.filter((a) => !a.project || !hidden.has(a.project));
-  const projects = allProjects.filter((p) => !p.project || !hidden.has(p.project));
+  const artifacts = all.filter((a) => access.sees(a));
+  // Pages hidden by a restriction are not counted either.
+  const projects = allProjects
+    .filter((p) => !p.project || !hidden.has(p.project))
+    .map((p) => ({ ...p, count: p.count - (access.hiddenPerProject.get(p.project) ?? 0) }))
+    .filter((p) => p.count > 0);
   // One project is shown as the tree of its pages, with what the space says about itself.
-  const [tree, space] =
+  const [allTree, space] =
     typeof selected === "string" && !blocked && !label ? await Promise.all([listProjectPages(c.env.DB, selected), getSpace(c.env.DB, selected)]) : [undefined, null];
+  const tree = allTree?.filter((r) => !access.hiddenPages.has(r.id));
   const labels = await labelsOf(c.env.DB, tree ? tree.map((r) => r.id) : artifacts.map((a) => a.id));
   const canWrite = tree !== undefined && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, selected as string));
-  const templates = canWrite ? await markdownPages(c.env.DB, selected as string, TEMPLATE_LABEL) : [];
-  const [projectWatched, recent] = tree
-    ? await Promise.all([watching(c.env.DB, viewer.userId, [projectTarget(selected as string)]), listActivity(c.env.DB, { project: selected as string, limit: 10 })])
+  const templates = canWrite ? (await markdownPages(c.env.DB, selected as string, TEMPLATE_LABEL)).filter((r) => !access.hiddenPages.has(r.id)) : [];
+  const [projectWatched, recentAll] = tree
+    ? await Promise.all([watching(c.env.DB, viewer.userId, [projectTarget(selected as string)]), listActivity(c.env.DB, { project: selected as string, limit: 30 })])
     : [new Set<string>(), []];
+  const recent = recentAll.filter((a) => access.sees({ id: a.artifact_id, project: a.page_project })).slice(0, 10);
   const total = projects.reduce((n, p) => n + p.count, 0);
   const showProjects = projects.some((p) => p.project !== null);
   const scope = selected === undefined ? "" : selected === null ? " without a project" : ` in ${selected}`;
@@ -385,6 +393,18 @@ body.with-side .side { display: block; }
 .label-panel li { display: flex; align-items: center; gap: 2px; }
 .label-panel a.chip { display: inline-block; padding: 0 var(--space-2); line-height: 1.6; margin: 0; }
 .label-panel h3 { margin-top: 0; }
+.access-panel { width: min(340px, calc(100vw - 24px)); }
+.access-panel h3 { margin: 0; font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.access-panel .modes { display: grid; gap: var(--space-2); }
+.access-panel .mode { display: flex; gap: var(--space-2); align-items: flex-start; cursor: pointer; }
+.access-panel .mode input[type=radio] { flex: none; width: 16px; height: 16px; margin: 3px 0 0; padding: 0; border: 0; accent-color: var(--accent); }
+.access-panel .modes button { justify-self: start; }
+.access-panel .people { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.access-panel .people li { display: flex; align-items: center; gap: var(--space-2); }
+.access-panel .people li > span:first-child { flex: 1; color: var(--text); }
+.access-panel .people button { border: 0; background: none; padding: 0 4px; color: var(--text-2); }
+.access-panel select { font: inherit; font-size: var(--text-xs); padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); min-width: 0; }
+.access-panel .link select[name=user] { flex: 1; }
 .label-panel li form { margin: 0; }
 .label-panel li button { border: 0; background: none; color: var(--text-2); cursor: pointer; padding: 0 2px; font: inherit; }
 .label-panel li button:hover { color: var(--danger, var(--warning)); }
@@ -449,30 +469,36 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const artifact = await getArtifact(c.env.DB, id);
   const viewer = c.get("viewer");
   // A page in a space the viewer is not let into is answered like a page that does not exist.
-  if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
+  if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.notFound();
   const versionNumber = requested ?? artifact.current_version;
   const version = await getVersion(c.env.DB, id, versionNumber);
   if (!version) return c.notFound();
   const versions = await listVersions(c.env.DB, id);
-  const tree = artifact.project ? await listProjectPages(c.env.DB, artifact.project) : undefined;
+  const access = await accessFor(c.env.DB, viewer);
+  const tree = artifact.project ? (await listProjectPages(c.env.DB, artifact.project)).filter((r) => !access.hiddenPages.has(r.id)) : undefined;
   const trail = tree ? ancestorsOf(tree, id) : [];
-  const editor = viewer.role !== "root" && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, artifact.project));
-  const hidden = await hiddenProjects(c.env.DB, viewer);
-  const visible = (rows: LinkedPage[]) => rows.filter((r) => !r.project || !hidden.has(r.project));
+  const editor = viewer.role !== "root" && viewer.sessionKind === "full" && (await canEditPage(c.env.DB, viewer, artifact));
+  const visible = (rows: LinkedPage[]) => rows.filter((r) => access.sees(r));
   const [from, to, comments] = await Promise.all([linkedFrom(c.env.DB, id).then(visible), linksTo(c.env.DB, id).then(visible), listComments(c.env.DB, id)]);
   const threads = threadsOf(comments);
-  const [watched, people, labelMap] = await Promise.all([
+  const [watched, projectPeople, labelMap, restrictions, audience] = await Promise.all([
     watching(c.env.DB, viewer.userId, [pageTarget(id)]),
     peopleWhoCanSee(c.env.DB, artifact.project),
     labelsOf(c.env.DB, [id]),
+    restrictionsOn(c.env.DB, id),
+    pageAudience(c.env.DB, id),
   ]);
   const labels = labelMap.get(id) ?? [];
+  // Only the people who may see this page can be named in its comments.
+  const people = projectPeople.filter(audience).map((p) => ({ id: p.id, name: p.name }));
+  const mayRestrict = (viewer.role === "root" || editor) && viewer.sessionKind === "full";
+  const accessRows = mayRestrict ? await listAccess(c.env.DB, id) : [];
   const openThreads = threads.filter((t) => !t.first.resolved_at);
   const full = viewer.sessionKind === "full";
   const settles = (t: Thread) => full && (viewer.role === "root" || editor || t.first.author_user === viewer.userId);
   const deletes = (x: CommentRow) => full && (viewer.role === "root" || x.author_user === viewer.userId);
   const projects = viewer.role === "root" ? await listProjects(c.env.DB) : [];
-  const templates = tree && (viewer.role === "root" || editor) ? await markdownPages(c.env.DB, artifact.project, TEMPLATE_LABEL) : [];
+  const templates = tree && (viewer.role === "root" || editor) ? (await markdownPages(c.env.DB, artifact.project, TEMPLATE_LABEL)).filter((r) => !access.hiddenPages.has(r.id)) : [];
   const shareUrl = shareActive(artifact)
     ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
     : undefined;
@@ -527,6 +553,11 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
             </span>
           )}
           {shareUrl && <span class="badge public">public</span>}
+          {restrictions.length > 0 && !mayRestrict && (
+            <span class="badge public" title={restrictions.some((r) => r.restriction === "view") ? "Only some people can view this page" : "Only some people can edit this page"}>
+              restricted
+            </span>
+          )}
           {labels.length > 0 && (
             <span class="chips">
               <LabelChips labels={labels} />
@@ -535,6 +566,17 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
           <span class="spacer" />
           {(viewer.role === "root" || editor) && viewer.sessionKind === "full" && (
             <LabelPanel id={id} labels={labels} csrf={viewer.csrf} open={c.req.query("labels") === "1"} />
+          )}
+          {mayRestrict && (
+            <AccessPanel
+              id={id}
+              csrf={viewer.csrf}
+              restrictions={restrictions}
+              rows={accessRows}
+              people={projectPeople.filter((p) => p.role !== "root")}
+              me={viewer.userId}
+              open={c.req.query("access") === "1"}
+            />
           )}
           {(viewer.role === "root" || editor) && (
             <MovePanel
@@ -912,6 +954,110 @@ function parentChoices(tree: TreeRow[], id: string): { id: string; label: string
   return out;
 }
 
+/** Who may see and change a page, beyond what its project allows. */
+function AccessPanel(props: {
+  id: string;
+  csrf: string;
+  restrictions: PathRestriction[];
+  rows: { user_id: string; name: string; can: string }[];
+  people: { id: string; name: string }[];
+  me: string;
+  open: boolean;
+}) {
+  const { id, csrf, rows } = props;
+  const own = props.restrictions.find((r) => r.own)?.restriction ?? null;
+  const above = props.restrictions.filter((r) => !r.own);
+  const modes = [
+    { value: "", label: "Open", note: "Everyone who can see the project views it; its editors change it." },
+    { value: "edit", label: "Only some can edit", note: "Everyone who can see the project views it; the people below change it." },
+    { value: "view", label: "Only some can view", note: "Nobody else sees it, nor the pages under it." },
+  ];
+  const candidates = props.people.filter((p) => !rows.some((r) => r.user_id === p.id));
+  return (
+    <details open={props.open}>
+      <summary class="tool" title="Who may see and change this page">
+        <span class="label">{own || above.length ? "Restricted" : "Access"}</span>
+        <span class="short">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+        </span>{" "}
+        ▾
+      </summary>
+      <div class="panel share access-panel">
+        <h3>Who may see and change this page</h3>
+        <form method="post" action={`/a/${id}/access`} class="modes">
+          <CsrfField token={csrf} />
+          {modes.map((m) => (
+            <label class="mode">
+              <input type="radio" name="restriction" value={m.value} checked={(own ?? "") === m.value} />
+              <span>
+                <strong>{m.label}</strong>
+                <br />
+                <span class="muted small">{m.note}</span>
+              </span>
+            </label>
+          ))}
+          <button type="submit" class="primary">
+            Save
+          </button>
+        </form>
+        {own && (
+          <>
+            <h3>People</h3>
+            <ul class="people">
+              {rows.map((r) => (
+                <li>
+                  <span>{r.name}</span>
+                  <span class="muted small">{r.can === "edit" ? "can edit" : "can view"}</span>
+                  {r.user_id !== props.me && (
+                    <form method="post" action={`/a/${id}/access/remove`}>
+                      <CsrfField token={csrf} />
+                      <input type="hidden" name="user" value={r.user_id} />
+                      <button type="submit" title={`Take ${r.name} off`} aria-label={`Take ${r.name} off`}>
+                        ×
+                      </button>
+                    </form>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {candidates.length > 0 && (
+              <form method="post" action={`/a/${id}/access/people`} class="link">
+                <CsrfField token={csrf} />
+                <select name="user" aria-label="Person">
+                  {candidates.map((p) => (
+                    <option value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+                <select name="can" aria-label="What they may do">
+                  {own === "view" && <option value="view">can view</option>}
+                  <option value="edit">can edit</option>
+                </select>
+                <button type="submit">Add</button>
+              </form>
+            )}
+            <p class="muted small">The owner always sees and changes every page.</p>
+          </>
+        )}
+        {above.length > 0 && (
+          <p class="muted small">
+            The pages above it restrict it too:{" "}
+            {above.map((r, k) => (
+              <>
+                {k > 0 && ", "}
+                <a href={`/a/${r.id}`} style="display:inline;padding:0">
+                  {r.title}
+                </a>{" "}
+                ({r.restriction === "view" ? "only some can view" : "only some can edit"})
+              </>
+            ))}
+            .
+          </p>
+        )}
+      </div>
+    </details>
+  );
+}
+
 /** A page's labels, to add and remove. */
 function LabelPanel(props: { id: string; labels: string[]; csrf: string; open: boolean }) {
   const { id, labels, csrf } = props;
@@ -1072,7 +1218,7 @@ pages.get("/a/:id/v/:version{[0-9]+}", requireViewer(), (c) => viewerPage(c, c.r
 pages.get("/a/:id/token", requireViewer(), async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
-  if (!artifact || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.json({ error: "not found" }, 404);
+  if (!artifact || !(await canSeePage(c.env.DB, c.get("viewer"), artifact))) return c.json({ error: "not found" }, 404);
   const version = await getVersion(c.env.DB, id, Number(c.req.query("v") ?? artifact.current_version));
   if (!version) return c.json({ error: "not found" }, 404);
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version, undefined, c.get("viewer").userId);
@@ -1083,7 +1229,7 @@ pages.get("/a/:id/token", requireViewer(), async (c) => {
 pages.get("/a/:id/text", requireViewer(), async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
-  if (!artifact || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.json({ error: "not found" }, 404);
+  if (!artifact || !(await canSeePage(c.env.DB, c.get("viewer"), artifact))) return c.json({ error: "not found" }, 404);
   const version = Number(c.req.query("v") ?? artifact.current_version);
   const text = await versionText(c.env.DB, id, version);
   if (text === undefined) return c.json({ error: "not found" }, 404);
@@ -1110,7 +1256,7 @@ pages.get("/a/:id/diff", requireViewer(), async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
   const viewer = c.get("viewer");
-  if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
+  if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.notFound();
   const versions = await listVersions(c.env.DB, id);
   const pick = (q: string | undefined, fallback: number) => (versions.some((v) => v.version === Number(q)) ? Number(q) : fallback);
   const to = pick(c.req.query("to"), artifact.current_version);
@@ -1220,8 +1366,8 @@ function marked(text: string): string {
 pages.get("/search", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
   const q = (c.req.query("q") ?? "").trim().slice(0, 200);
-  const hidden = await hiddenProjects(c.env.DB, viewer);
-  const hits = q ? (await labeledSearch(semanticEnv(c.env), q, 100)).filter((h) => !h.project || !hidden.has(h.project)) : [];
+  const access = await accessFor(c.env.DB, viewer);
+  const hits = q ? (await labeledSearch(semanticEnv(c.env), q, 100)).filter((h) => access.sees(h)) : [];
   const labels = await labelsOf(c.env.DB, hits.map((h) => h.id));
   return c.html(
     <Page title={q ? `${q} · Search` : "Search"} viewer={viewer}>
@@ -1295,13 +1441,15 @@ pages.post("/new", requireViewer("viewer", true), requireSameOriginForm(), async
   if (!(await canSeeProject(c.env.DB, viewer, project)) || !(await canEditProject(c.env.DB, viewer, project))) {
     return c.text("Only the owner and this project's editors can add pages to it.", 403);
   }
+  // A page under another one takes on its restrictions, so it needs a parent its writer may change.
+  if (parent && !(await canEditPage(c.env.DB, viewer, parent))) return c.text("Only the people who may change that page can add pages under it.", 403);
   // What it starts from: a built-in template, or a template page of the same project.
   const chosen = typeof form["template"] === "string" ? form["template"] : "blank";
   let markdown: string;
   let labels: string[];
   if (chosen.startsWith("page:")) {
     const source = await getArtifact(c.env.DB, chosen.slice(5));
-    const sourceVersion = source && source.project === project ? await getVersion(c.env.DB, source.id, source.current_version) : null;
+    const sourceVersion = source && source.project === project && (await canSeePage(c.env.DB, viewer, source)) ? await getVersion(c.env.DB, source.id, source.current_version) : null;
     const file = sourceVersion?.entry.endsWith(".md") ? sourceVersion.files[sourceVersion.entry] : undefined;
     const text = file ? await (await c.env.BLOBS.get(blobKey(file.sha256)))?.text() : undefined;
     if (!source || text === undefined) return c.text("That template is not a Markdown page of this project.", 400);
@@ -1364,11 +1512,13 @@ pages.get("/a/:id/edit", requireViewer("viewer", true), async (c) => {
   if (found instanceof Response) return found;
   const { artifact, version } = found;
   const viewer = c.get("viewer");
-  const tree = artifact.project ? await listProjectPages(c.env.DB, artifact.project) : [];
+  // Only the pages this person may see are offered, to link to, to list or to embed.
+  const access = await accessFor(c.env.DB, viewer);
+  const tree = artifact.project ? (await listProjectPages(c.env.DB, artifact.project)).filter((r) => !access.hiddenPages.has(r.id)) : [];
   const { token } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version, undefined, viewer.userId);
   const [inUse, embeddable] = await Promise.all([
-    hiddenProjects(c.env.DB, viewer).then((hidden) => labelCounts(c.env.DB, hidden)),
-    markdownPages(c.env.DB, artifact.project).then((rows) => rows.filter((r) => r.id !== id)),
+    labelCounts(c.env.DB, access),
+    markdownPages(c.env.DB, artifact.project).then((rows) => rows.filter((r) => r.id !== id && !access.hiddenPages.has(r.id))),
   ]);
   const nonce = c.get("nonce");
   return c.html(
@@ -1518,7 +1668,7 @@ pages.post("/a/:id/comments", ...commentForm, async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
   const viewer = c.get("viewer");
-  if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
+  if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.notFound();
   const form = await c.req.parseBody();
   const body = typeof form["body"] === "string" ? form["body"].trim() : "";
   if (!body || body.length > MAX_COMMENT_CHARS) return c.text(`A comment is 1 to ${MAX_COMMENT_CHARS} characters.`, 400);
@@ -1550,14 +1700,14 @@ pages.post("/a/:id/comments", ...commentForm, async (c) => {
 async function mayManage(c: Context<AppEnv>, artifact: ArtifactRow, comment: CommentRow, action: "settle" | "delete"): Promise<boolean> {
   const viewer = c.get("viewer");
   if (viewer.role === "root" || comment.author_user === viewer.userId) return true;
-  return action === "settle" && (await canEditProject(c.env.DB, viewer, artifact.project));
+  return action === "settle" && (await canEditPage(c.env.DB, viewer, artifact));
 }
 
 pages.post("/a/:id/comments/:cid/resolve", ...commentForm, async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
   const comment = await getComment(c.env.DB, c.req.param("cid"));
-  if (!artifact || !comment || comment.artifact_id !== id || comment.reply_to || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.notFound();
+  if (!artifact || !comment || comment.artifact_id !== id || comment.reply_to || !(await canSeePage(c.env.DB, c.get("viewer"), artifact))) return c.notFound();
   if (!(await mayManage(c, artifact, comment, "settle"))) return c.text("Only the owner, the project's editors and the thread's author can settle it.", 403);
   const form = await c.req.parseBody();
   const resolved = form["resolved"] !== "0";
@@ -1573,7 +1723,7 @@ pages.post("/a/:id/comments/:cid/delete", ...commentForm, async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
   const comment = await getComment(c.env.DB, c.req.param("cid"));
-  if (!artifact || !comment || comment.artifact_id !== id || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.notFound();
+  if (!artifact || !comment || comment.artifact_id !== id || !(await canSeePage(c.env.DB, c.get("viewer"), artifact))) return c.notFound();
   if (!(await mayManage(c, artifact, comment, "delete"))) return c.text("Only the owner and the comment's author can delete it.", 403);
   await deleteComment(c.env.DB, comment.id);
   await recordViewerAction(c, "comment.delete", "artifact", id, { comment: comment.id });
@@ -1620,8 +1770,8 @@ const REASON: Record<string, string> = { mentioned: "mentioned you", thread: "in
 
 pages.get("/notifications", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
-  const hidden = await hiddenProjects(c.env.DB, viewer);
-  const rows = (await listNotifications(c.env.DB, viewer.userId)).filter((n) => !n.project || !hidden.has(n.project));
+  const access = await accessFor(c.env.DB, viewer);
+  const rows = (await listNotifications(c.env.DB, viewer.userId)).filter((n) => access.sees({ id: n.artifact_id, project: n.page_project }));
   return c.html(
     <Page title="Notifications" viewer={viewer}>
       <style>{raw(ACTIVITY_STYLES)}</style>
@@ -1673,8 +1823,8 @@ pages.post("/notifications/read", requireViewer("viewer", true), requireSameOrig
 
 pages.get("/activity", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
-  const hidden = await hiddenProjects(c.env.DB, viewer);
-  const rows = (await listActivity(c.env.DB, { limit: 100 })).filter((a) => !a.project || !hidden.has(a.project));
+  const access = await accessFor(c.env.DB, viewer);
+  const rows = (await listActivity(c.env.DB, { limit: 100 })).filter((a) => access.sees({ id: a.artifact_id, project: a.page_project }));
   return c.html(
     <Page title="Activity" viewer={viewer}>
       <style>{raw(ACTIVITY_STYLES)}</style>
@@ -1703,7 +1853,7 @@ pages.post("/watch", requireViewer("viewer", true), requireSameOriginForm(), asy
   const on = form["on"] !== "0";
   if (page) {
     const artifact = await getArtifact(c.env.DB, page);
-    if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
+    if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.notFound();
     await setWatch(c.env.DB, viewer.userId, pageTarget(page), on);
     return c.redirect(`/a/${page}`, 303);
   }
@@ -1751,10 +1901,49 @@ const editorForm = [requireViewer("viewer", true), requireSameOriginForm()] as c
 async function editable(c: Context<AppEnv>, id: string): Promise<ArtifactRow | Response> {
   const artifact = await getArtifact(c.env.DB, id);
   const viewer = c.get("viewer");
-  if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
-  if (!(await canEditProject(c.env.DB, viewer, artifact.project))) return c.text("Only the owner and this project's editors can change its pages.", 403);
+  if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.notFound();
+  if (!(await canEditPage(c.env.DB, viewer, artifact))) return c.text("Only the owner, this project's editors and the people this page lets edit it can change it.", 403);
   return artifact;
 }
+
+/** Who may see and change a page: open, only some edit, or only some view (the pages under it too). */
+pages.post("/a/:id/access", ...editorForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await editable(c, id);
+  if (artifact instanceof Response) return artifact;
+  const value = (await c.req.parseBody())["restriction"];
+  const restriction = value === "edit" || value === "view" ? value : null;
+  await setRestriction(c.env.DB, id, restriction, c.get("viewer"));
+  await recordViewerAction(c, "artifact.restrict", "artifact", id, { restriction });
+  return c.redirect(`/a/${id}?access=1`, 303);
+});
+
+pages.post("/a/:id/access/people", ...editorForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await editable(c, id);
+  if (artifact instanceof Response) return artifact;
+  const form = await c.req.parseBody();
+  const user = typeof form["user"] === "string" ? form["user"] : "";
+  const can = form["can"] === "view" ? "view" : "edit";
+  // A restriction only narrows the project's rules: only people who may see the project count.
+  if (!(await peopleWhoCanSee(c.env.DB, artifact.project)).some((p) => p.id === user)) return c.text("That person cannot see this project.", 400);
+  await setAccess(c.env.DB, id, user, can);
+  await recordViewerAction(c, "artifact.access", "artifact", id, { user, can });
+  return c.redirect(`/a/${id}?access=1`, 303);
+});
+
+pages.post("/a/:id/access/remove", ...editorForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await editable(c, id);
+  if (artifact instanceof Response) return artifact;
+  const viewer = c.get("viewer");
+  const user = (await c.req.parseBody())["user"];
+  if (typeof user !== "string" || !user) return c.text("Whom to take off?", 400);
+  if (user === viewer.userId && viewer.role !== "root") return c.text("You cannot take yourself off. Open the page to everyone, or ask the owner.", 400);
+  await setAccess(c.env.DB, id, user, null);
+  await recordViewerAction(c, "artifact.access", "artifact", id, { user, can: null });
+  return c.redirect(`/a/${id}?access=1`, 303);
+});
 
 /** Adds labels to a page: words separated by commas (or spaces). */
 pages.post("/a/:id/labels", ...editorForm, async (c) => {
@@ -1792,6 +1981,9 @@ pages.post("/a/:id/parent", ...editorForm, async (c) => {
   const tree = await listProjectPages(c.env.DB, artifact.project);
   if (parent && (!tree.some((r) => r.id === parent) || subtreeOf(tree, id).has(parent))) {
     return c.text("That page cannot hold this one: it is not in the same project, or it is this page or below it.", 400);
+  }
+  if (parent && !(await canEditPage(c.env.DB, c.get("viewer"), { id: parent, project: artifact.project }))) {
+    return c.text("Only the people who may change that page can put pages under it.", 403);
   }
   if (parent !== artifact.parent) await setParent(c.env.DB, id, parent);
   await recordViewerAction(c, "artifact.move", "artifact", id, { parent });

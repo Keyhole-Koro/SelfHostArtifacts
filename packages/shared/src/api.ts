@@ -31,6 +31,8 @@ export interface ArtifactSummary {
   /** Its place among the pages with the same parent, from 1. */
   position: number;
   labels: string[];
+  /** Who may see and change it, beyond its project's rules: only some may edit, or only some may view. */
+  restriction: "edit" | "view" | null;
   version: number;
   updated_at: string;
   allow_connect: string[];

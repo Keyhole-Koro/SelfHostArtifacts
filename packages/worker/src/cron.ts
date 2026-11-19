@@ -5,6 +5,7 @@ import { blobKey } from "./routes/api.ts";
 import { purgeStatements } from "./db/search.ts";
 import { cleanupStatements as activityCleanup, purgeActivityStatements } from "./db/activity.ts";
 import { purgeLabelStatements } from "./db/labels.ts";
+import { purgeAccessStatements } from "./db/access.ts";
 import { forgetPages, indexPending, semanticOn } from "./db/semantic.ts";
 import { purgeCommentStatements } from "./db/comments.ts";
 
@@ -47,6 +48,7 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
     ...purgeStatements(db, cutoff),
     ...purgeCommentStatements(db, cutoff),
     ...purgeLabelStatements(db, cutoff),
+    ...purgeAccessStatements(db, cutoff),
     ...purgeActivityStatements(db, cutoff),
     db.prepare("delete from versions where artifact_id in (select id from artifacts where deleted_at is not null and deleted_at <= ?)").bind(cutoff),
     db.prepare("delete from artifacts where deleted_at is not null and deleted_at <= ?").bind(cutoff),

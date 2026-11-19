@@ -15,7 +15,7 @@
 import { labelSchema } from "@artifact/shared";
 import type { Role } from "./app-env.ts";
 import { childrenOf, getArtifact, getVersion, listArtifacts, listProjectPages, type ArtifactRow } from "./db/artifacts.ts";
-import { hiddenProjects } from "./db/spaces.ts";
+import { accessFor } from "./db/access.ts";
 
 export const MACROS_PATH = "!artifact/macros.json";
 const MAX_LABEL_MACROS = 5;
@@ -80,22 +80,25 @@ export async function macroData(
   const used = macrosIn(md);
   const names = new Set(used.map((m) => m.name));
   const out: MacroData = {};
+  const access = await accessFor(db, viewer);
   if (names.has("children")) {
-    const tree = await listProjectPages(db, page.project);
+    const tree = (await listProjectPages(db, page.project)).filter((r) => !access.hiddenPages.has(r.id));
     out.children = (childrenOf(tree).get(page.id) ?? []).map((r) => ({ title: r.title, href: href(r.id) }));
   }
   if (names.has("recent")) {
-    out.recent = (await listArtifacts(db, RECENT_LENGTH, page.project)).map((a) => ({ title: a.title, href: href(a.id), updated_at: a.updated_at }));
+    out.recent = (await listArtifacts(db, RECENT_LENGTH * 3, page.project))
+      .filter((a) => access.sees(a))
+      .slice(0, RECENT_LENGTH)
+      .map((a) => ({ title: a.title, href: href(a.id), updated_at: a.updated_at }));
   }
   const labelArgs = [...new Set(used.filter((m) => m.name === "label").map((m) => m.arg))].slice(0, MAX_LABEL_MACROS);
   if (labelArgs.length) {
-    const hidden = await hiddenProjects(db, viewer);
     out.labels = {};
     for (const arg of labelArgs) {
       const label = labelSchema.safeParse(arg);
       out.labels[arg] = label.success
         ? (await listArtifacts(db, LIST_LENGTH, undefined, label.data))
-            .filter((a) => !a.project || !hidden.has(a.project))
+            .filter((a) => access.sees(a))
             .map((a) => ({ title: a.title, href: href(a.id), updated_at: a.updated_at }))
         : [];
     }
@@ -106,7 +109,7 @@ export async function macroData(
     for (const arg of includeArgs) {
       const id = includedId(arg);
       const target = id ? await getArtifact(db, id) : null;
-      if (!target || target.project !== page.project) {
+      if (!target || target.project !== page.project || !access.sees(target)) {
         out.include[arg] = { error: "Only a page of the same project can be embedded." };
         continue;
       }

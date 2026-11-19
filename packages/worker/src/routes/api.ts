@@ -63,6 +63,7 @@ import { MARK_END, MARK_START, indexStatements, linkStatements, linkedFrom, link
 import { indexLater } from "../db/semantic.ts";
 import { listActivity, record } from "../db/activity.ts";
 import { changeLabels, labeledSearch, labelsOf } from "../db/labels.ts";
+import { passOnRestriction } from "../db/access.ts";
 import { semanticEnv } from "../env.ts";
 import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, getComment, listComments, setResolved, threadPeople } from "../db/comments.ts";
 
@@ -87,6 +88,7 @@ function summary(c: Context<AppEnv>, a: ArtifactRow, allowConnect: string[], lab
     parent: a.parent,
     position: a.position,
     labels,
+    restriction: a.restriction ?? null,
     version: a.current_version,
     updated_at: a.updated_at,
     allow_connect: allowConnect,
@@ -548,6 +550,8 @@ signed.get("/artifacts/:id/files/*", async (c) => {
 
 signed.delete("/artifacts/:id", async (c) => {
   const id = c.req.param("id");
+  // The pages under it move up; a restriction it had stays on them.
+  await passOnRestriction(c.env.DB, id);
   const trashed = await trashArtifact(c.env.DB, id);
   if (!trashed) return apiError(c, 404, "not_found", "No artifact has this id (or it is already in the trash).");
   const device = c.get("device");

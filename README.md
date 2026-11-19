@@ -119,6 +119,10 @@ a how-to, or any page of the project labeled `template`), and Markdown pages can
 **macros**, each on a line of its own: `{{toc}}`, `{{children}}`, `{{recent}}`,
 `{{label decision}}` and `{{include <page url>}}`. The editor's Insert menu adds them.
 
+A page can be **restricted**: only some people edit it, or only some people see it. The
+restriction holds for the pages under it too, and every list, search, feed and notification
+leaves out what a person may not see. The owner (and so every agent) sees everything.
+
 To show a page to someone without an account, open it and choose **Share → Create public link**:
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
 it, replace it with a new link or turn it off; agents cannot make pages public.
