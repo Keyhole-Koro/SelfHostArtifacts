@@ -17,6 +17,10 @@ import {
   type ProjectListResponse,
   type SearchResponse,
   type CommentListResponse,
+  type ActivityResponse,
+  type LabelResponse,
+  labelSchema,
+  labelsSchema,
   type Manifest,
   type PairPollResponse,
   type PairStartResponse,
@@ -57,9 +61,11 @@ import { createSecret, finishSecret, getSecret, listSecrets, sealSecret, secretS
 import { safeNext } from "../lib/internal-path.ts";
 import { recordAuditEvent } from "../db/audit.ts";
 import { MARK_END, MARK_START, indexStatements, linkStatements, linkedFrom, linksTo } from "../db/search.ts";
-import { hybridSearch, indexLater } from "../db/semantic.ts";
+import { indexLater } from "../db/semantic.ts";
+import { listActivity, record } from "../db/activity.ts";
+import { changeLabels, labeledSearch, labelsOf } from "../db/labels.ts";
 import { semanticEnv } from "../env.ts";
-import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, getComment, listComments, setResolved } from "../db/comments.ts";
+import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, getComment, listComments, setResolved, threadPeople } from "../db/comments.ts";
 
 export const blobKey = (sha256: string) => `blobs/${sha256}`;
 
@@ -72,7 +78,7 @@ function artifactUrl(c: Context<AppEnv>, id: string): string {
   return `${c.get("config").origin}/a/${id}`;
 }
 
-function summary(c: Context<AppEnv>, a: ArtifactRow, allowConnect: string[]): ArtifactSummary {
+function summary(c: Context<AppEnv>, a: ArtifactRow, allowConnect: string[], labels: string[]): ArtifactSummary {
   return {
     id: a.id,
     url: artifactUrl(c, a.id),
@@ -81,6 +87,7 @@ function summary(c: Context<AppEnv>, a: ArtifactRow, allowConnect: string[]): Ar
     project: a.project,
     parent: a.parent,
     position: a.position,
+    labels,
     version: a.current_version,
     updated_at: a.updated_at,
     allow_connect: allowConnect,
@@ -249,6 +256,7 @@ signed.post("/artifacts", async (c) => {
     parent: manifest.parent,
     text: manifest.text,
     links: manifest.links,
+    labels: manifest.labels,
     entry: manifest.entry,
     files: resolved.files,
     allowConnect: manifest.allow_connect ?? [],
@@ -261,6 +269,7 @@ signed.post("/artifacts", async (c) => {
     metadata: { version: 1, externalHosts: manifest.allow_connect?.length ?? 0 },
   });
   indexLater(semanticEnv(c.env), c.executionCtx, id);
+  await record(c.env.DB, { artifactId: id, project: project ?? null, kind: "created", actor: { deviceId: device.id, name: device.name }, version: 1 });
   return c.json<PublishResponse>({ id, url: artifactUrl(c, id), version: 1 }, 201);
 });
 
@@ -294,6 +303,7 @@ signed.put("/artifacts/:id", async (c) => {
     description: manifest.description,
     text: manifest.text,
     links: manifest.links,
+    labels: manifest.labels,
     entry: manifest.entry,
     files: resolved.files,
     allowConnect: manifest.allow_connect ?? [],
@@ -312,22 +322,25 @@ signed.put("/artifacts/:id", async (c) => {
     metadata: { version: base + 1, externalHosts: manifest.allow_connect?.length ?? 0 },
   });
   indexLater(semanticEnv(c.env), c.executionCtx, artifact.id);
+  await record(c.env.DB, { artifactId: artifact.id, project, kind: "updated", actor: { deviceId: device.id, name: device.name }, version: base + 1 });
   return c.json<PublishResponse>({ id: artifact.id, url: artifactUrl(c, artifact.id), version: base + 1 });
 });
 
-/** `?project=<name>` lists one project; `?project=` (empty) lists pages without a project. */
+/** `?project=<name>` lists one project; `?project=` (empty) lists pages without a project; `?label=` those with a label. */
 signed.get("/artifacts", async (c) => {
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 25) || 25, 1), 200);
   const project = c.req.query("project");
-  const rows = await listArtifacts(c.env.DB, limit, project === undefined ? undefined : project.trim() || null);
-  return c.json<ListResponse>({ artifacts: rows.map((a) => summary(c, a, a.allow_connect)) });
+  const label = labelSchema.safeParse(c.req.query("label") ?? "");
+  const rows = await listArtifacts(c.env.DB, limit, project === undefined ? undefined : project.trim() || null, label.success ? label.data : undefined);
+  const labels = await labelsOf(c.env.DB, rows.map((a) => a.id));
+  return c.json<ListResponse>({ artifacts: rows.map((a) => summary(c, a, a.allow_connect, labels.get(a.id) ?? [])) });
 });
 
 /** Pages whose title, description or text has every word of `q`. An agent sees every project. */
 signed.get("/search", async (c) => {
   const q = (c.req.query("q") ?? "").slice(0, 200);
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 20) || 20, 1), 100);
-  const hits = await hybridSearch(semanticEnv(c.env), q, limit);
+  const hits = await labeledSearch(semanticEnv(c.env), q, limit);
   return c.json<SearchResponse>({
     results: hits.map((h) => ({
       id: h.id,
@@ -408,11 +421,28 @@ signed.post("/artifacts/:id/comments", async (c) => {
     author_user: null, author_device: device.id, author_name: device.name, body: req.body, quote: req.reply_to ? null : (req.quote || null),
   });
   if (req.reply_to && req.resolve) await setResolved(c.env.DB, req.reply_to, true);
+  const thread = req.reply_to ? await threadPeople(c.env.DB, req.reply_to) : [];
+  const actor = { deviceId: device.id, name: device.name };
+  await record(c.env.DB, { artifactId: artifact.id, project: artifact.project, kind: req.reply_to ? "replied" : "commented", actor, commentId: req.reply_to ?? id, thread });
+  if (req.reply_to && req.resolve) await record(c.env.DB, { artifactId: artifact.id, project: artifact.project, kind: "resolved", actor, commentId: req.reply_to, thread });
   await recordAuditEvent(c, {
     actorType: "device", actorId: device.id, actorLabel: device.name,
     action: "comment.create", targetType: "artifact", targetId: artifact.id, metadata: { comment: id, reply: !!req.reply_to },
   });
   return c.json({ id, url: `${artifactUrl(c, artifact.id)}?comments=1#c-${req.reply_to ?? id}` }, 201);
+});
+
+/** What changed lately: everywhere, in one project (?project=) or on one page (?page=). */
+signed.get("/activity", async (c) => {
+  const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 30) || 30, 1), 200);
+  const rows = await listActivity(c.env.DB, { project: c.req.query("project") || undefined, artifactId: c.req.query("page") || undefined, limit });
+  return c.json<ActivityResponse>({
+    activity: rows.map((a) => ({
+      at: a.at, kind: a.kind, actor: a.actor_name, by_agent: a.actor_device !== null,
+      page: { id: a.artifact_id, url: artifactUrl(c, a.artifact_id), title: a.title, project: a.project },
+      version: a.version, comment_id: a.comment_id,
+    })),
+  });
 });
 
 signed.get("/projects", async (c) => {
@@ -457,14 +487,39 @@ signed.patch("/artifacts/:id", async (c) => {
   return c.json<MoveResponse>({ id: moved.id, project: moved.project, parent: moved.parent, position: moved.position });
 });
 
+const labelChangeSchema = z
+  .object({ set: labelsSchema.optional(), add: labelsSchema.optional(), remove: z.array(labelSchema).max(100).optional() })
+  .refine((r) => r.set || r.add || r.remove, "Give set, add or remove.");
+
+/** Changes a page's labels, without a new version. */
+signed.post("/artifacts/:id/labels", async (c) => {
+  const artifact = await getArtifact(c.env.DB, c.req.param("id"));
+  if (!artifact) return apiError(c, 404, "not_found", "No artifact has this id (or it is in the trash).");
+  const parsed = await readJson(c, labelChangeSchema);
+  if (!parsed.ok) return parsed.res;
+  const labels = await changeLabels(c.env.DB, artifact.id, parsed.value);
+  const device = c.get("device");
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "artifact.labels", targetType: "artifact", targetId: artifact.id,
+    metadata: { labels: labels.length },
+  });
+  return c.json<LabelResponse>({ id: artifact.id, labels });
+});
+
 signed.get("/artifacts/:id", async (c) => {
   const artifact = await getArtifact(c.env.DB, c.req.param("id"));
   if (!artifact) return apiError(c, 404, "not_found", "No artifact has this id (or it is in the trash).");
-  const [versions, from, to] = await Promise.all([listVersions(c.env.DB, artifact.id), linkedFrom(c.env.DB, artifact.id), linksTo(c.env.DB, artifact.id)]);
+  const [versions, from, to, labels] = await Promise.all([
+    listVersions(c.env.DB, artifact.id),
+    linkedFrom(c.env.DB, artifact.id),
+    linksTo(c.env.DB, artifact.id),
+    labelsOf(c.env.DB, [artifact.id]),
+  ]);
   const current = versions.find((v) => v.version === artifact.current_version);
   const link = (p: { id: string; title: string }) => ({ id: p.id, url: artifactUrl(c, p.id), title: p.title });
   return c.json<ArtifactDetail>({
-    ...summary(c, artifact, current?.allow_connect ?? []),
+    ...summary(c, artifact, current?.allow_connect ?? [], labels.get(artifact.id) ?? []),
     linked_from: from.map(link),
     links_to: to.map(link),
     versions: versions.map((v) => ({

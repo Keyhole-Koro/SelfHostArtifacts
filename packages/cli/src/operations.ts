@@ -16,6 +16,10 @@ import {
   MAX_TEXT_CHARS,
   type SearchResponse,
   type CommentListResponse,
+  type ActivityItem,
+  type LabelRequest,
+  type LabelResponse,
+  type ActivityResponse,
   type CommentSummary,
   type CommentRequest,
 } from "@artifact/shared";
@@ -45,6 +49,8 @@ export interface PublishInput {
   project?: string;
   /** URL (or id) of the page to put this one under; the page goes into that page's project. */
   parent?: string;
+  /** The page's labels, replacing the ones it has; undefined keeps them. */
+  labels?: string[];
 }
 
 export interface PublishResult {
@@ -174,6 +180,7 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
     allow_connect: input.allowConnect ?? existing?.allow_connect ?? [],
     ...(project ? { project } : {}),
     ...(parent ? { parent } : {}),
+    ...(input.labels ? { labels: input.labels } : {}),
     text,
     links,
     // The version this computer last published. If another device has published since, the
@@ -189,10 +196,22 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
   return { ...result, created: !existing, files: files.length, uploaded, project: project ?? existing?.project ?? null };
 }
 
-/** `project`: a name for one project, null for pages without one, undefined for all. */
-export async function list(limit = 25, project?: string | null): Promise<ListResponse> {
+/** `project`: a name for one project, null for pages without one, undefined for all. `label`: only pages with it. */
+export async function list(limit = 25, project?: string | null, label?: string): Promise<ListResponse> {
   const filter = project === undefined ? "" : `&project=${encodeURIComponent(project ?? "")}`;
-  return signedJson<ListResponse>(session(), "GET", `/api/v1/artifacts?limit=${limit}${filter}`);
+  const labeled = label ? `&label=${encodeURIComponent(label)}` : "";
+  return signedJson<ListResponse>(session(), "GET", `/api/v1/artifacts?limit=${limit}${filter}${labeled}`);
+}
+
+/** A page's labels, after adding and removing some (neither: just read them). */
+export async function labels(url: string, change: LabelRequest = {}): Promise<LabelResponse> {
+  const s = session();
+  const id = artifactIdFromUrl(s, url);
+  if (!change.set && !change.add?.length && !change.remove?.length) {
+    const detail = await signedJson<ArtifactDetail>(s, "GET", `/api/v1/artifacts/${id}`);
+    return { id, labels: detail.labels ?? [] };
+  }
+  return signedJson<LabelResponse>(s, "POST", `/api/v1/artifacts/${id}/labels`, change);
 }
 
 /**
@@ -222,6 +241,19 @@ export async function reindex(onPage: (title: string, result: string) => void): 
     }
   }
   return { pages: artifacts.length, updated };
+}
+
+/** What changed lately, everywhere or in one project. */
+export async function activity(project?: string, limit = 30): Promise<ActivityResponse> {
+  const q = `?limit=${limit}${project ? `&project=${encodeURIComponent(project)}` : ""}`;
+  return signedJson<ActivityResponse>(session(), "GET", `/api/v1/activity${q}`);
+}
+
+export function formatActivity(items: ActivityItem[]): string {
+  const verb = { created: "made", updated: "changed", commented: "commented on", replied: "replied on", resolved: "resolved a thread on" } as const;
+  return items
+    .map((a) => `${a.at.slice(0, 16).replace("T", " ")}  ${a.actor}${a.by_agent ? " (agent)" : ""} ${verb[a.kind]} ${a.page.title}${a.version ? ` v${a.version}` : ""}  ${a.page.url}`)
+    .join("\n");
 }
 
 /** A page's comments, oldest first. */

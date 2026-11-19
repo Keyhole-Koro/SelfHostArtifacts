@@ -48,7 +48,10 @@ code { font: var(--text-sm)/1.5 var(--font-mono); background: var(--surface-2); 
 .brand:hover { text-decoration: none; }
 .menu { margin-left: auto; position: relative; }
 .top-search { margin: 0 0 0 auto; display: flex; }
-.top-search + .menu { margin-left: 0; }
+.top-search + .menu, .bell + .menu { margin-left: 0; }
+.bell { position: relative; display: inline-flex; align-items: center; color: var(--text-2); padding: 6px; border-radius: 999px; }
+.bell:hover { color: var(--text); background: var(--surface-2); }
+.bell-count { position: absolute; top: -2px; right: -4px; min-width: 16px; padding: 0 4px; border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
 .top-search input[type=search] { width: min(240px, 36vw); font-size: var(--text-sm); padding: 5px var(--space-3); border: 1px solid var(--border); border-radius: 999px; }
 .menu > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); color: var(--text-2); font-size: var(--text-sm); }
 .menu > summary::-webkit-details-marker { display: none; }
@@ -103,6 +106,7 @@ button.danger { border-color: transparent; background: none; color: var(--negati
 button.danger:hover { background: color-mix(in srgb, var(--negative) 10%, transparent); }
 button:disabled { opacity: 0.6; cursor: default; }
 input[type=text], input[type=email], input[type=search] { width: 100%; font: inherit; font-size: var(--text-md); padding: 7px var(--space-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.field-row select { font: inherit; font-size: var(--text-md); padding: 7px var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); max-width: 40%; }
 input::placeholder { color: var(--text-3); }
 label { display: block; font-size: var(--text-sm); font-weight: 500; color: var(--text-2); margin-bottom: var(--space-1); }
 form.inline { display: inline; }
@@ -129,6 +133,19 @@ export interface PageViewer {
   name: string;
   role: "root" | "viewer";
   csrf: string;
+  /** Notifications not read yet. */
+  unread?: number;
+}
+
+/** The bell that leads to the notifications, with how many are unread. */
+export function Bell(props: { unread?: number; class?: string }) {
+  const n = props.unread ?? 0;
+  return (
+    <a href="/notifications" class={props.class ?? "bell"} aria-label={n ? `Notifications, ${n} unread` : "Notifications"} title="Notifications">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></svg>
+      {n > 0 && <span class="bell-count">{n > 99 ? "99+" : n}</span>}
+    </a>
+  );
 }
 
 function initials(name: string): string {
@@ -161,6 +178,7 @@ export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boo
                 <input type="search" name="q" placeholder="Search pages" aria-label="Search pages" />
               </form>
             )}
+            {viewer && <Bell unread={viewer.unread} />}
             {viewer && (
               <details class="menu">
                 <summary>
@@ -171,6 +189,7 @@ export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boo
                 </summary>
                 <div class="menu-panel">
                   <div class="menu-who">{viewer.role === "root" ? "Owner" : "Viewer"}</div>
+                  <a href="/activity">Activity</a>
                   <a href="/account">Account</a>
                   {viewer.role === "root" && <a href="/settings">Settings</a>}
                   <hr />

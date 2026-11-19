@@ -39,7 +39,75 @@ export const DOC_JS = `(async () => {
     // The renderer's libraries did not load: show the Markdown as it is written.
     const pre = document.createElement("pre"); pre.className = "raw"; pre.textContent = md; main.replaceChildren(pre); return;
   }
-  main.innerHTML = DOMPurify.sanitize(marked.parse(md, { gfm: true }));
+  // A line of its own like {{children}} is a macro: a placeholder now, filled in below.
+  const attr = (s) => s.replace(/[&<>"]/g, (ch) => "&#" + ch.charCodeAt(0) + ";");
+  marked.use({ extensions: [{
+    name: "macro",
+    level: "block",
+    start(src) { const m = /(^|\\n) {0,3}\\{\\{/.exec(src); return m ? m.index + m[1].length : undefined; },
+    tokenizer(src) {
+      const m = /^ {0,3}\\{\\{\\s*(children|toc|recent|include|label)(?:\\s+([^{}\\n]*?))?\\s*\\}\\}[ \\t]*(?:\\n+|$)/.exec(src);
+      if (m) return { type: "macro", raw: m[0], name: m[1], arg: (m[2] || "").trim() };
+    },
+    renderer(t) { return '<div class="macro" data-macro="' + t.name + '" data-arg="' + attr(t.arg) + '"></div>\\n'; },
+  }] });
+  const render = (text) => DOMPurify.sanitize(marked.parse(text, { gfm: true }));
+  main.innerHTML = render(md);
+  // Headings get ids, for the table of contents and for links to a section.
+  const used = new Set();
+  for (const h of main.querySelectorAll("h1, h2, h3, h4")) {
+    if (h.id) { used.add(h.id); continue; }
+    const base = h.textContent.trim().toLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, "-").replace(/^-+|-+$/g, "") || "section";
+    let id = base, k = 1;
+    while (used.has(id)) id = base + "-" + ++k;
+    used.add(id); h.id = id;
+  }
+  const macros = [...main.querySelectorAll("div.macro[data-macro]")];
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+  const note = (text) => el("p", "macro-note", text);
+  let data = {};
+  if (macros.some((m) => m.dataset.macro !== "toc")) {
+    try { data = await (await fetch("macros.json")).json(); } catch { data = null; }
+  }
+  const list = (pages, dated) => {
+    if (!pages) return note("This list could not be loaded.");
+    if (!pages.length) return note("No pages yet.");
+    const ul = el("ul", "macro-list");
+    for (const p of pages) {
+      const li = el("li"), a = el("a", "", p.title);
+      a.href = p.href; li.append(a);
+      if (dated && p.updated_at) li.append(el("span", "macro-when", " · " + new Date(p.updated_at).toLocaleDateString()));
+      ul.append(li);
+    }
+    return ul;
+  };
+  for (const m of macros) {
+    const name = m.dataset.macro, arg = m.dataset.arg || "";
+    if (name === "toc") {
+      const heads = [...main.querySelectorAll(":scope > h2, :scope > h3")];
+      if (!heads.length) { m.replaceWith(note("No sections yet.")); continue; }
+      const nav = el("nav", "macro-toc"), ul = el("ul");
+      nav.setAttribute("aria-label", "Contents");
+      for (const h of heads) { const li = el("li", h.tagName === "H3" ? "sub" : ""), a = el("a", "", h.textContent); a.href = "#" + h.id; li.append(a); ul.append(li); }
+      nav.append(el("div", "macro-toc-head", "Contents"), ul);
+      m.replaceWith(nav);
+    } else if (data === null) m.replaceWith(note("This list could not be loaded."));
+    else if (data.public) m.replaceWith(note("Not shown on a public link."));
+    else if (name === "children") m.replaceWith(list(data.children || []));
+    else if (name === "recent") m.replaceWith(list(data.recent || [], true));
+    else if (name === "label") m.replaceWith(list((data.labels || {})[arg] || []));
+    else if (name === "include") {
+      const inc = (data.include || {})[arg];
+      if (!inc || inc.error) { m.replaceWith(note(inc ? inc.error : "Only a page of the same project can be embedded.")); continue; }
+      const box = el("section", "macro-include"), head = el("div", "macro-include-head"), a = el("a", "", inc.title), body = el("div", "macro-include-body");
+      a.href = inc.href; head.append(a);
+      body.innerHTML = render(inc.markdown);
+      // Macros in the embedded page are not expanded.
+      for (const x of body.querySelectorAll("div.macro")) x.remove();
+      box.append(head, body);
+      m.replaceWith(box);
+    } else m.remove();
+  }
   for (const a of main.querySelectorAll("a[href]")) {
     let url; try { url = new URL(a.getAttribute("href"), location.href); } catch { continue; }
     if (url.host !== location.host) { a.target = "_blank"; a.rel = "noopener noreferrer"; }
@@ -67,6 +135,17 @@ img { max-width: 100%; }
 hr { border: 0; border-top: 1px solid var(--border); }
 .loading { color: var(--text-2); }
 mark.artifact-comment { background: color-mix(in srgb, #f5c400 35%, transparent); color: inherit; cursor: pointer; border-radius: 2px; }
+.macro-note { color: var(--text-2); font-style: italic; }
+.macro-list { padding-left: 1.3em; }
+.macro-when { color: var(--text-2); font-size: 0.9em; }
+.macro-toc { background: var(--surface-2); border-radius: 8px; padding: 10px 18px; margin: 1em 0; }
+.macro-toc-head { font-size: 0.8em; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.macro-toc ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.macro-toc li.sub { padding-left: 1.2em; }
+.macro-include { border: 1px solid var(--border); border-radius: 8px; margin: 1.2em 0; }
+.macro-include-head { font-size: 0.85em; padding: 6px 14px; border-bottom: 1px solid var(--border); background: var(--surface-2); border-radius: 8px 8px 0 0; }
+.macro-include-body { padding: 0 16px; }
+.macro-include-body h1 { font-size: 22px; margin-top: 0.8em; }
 `;
 
 /** The editor page, inside the sandbox; the viewer's edit page asks it for the Markdown to save. */

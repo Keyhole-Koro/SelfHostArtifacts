@@ -5,6 +5,8 @@ import { getArtifact, getVersion } from "../db/artifacts.ts";
 import { blobKey } from "./api.ts";
 import { shareActive } from "../share.ts";
 import { DOC_CSS, DOC_JS, DOC_PATH, EDITOR_JS, EDITOR_PATH, docHtml, editorHtml } from "../doc.ts";
+import { MACROS_PATH, macroData, type MacroData } from "../macros.ts";
+import type { Role } from "../app-env.ts";
 
 /**
  * Serves an artifact's files at /c/:token/<path>. The token (from the viewer page) says which
@@ -125,6 +127,21 @@ content.on(["GET", "HEAD"], "/:token/*", async (c) => {
     [EDITOR_PATH]: viewerFrame && version.entry.endsWith(".md") ? ["text/html; charset=utf-8", () => editorHtml(version.entry)] : undefined,
     "!artifact/editor.js": viewerFrame ? ["text/javascript; charset=utf-8", () => EDITOR_JS] : undefined,
   };
+  if (path === MACROS_PATH && version.entry.endsWith(".md")) {
+    const headers = contentHeaders("application/json; charset=utf-8", version.allow_connect);
+    headers.set("cache-control", "no-store");
+    if (c.req.method === "HEAD") return new Response(null, { headers });
+    let data: MacroData = { public: true };
+    const user = viewerFrame && claims.u ? await c.env.DB.prepare("select id, role from users where id = ?").bind(claims.u).first<{ id: string; role: Role }>() : null;
+    if (viewerFrame) data = {};
+    const entry = version.files[version.entry];
+    if (user && entry) {
+      const readText = async (sha256: string) => (await c.env.BLOBS.get(blobKey(sha256)))?.text() ?? null;
+      const md = await readText(entry.sha256);
+      if (md !== null) data = await macroData(c.env.DB, readText, artifact, md, { userId: user.id, role: user.role });
+    }
+    return new Response(JSON.stringify(data), { headers });
+  }
   const own = builtIn[path];
   if (own) {
     const headers = contentHeaders(own[0], version.allow_connect);

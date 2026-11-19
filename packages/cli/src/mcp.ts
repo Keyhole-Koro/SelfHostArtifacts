@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
-import { comment, comments, formatComments, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
+import { activity, comment, comments, formatActivity, formatComments, labels, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
 import { ALLOWED_COMMANDS, vaultCollections, vaultCreate, vaultDestroy, vaultDevices, vaultGrant, vaultPut, vaultSecrets, vaultUse } from "./vault.ts";
 import { VERSION } from "./version.ts";
 
@@ -55,11 +55,15 @@ export function createServer(): McpServer {
           .string()
           .optional()
           .describe("URL of the page to put this one under, as a child page in that page's project. Use it to build a tree of related pages"),
+        labels: z
+          .array(z.string())
+          .optional()
+          .describe('Labels that group pages across projects, e.g. ["decision"]. They replace the page\'s labels; leave out to keep them'),
       },
     },
-    ({ file_path, files, title, description, url, allow_connect, project, parent }) =>
+    ({ file_path, files, title, description, url, allow_connect, project, parent, labels: pageLabels }) =>
       run(async () => {
-        const r = await publish({ filePath: file_path, files, title, description, url, allowConnect: allow_connect, project, parent });
+        const r = await publish({ filePath: file_path, files, title, description, url, allowConnect: allow_connect, project, parent, labels: pageLabels });
         const where = r.project ? `, in ${r.project}` : "";
         return `${r.created ? "Published" : "Updated"}: ${r.url} (version ${r.version}, private${where}; ${r.files} files, ${r.uploaded} uploaded)`;
       }),
@@ -89,23 +93,57 @@ export function createServer(): McpServer {
     "list",
     {
       title: "List published pages",
-      description: "List published pages, most recently updated first, optionally of one project.",
+      description: "List published pages, most recently updated first, optionally of one project or with one label.",
       inputSchema: {
         limit: z.number().int().min(1).max(200).optional(),
         project: z.string().optional().describe("Only pages in this project"),
+        label: z.string().optional().describe("Only pages with this label"),
       },
     },
-    ({ limit, project }) =>
+    ({ limit, project, label }) =>
       run(async () => {
-        const { artifacts } = await list(limit ?? 25, project);
-        if (artifacts.length === 0) return project ? `No page in ${project}.` : "Nothing is published yet.";
+        const { artifacts } = await list(limit ?? 25, project, label);
+        if (artifacts.length === 0) return label ? `No page labeled ${label}.` : project ? `No page in ${project}.` : "Nothing is published yet.";
         return artifacts
           .map(
             (a) =>
-              `${a.title} — ${a.url} (v${a.version}, updated ${a.updated_at}${a.project ? `, ${a.project}` : ""})${a.description ? `\n  ${a.description}` : ""}`,
+              `${a.title} — ${a.url} (v${a.version}, updated ${a.updated_at}${a.project ? `, ${a.project}` : ""}${a.labels?.length ? `, labels: ${a.labels.join(", ")}` : ""})${a.description ? `\n  ${a.description}` : ""}`,
           )
           .join("\n");
       }),
+  );
+
+  server.registerTool(
+    "labels",
+    {
+      title: "A page's labels",
+      description:
+        "Read a page's labels, or add and remove some. Labels group pages across projects (\"decision\", \"draft\", \"template\"); " +
+        "list with label, or search with label:<name>, finds the pages that have one.",
+      inputSchema: {
+        url: z.string().describe("The page URL"),
+        add: z.array(z.string()).optional(),
+        remove: z.array(z.string()).optional(),
+      },
+    },
+    ({ url, add, remove }) =>
+      run(async () => {
+        const r = await labels(url, { ...(add?.length ? { add } : {}), ...(remove?.length ? { remove } : {}) });
+        return r.labels.length ? `Labels: ${r.labels.join(", ")}` : "No labels.";
+      }),
+  );
+
+  server.registerTool(
+    "activity",
+    {
+      title: "What changed lately",
+      description: "New pages, changes and comments, newest first, everywhere or in one project. Use it to catch up before working on a project's pages.",
+      inputSchema: {
+        project: z.string().optional().describe("Only this project"),
+        limit: z.number().int().positive().max(200).optional(),
+      },
+    },
+    ({ project, limit }) => run(async () => formatActivity((await activity(project, limit ?? 30)).activity) || "Nothing happened yet."),
   );
 
   server.registerTool(
@@ -155,8 +193,8 @@ export function createServer(): McpServer {
       title: "Search pages",
       description:
         "Find published pages by their words (every word of the query, any part of a word, Japanese included) and by meaning " +
-        "(pages that say something close in other words, marked \"by meaning\"). Use it before writing a page, to link to what exists " +
-        "instead of repeating it.",
+        "(pages that say something close in other words, marked \"by meaning\"). label:<name> in the query keeps only pages with that " +
+        "label. Use it before writing a page, to link to what exists instead of repeating it.",
       inputSchema: {
         query: z.string().describe("Words to find, separated by spaces"),
         limit: z.number().int().positive().max(100).optional(),

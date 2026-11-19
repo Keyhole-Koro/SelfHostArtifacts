@@ -75,3 +75,12 @@ export async function openThreadCounts(db: D1Database): Promise<Map<string, numb
 export function purgeCommentStatements(db: D1Database, cutoff: string): D1PreparedStatement[] {
   return [db.prepare("delete from comments where artifact_id in (select id from artifacts where deleted_at is not null and deleted_at <= ?)").bind(cutoff)];
 }
+
+/** The people (not agents) who wrote in a thread, given its first comment. */
+export async function threadPeople(db: D1Database, threadId: string): Promise<string[]> {
+  const { results } = await db
+    .prepare("select distinct author_user from comments where (id = ? or reply_to = ?) and author_user is not null")
+    .bind(threadId, threadId)
+    .all<{ author_user: string }>();
+  return results.map((r) => r.author_user);
+}

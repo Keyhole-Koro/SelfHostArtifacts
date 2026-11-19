@@ -3,6 +3,8 @@ import { AUDIT_RETENTION_DAYS } from "./db/audit.ts";
 import { SECRET_HISTORY_DAYS } from "./db/secrets.ts";
 import { blobKey } from "./routes/api.ts";
 import { purgeStatements } from "./db/search.ts";
+import { cleanupStatements as activityCleanup, purgeActivityStatements } from "./db/activity.ts";
+import { purgeLabelStatements } from "./db/labels.ts";
 import { forgetPages, indexPending, semanticOn } from "./db/semantic.ts";
 import { purgeCommentStatements } from "./db/comments.ts";
 
@@ -33,6 +35,7 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
     // Secret requests: drop the ciphertext of expired ones, then forget old ones entirely.
     db.prepare("update secrets set ciphertext = null, finished_at = ?, finished_by = 'expiry' where finished_at is null and expires_at <= ?").bind(iso, iso),
     db.prepare("delete from secrets where finished_at <= ?").bind(new Date(now.getTime() - SECRET_HISTORY_DAYS * 864e5).toISOString()),
+    ...activityCleanup(db, now),
   ]);
   const expired = expiredResults.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 
@@ -43,6 +46,8 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
   const purged = await db.batch([
     ...purgeStatements(db, cutoff),
     ...purgeCommentStatements(db, cutoff),
+    ...purgeLabelStatements(db, cutoff),
+    ...purgeActivityStatements(db, cutoff),
     db.prepare("delete from versions where artifact_id in (select id from artifacts where deleted_at is not null and deleted_at <= ?)").bind(cutoff),
     db.prepare("delete from artifacts where deleted_at is not null and deleted_at <= ?").bind(cutoff),
   ]);

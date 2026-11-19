@@ -30,6 +30,7 @@ export interface ArtifactSummary {
   parent: string | null;
   /** Its place among the pages with the same parent, from 1. */
   position: number;
+  labels: string[];
   version: number;
   updated_at: string;
   allow_connect: string[];
@@ -152,4 +153,32 @@ export interface CommentRequest {
   quote?: string;
   /** With reply_to: settle the thread after replying. */
   resolve?: boolean;
+}
+
+export interface ActivityItem {
+  at: string;
+  kind: "created" | "updated" | "commented" | "replied" | "resolved";
+  /** Who did it; by_agent when it was an agent's device. */
+  actor: string;
+  by_agent: boolean;
+  page: { id: string; url: string; title: string; project: string | null };
+  version: number | null;
+  /** The comment it is about (for a reply, its thread). */
+  comment_id: string | null;
+}
+
+export interface ActivityResponse {
+  activity: ActivityItem[];
+}
+
+/** Changes a page's labels: `set` replaces them all; otherwise `add` and `remove`. */
+export interface LabelRequest {
+  set?: string[];
+  add?: string[];
+  remove?: string[];
+}
+
+export interface LabelResponse {
+  id: string;
+  labels: string[];
 }

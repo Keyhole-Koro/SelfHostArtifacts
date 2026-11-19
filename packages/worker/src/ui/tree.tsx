@@ -18,13 +18,31 @@ export const TREE_STYLES = `
 .tree .node.current { background: var(--accent-soft); }
 .tree .node.current a { color: var(--accent); font-weight: 600; }
 .tree .meta { color: var(--text-2); font-size: var(--text-xs); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.chip { display: inline-block; font-size: var(--text-xs); line-height: 1.6; padding: 0 var(--space-2); border-radius: 999px; background: var(--surface-2); color: var(--text-2); white-space: nowrap; text-decoration: none; }
+a.chip:hover { color: var(--accent); background: var(--accent-soft); text-decoration: none; }
+.chip.current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.tree .node .chip { flex: none; }
 `;
+
+/** A page's labels, each leading to the pages with that label. */
+export function LabelChips(props: { labels?: string[] }) {
+  if (!props.labels?.length) return null;
+  return (
+    <>
+      {props.labels.map((l) => (
+        <a class="chip" href={`/?label=${encodeURIComponent(l)}`} title={`Pages labeled ${l}`}>
+          {l}
+        </a>
+      ))}
+    </>
+  );
+}
 
 /**
  * `open`: the pages whose children show (the rest fold); undefined opens all. `meta` adds the
  * version and the time of the last change to each page.
  */
-export function PageTree(props: { rows: TreeRow[]; current?: string; open?: Set<string>; meta?: boolean; id?: string }) {
+export function PageTree(props: { rows: TreeRow[]; current?: string; open?: Set<string>; meta?: boolean; id?: string; labels?: Map<string, string[]> }) {
   const kids = childrenOf(props.rows);
   const node = (r: TreeRow): Child => {
     const under = kids.get(r.id) ?? [];
@@ -36,6 +54,7 @@ export function PageTree(props: { rows: TreeRow[]; current?: string; open?: Set<
         <a href={`/a/${r.id}`} aria-current={r.id === props.current ? "page" : undefined}>
           {r.title}
         </a>
+        <LabelChips labels={props.labels?.get(r.id)} />
         {props.meta && (
           <span class="meta">
             v{r.current_version} · <Time iso={r.updated_at} />
