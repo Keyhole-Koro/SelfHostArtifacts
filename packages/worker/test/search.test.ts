@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { ORIGIN, browserGet, browserPost, contentSrc, createDevice, publish, sessionCookie, signedFetch } from "./helpers.ts";
+import { ORIGIN, browserGet, browserPost, contentSrc, createDevice, publish, sessionCookie, signedFetch, signedJson } from "./helpers.ts";
 
 const PAGE = { "index.html": "<p>hi</p>" };
 
@@ -48,6 +48,22 @@ describe("search", () => {
     expect(html).not.toContain(`/a/${shut.body.id}`);
     expect(html).toContain("&#60;b&#62;<mark>sesame</mark>");
     expect(await (await browserGet("/search?q=sesame", owner.cookie)).text()).toContain(`/a/${shut.body.id}`);
+  });
+});
+
+describe("text sent after publishing", () => {
+  it("sets the current version's text and links without a new version, and refuses an old version", async () => {
+    const device = await createDevice();
+    const target = await publish(device, PAGE, { title: "Linked later" });
+    const page = await publish(device, PAGE, { title: "Old page" });
+    const put = await signedJson(device, "PUT", `/api/v1/artifacts/${page.body.id}/text`, { version: 1, text: "recovered wording", links: [target.body.id] });
+    expect(put.status).toBe(200);
+    expect((await search("recovered wording")).map((h) => h.id)).toContain(page.body.id);
+    const detail = (await (await signedFetch(device, "GET", `/api/v1/artifacts/${page.body.id}`)).json()) as { version: number; links_to: { id: string }[] };
+    expect(detail.version).toBe(1);
+    expect(detail.links_to.map((l) => l.id)).toEqual([target.body.id]);
+    await publish(device, PAGE, { id: page.body.id, title: "Old page" });
+    expect((await signedJson(device, "PUT", `/api/v1/artifacts/${page.body.id}/text`, { version: 1, text: "x", links: [] })).status).toBe(409);
   });
 });
 

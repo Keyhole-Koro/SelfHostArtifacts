@@ -93,8 +93,10 @@ that tree, with the tree beside each page and a trail above it. Move a page from
 or with `artifact move`. In a project's settings you describe it and choose who sees it: every
 viewer, or only the members you add (editors among them may also rearrange its pages).
 
-Every page is searchable by its text, Japanese included: use the box at the top, or `search` from
-an agent. The CLI reads a page's text and links when it publishes, so a page shows which pages
+Every page is searchable by its text, Japanese included, and by meaning: a page that says the
+same thing in other words is found too (Workers AI and Vectorize, within their free plans for a
+personal site). Use the box at the top, or `search` from an agent. Pages published before search
+existed get their text with `artifact reindex`, and **Settings → Search by meaning** indexes them. The CLI reads a page's text and links when it publishes, so a page shows which pages
 link to it (**Links**), a link to another page opens it in the viewer, and **Versions → Compare
 versions** shows what changed in the text.
 
@@ -191,6 +193,7 @@ artifact publish ./site --allow-connect api.example.com
 artifact list [--project MediShare]       # pages are grouped by project
 artifact projects                         # projects and how many pages each has
 artifact search 要求の列 ring                # pages with every word, Japanese included
+artifact reindex                          # send older pages' text, so search finds them
 artifact comments https://artifacts.example.com/a/<id>   # open comment threads
 artifact comment https://artifacts.example.com/a/<id> "Done" --reply-to <thread> --resolve
 artifact move https://artifacts.example.com/a/<id> MediShare

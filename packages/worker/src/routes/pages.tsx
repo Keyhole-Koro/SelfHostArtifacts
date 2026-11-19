@@ -58,7 +58,9 @@ import { pageSecurity } from "../ui/security.ts";
 import { CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
 import { PageTree, TREE_STYLES } from "../ui/tree.tsx";
 import { canEditProject, canSeeProject, getSpace, hiddenProjects } from "../db/spaces.ts";
-import { MARK_END, MARK_START, linkedFrom, linksTo, searchPages, type LinkedPage } from "../db/search.ts";
+import { MARK_END, MARK_START, linkedFrom, linksTo, type LinkedPage } from "../db/search.ts";
+import { INDEX_BATCH, hybridSearch, indexLater, indexPending, pendingPages, semanticOn } from "../db/semantic.ts";
+import { semanticEnv } from "../env.ts";
 
 export const pages = new Hono<AppEnv>();
 
@@ -996,7 +998,7 @@ pages.get("/search", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
   const q = (c.req.query("q") ?? "").trim().slice(0, 200);
   const hidden = await hiddenProjects(c.env.DB, viewer);
-  const hits = q ? (await searchPages(c.env.DB, q, 100)).filter((h) => !h.project || !hidden.has(h.project)) : [];
+  const hits = q ? (await hybridSearch(semanticEnv(c.env), q, 100)).filter((h) => !h.project || !hidden.has(h.project)) : [];
   return c.html(
     <Page title={q ? `${q} · Search` : "Search"} viewer={viewer}>
       <style>{raw(SEARCH_STYLES)}</style>
@@ -1014,7 +1016,13 @@ pages.get("/search", requireViewer(), async (c) => {
             <a class="title" href={`/a/${h.id}`}>
               {h.title}
             </a>{" "}
-            {h.project && <span class="badge">{h.project}</span>} <span class="muted small">· <Time iso={h.updated_at} /></span>
+            {h.project && <span class="badge">{h.project}</span>}{" "}
+            {h.match === "meaning" && (
+              <span class="badge" title="Found by meaning: the page does not have these words, but says something close">
+                by meaning
+              </span>
+            )}{" "}
+            <span class="muted small">· <Time iso={h.updated_at} /></span>
             {h.snippet && <p class="snip">{raw(marked(h.snippet))}</p>}
           </li>
         ))}
@@ -1078,6 +1086,7 @@ pages.post("/new", requireViewer("viewer", true), requireSameOriginForm(), async
     links: [],
   });
   await recordViewerAction(c, "artifact.create", "artifact", id, { version: 1, browser: true });
+  indexLater(semanticEnv(c.env), c.executionCtx, id);
   return c.redirect(`/a/${id}/edit`, 303);
 });
 
@@ -1218,6 +1227,7 @@ pages.post("/a/:id/edit", requireViewer("viewer", true), requireSameOriginJson()
   });
   if (!added) return c.json({ error: "version_conflict", current_version: (await getArtifact(c.env.DB, id))?.current_version ?? base_version + 1 }, 409);
   await recordViewerAction(c, "artifact.update", "artifact", id, { version: base_version + 1, browser: true });
+  indexLater(semanticEnv(c.env), c.executionCtx, id);
   return c.json({ version: base_version + 1 });
 });
 
@@ -1637,6 +1647,8 @@ root.get("/settings", async (c) => {
     listSecrets(c.env.DB, 50),
   ]);
   const trashDays = c.get("config").trashDays;
+  const semantic = semanticOn(semanticEnv(c.env));
+  const pending = semantic ? await pendingPages(c.env.DB, 0) : { ids: [], left: 0, total: 0 };
   return c.html(
     <Page title="Settings" viewer={viewer}>
       <div class="page-head">
@@ -1816,6 +1828,46 @@ root.get("/settings", async (c) => {
         </ul>
       </section>
 
+      <section class="section" id="search">
+        <div class="section-head">
+          <div>
+            <h2>Search by meaning</h2>
+            <p class="muted small" style="margin:0">
+              {semantic
+                ? `Pages are found by meaning as well as by their words. ${pending.total - pending.left} of ${pending.total} pages are indexed; a page is indexed again when it changes.`
+                : "Off: the Worker has no Workers AI or Vectorize binding. Search goes by words."}
+            </p>
+          </div>
+          {semantic && pending.left > 0 && (
+            <button type="button" id="index-pages" class="primary">
+              Index {pending.left} {pending.left === 1 ? "page" : "pages"}
+            </button>
+          )}
+        </div>
+        {semantic && pending.left > 0 && (
+          <>
+            <p class="muted small" id="index-status" aria-live="polite">
+              Pages published before this was added are indexed {INDEX_BATCH} at a time, and the daily cleanup indexes some as well.
+              Pages from before search kept their text need <code>artifact reindex</code> first.
+            </p>
+            <script nonce={c.get("nonce")}>
+              {raw(`
+const button = document.getElementById("index-pages"), status = document.getElementById("index-status");
+button.addEventListener("click", async () => {
+  button.disabled = true;
+  for (;;) {
+    const res = await fetch("/settings/search/index", { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-csrf": ${jsonInScript(viewer.csrf)} }, body: "{}" });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) { status.textContent = out.error || "Indexing failed."; button.disabled = false; return; }
+    status.textContent = (out.total - out.left) + " of " + out.total + " pages indexed.";
+    if (out.left === 0 || out.indexed === 0) { button.textContent = "Done"; return; }
+  }
+});`)}
+            </script>
+          </>
+        )}
+      </section>
+
       <section class="section" id="trash">
         <div class="section-head">
           <div>
@@ -1875,6 +1927,17 @@ root.get("/settings", async (c) => {
       </section>
     </Page>,
   );
+});
+
+/** Indexes the next pages for search by meaning; the settings page calls it until none are left. */
+root.post("/settings/search/index", requireSameOriginJson(), async (c) => {
+  const env = semanticEnv(c.env);
+  if (!semanticOn(env)) return c.json({ error: "Search by meaning is off." }, 400);
+  try {
+    return c.json(await indexPending(env));
+  } catch (e) {
+    return c.json({ error: `Workers AI or Vectorize refused: ${String(e).slice(0, 200)}. On the free plan the daily allowance may be used up; try tomorrow.` }, 503);
+  }
 });
 
 root.post("/settings/invites", requireSameOriginForm(), async (c) => {

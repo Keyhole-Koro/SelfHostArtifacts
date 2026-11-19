@@ -3,6 +3,9 @@
 import { readFileSync } from "node:fs";
 
 export const LOCAL = "wrangler.local.toml";
+/** The Vectorize index for search by meaning: bge-m3 vectors, compared by cosine. */
+export const VECTOR_INDEX = "artifacts-pages";
+export const VECTOR_DIMENSIONS = 1024;
 
 function check(name, value, pattern) {
   if (!pattern.test(value)) throw new Error(`${name} looks wrong: "${value}"`);
@@ -21,9 +24,18 @@ export function renderConfig({ host, keep = "0", trash = "30", dbId }) {
     .replace(/^# Skips sign-in.*\n.*\n/m, "") // comment line + DEV_LOGIN: never in a deployment
     .replace(/^database_id = .*$/m, `database_id = "${dbId}"`)
     .replace(/^# Development defaults[\s\S]*?\n(?=name = )/m, "");
+  // Search by meaning: Workers AI embeds the pages into a Vectorize index (src/db/semantic.ts).
+  // Only deployments have them, so tests and wrangler dev search by words alone.
   return `# Generated from wrangler.toml. Not committed: it holds your hostname and account's resource ids.\n${base}
 [[routes]]
 pattern = "${host}"
 custom_domain = true
+
+[ai]
+binding = "AI"
+
+[[vectorize]]
+binding = "VECTORS"
+index_name = "${VECTOR_INDEX}"
 `;
 }

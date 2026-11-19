@@ -6,6 +6,7 @@ import {
   contentTypeFor,
   hashOf,
   artifactIdSchema,
+  MAX_TEXT_CHARS,
   manifestSchema,
   projectSchema,
   type MoveResponse,
@@ -54,7 +55,9 @@ import { pairingCode, randomId, randomToken, sha256Hex } from "../lib/encoding.t
 import { createSecret, finishSecret, getSecret, listSecrets, sealSecret, secretStatus, secretSummary } from "../db/secrets.ts";
 import { safeNext } from "../lib/internal-path.ts";
 import { recordAuditEvent } from "../db/audit.ts";
-import { MARK_END, MARK_START, linkedFrom, linksTo, searchPages } from "../db/search.ts";
+import { MARK_END, MARK_START, indexStatements, linkStatements, linkedFrom, linksTo } from "../db/search.ts";
+import { hybridSearch, indexLater } from "../db/semantic.ts";
+import { semanticEnv } from "../env.ts";
 import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, getComment, listComments, setResolved } from "../db/comments.ts";
 
 export const blobKey = (sha256: string) => `blobs/${sha256}`;
@@ -256,6 +259,7 @@ signed.post("/artifacts", async (c) => {
     action: "artifact.create", targetType: "artifact", targetId: id,
     metadata: { version: 1, externalHosts: manifest.allow_connect?.length ?? 0 },
   });
+  indexLater(semanticEnv(c.env), c.executionCtx, id);
   return c.json<PublishResponse>({ id, url: artifactUrl(c, id), version: 1 }, 201);
 });
 
@@ -306,6 +310,7 @@ signed.put("/artifacts/:id", async (c) => {
     action: "artifact.update", targetType: "artifact", targetId: artifact.id,
     metadata: { version: base + 1, externalHosts: manifest.allow_connect?.length ?? 0 },
   });
+  indexLater(semanticEnv(c.env), c.executionCtx, artifact.id);
   return c.json<PublishResponse>({ id: artifact.id, url: artifactUrl(c, artifact.id), version: base + 1 });
 });
 
@@ -321,7 +326,7 @@ signed.get("/artifacts", async (c) => {
 signed.get("/search", async (c) => {
   const q = (c.req.query("q") ?? "").slice(0, 200);
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 20) || 20, 1), 100);
-  const hits = await searchPages(c.env.DB, q, limit);
+  const hits = await hybridSearch(semanticEnv(c.env), q, limit);
   return c.json<SearchResponse>({
     results: hits.map((h) => ({
       id: h.id,
@@ -330,8 +335,37 @@ signed.get("/search", async (c) => {
       project: h.project,
       updated_at: h.updated_at,
       snippet: h.snippet.replaceAll(MARK_START, "[[").replaceAll(MARK_END, "]]"),
+      match: h.match,
     })),
   });
+});
+
+const textSchema = z.object({
+  version: z.number().int().positive(),
+  text: z.string().max(MAX_TEXT_CHARS),
+  links: z.array(artifactIdSchema).max(1000),
+});
+
+/**
+ * Sets the text and links of a page's current version, as the CLI read them from its files,
+ * without a new version: for pages published before versions kept their text (artifact reindex).
+ */
+signed.put("/artifacts/:id/text", async (c) => {
+  const artifact = await getArtifact(c.env.DB, c.req.param("id"));
+  if (!artifact) return apiError(c, 404, "not_found", "No artifact has this id (or it is in the trash).");
+  const parsed = await readJson(c, textSchema);
+  if (!parsed.ok) return parsed.res;
+  const { version, text, links } = parsed.value;
+  if (version !== artifact.current_version) return conflict(c, artifact.current_version);
+  await c.env.DB.batch([
+    c.env.DB.prepare("update versions set text = ? where artifact_id = ? and version = ?").bind(text, artifact.id, version),
+    ...indexStatements(c.env.DB, artifact.id, { title: artifact.title, description: artifact.description, text }),
+    ...linkStatements(c.env.DB, artifact.id, links),
+  ]);
+  // The vectors follow the version, so a page whose text arrives late is embedded again.
+  await c.env.DB.prepare("delete from page_vectors where artifact_id = ?").bind(artifact.id).run();
+  indexLater(semanticEnv(c.env), c.executionCtx, artifact.id);
+  return c.json({ id: artifact.id, version, chars: text.length, links: links.length });
 });
 
 /** A page's comments, oldest first: each thread's first comment, then its replies after it. */

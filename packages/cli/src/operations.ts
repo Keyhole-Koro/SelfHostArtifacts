@@ -195,6 +195,35 @@ export async function list(limit = 25, project?: string | null): Promise<ListRes
   return signedJson<ListResponse>(session(), "GET", `/api/v1/artifacts?limit=${limit}${filter}`);
 }
 
+/**
+ * Reads each page's current files again and sends their text and links, for pages published
+ * before versions kept them (or by an older CLI). Makes no new versions. `onPage` reports each.
+ */
+export async function reindex(onPage: (title: string, result: string) => void): Promise<{ pages: number; updated: number }> {
+  const s = session();
+  const { artifacts } = await signedJson<ListResponse>(s, "GET", "/api/v1/artifacts?limit=200");
+  let updated = 0;
+  for (const a of artifacts) {
+    try {
+      const detail = await signedJson<ArtifactDetail>(s, "GET", `/api/v1/artifacts/${a.id}`);
+      const v = detail.versions.find((x) => x.version === detail.version)!;
+      const read = async (path: string) =>
+        (await expectOk(await signedFetch(s, "GET", `/api/v1/artifacts/${a.id}/files/${path.split("/").map(encodeURIComponent).join("/")}?version=${v.version}`))).text();
+      const markdown = v.entry.endsWith(".md");
+      const paths = [v.entry, ...(markdown ? [] : Object.keys(v.files).filter((p) => p !== v.entry && p.endsWith(".html")))];
+      const sources = await Promise.all(paths.map(read));
+      const text = (markdown ? sources[0]! : sources.map(pageText).join("\n")).slice(0, MAX_TEXT_CHARS);
+      const links = [...new Set(sources.flatMap((h) => (markdown ? markdownLinks(h, s.origin) : pageLinks(h, s.origin))))].slice(0, 1000);
+      await signedJson(s, "PUT", `/api/v1/artifacts/${a.id}/text`, { version: v.version, text, links });
+      updated++;
+      onPage(a.title, `${text.length} characters, ${links.length} links`);
+    } catch (e) {
+      onPage(a.title, `skipped: ${(e as Error).message}`);
+    }
+  }
+  return { pages: artifacts.length, updated };
+}
+
 /** A page's comments, oldest first. */
 export async function comments(url: string): Promise<CommentListResponse> {
   const s = session();

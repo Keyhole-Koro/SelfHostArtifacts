@@ -194,6 +194,7 @@ Codex と Gemini を同じ端末で使うなら、鍵は1つで共有する。�
 | `GET` | `/api/v1/projects` | プロジェクトとページ数（属さないものは `null`） |
 | `GET` | `/api/v1/artifacts/:id/comments` | ページのコメント。スレッドの最初のコメントの後に、その返信が続く |
 | `POST` | `/api/v1/artifacts/:id/comments` | `{body, reply_to?, quote?, resolve?}` でコメントか返信（端末の名前で）。`resolve` は返信したスレッドを解決にする |
+| `PUT` | `/api/v1/artifacts/:id/text` | `{version, text, links}` で今の版の本文とリンクを入れ直す。版は作らない（`artifact reindex` が、0009 より前のページに使う） |
 | `GET` | `/api/v1/search?q=` | タイトル・説明・本文に、言葉を全部含むページ（スペース区切り）。抜粋では見つかった所を `[[` と `]]` で囲む |
 | `GET` | `/api/v1/artifacts/:id` | メタデータと版の一覧 |
 | `GET` | `/api/v1/artifacts/:id/files/*path` | ファイルを読む（`?version=` で過去の版） |
@@ -298,6 +299,20 @@ create table comments (         -- 0010。ページのコメント。reply_to �
   quote text,                   -- 本文の一部へのコメントなら、その文字
   resolved_at text,
   created_at text not null
+);
+
+create table page_chunks (      -- 0011。意味検索の段落（Vectorize の <id>:<n> の文字）
+  artifact_id text not null,
+  n integer not null,
+  text text not null,
+  primary key (artifact_id, n)
+);
+
+create table page_vectors (     -- 0011。Vectorize に入っている版と段落の数
+  artifact_id text primary key,
+  version integer not null,
+  chunks integer not null,
+  indexed_at text not null
 );
 
 create table devices (
@@ -477,6 +492,8 @@ alter table secrets add column mode text not null default 'request';  -- request
 | R2 Class A（put・list） | 月100万回 | 超過は100万回ごとに $4.50 |
 | R2 Class B（get・head） | 月1000万回 | 超過は100万回ごとに $0.36 |
 | R2 転送量 | 無料 | 無料 |
+| Workers AI（意味検索の埋め込み） | 1日 10,000 Neurons。使い切るとその日は失敗する | 同じ量込み、超過は 1,000 Neurons ごとに $0.011 |
+| Vectorize（意味検索の索引） | 保存 500万次元、検索 月3000万次元 | 保存 1000万次元・検索 月5000万次元込み |
 
 R2 は無料プランでも Paid でも無料枠が同じで、超えた分だけ従量になる。Rate Limiting の binding は料金ページに記載がない。使えなかったら D1 で回数を数える。
 
@@ -733,6 +750,19 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
   - 公開リンクの iframe と、新しいタブで直接開いたページには足さない・働かない（そのときはふつうのリンクとして動く）。`target="_blank"` のリンクは今までどおり新しいタブで開く
 - 版の比較（`/a/:id/diff?from=&to=`）: ブラウザが 2 つの版の本文（`/a/:id/text?v=`）を取り、行ごとに比べる（最長共通部分列）。変わった行の前後 2 行だけ見せ、残りは畳む。本文の無い版（0009 より前、古い CLI）はそう伝える
 
+### 意味で探す
+
+2026-11-19 に足した。スペースの 4 段目。言葉が違っても、同じことを書いたページが見つかるようにする（「パスキーの登録」で「ログインの鍵を足す」の段落）。
+
+- ページのタイトルと本文を 800 字ほどの段落に分け（1 ページ 16 段落まで）、Workers AI の `@cf/baai/bge-m3`（多言語、1,024 次元）でベクトルにして、Vectorize の索引 `artifacts-pages`（cosine）に `<id>:<n>` で入れる。どの版のベクトルを持っているかは D1 の `page_vectors`、段落の文字は `page_chunks` に置く
+- 公開・保存のたびに、応答を返した後（`waitUntil`）で埋め込む。版の変わっていないページはやり直さない。短くなったページの余った段落は消す。ゴミ箱を本当に空にするときに、ベクトルも消す
+- 前からあるページは、Settings の「Search by meaning」のボタンで 10 件ずつ埋め込む（ボタンは残りが無くなるまで繰り返す）。毎日の後片付けでも 10 件ずつ進める。1 回のリクエストで呼べる数に収めるため
+  - 0009 より前のページは本文が D1 に無いので、先に `artifact reindex` で、CLI が今の版のファイルから本文とリンクを読み直して送る（`PUT /api/v1/artifacts/:id/text`。版は作らない）
+- 検索は、言葉の検索（FTS5）と、言葉をベクトルにして近い段落を 40 個引いたもの（cosine 0.5 未満は捨てる）を、順位の逆数（RRF、k = 60）で 1 つに並べる。意味だけで見つかったページには「by meaning」を付け、合った段落を抜粋にする。Members only の扱いとゴミ箱は言葉の検索と同じ
+- Workers AI と Vectorize の binding はデプロイの設定（`scripts/config.mjs` が書く `wrangler.local.toml`）にだけある。テストと `wrangler dev` は言葉だけで探し、意味の部分は偽物の AI と索引を渡して確かめる。binding が無いとき、Workers AI が断ったとき（無料プランで 1 日分を使い切ったなど）は、言葉の検索だけで答える
+- 費用: 埋め込みは 100 万トークンで 1,075 Neurons。無料の 1 日 10,000 Neurons で、毎日 900 万トークンほど埋め込める。保存は 1 段落 1,024 次元なので、無料プランの 500 万次元で約 4,900 段落。検索は 1 回 1,024 次元で、月 約 29,000 回
+- 索引は `scripts/deploy.mjs` が無ければ作る（`wrangler vectorize create artifacts-pages --dimensions=1024 --metric=cosine`）
+
 ### ブラウザで書くページ
 
 2026-11-19 に足した。スペースの 3 段目。エージェントの HTML のページとは別に、人がブラウザで書くページ。
@@ -841,6 +871,7 @@ npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）�
    1. プロジェクトの木と見せる相手（済み。「スペース」の節）
    2. ページどうしのリンクと被リンク、本文の全文検索、版どうしの差分（済み。「検索・リンク・版の比較」の節）
    3. ブラウザで書くページ（Markdown を元にし、見たまま編集もできる）と、ページ全体・本文の一部へのコメント（済み。「ブラウザで書くページ」と「コメント」の節）
+   4. 意味で探す検索（済み。「意味で探す」の節）
 5. **v4（ページの機能）**: ページから使える共有 DB とページごとの保存領域（外枠が `postMessage` で受けて、Artifact ごとの Durable Object に読み書きする。sandbox のページは localStorage が使えないので、その代わり）、コメント
 
 ## 決定事項

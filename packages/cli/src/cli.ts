@@ -13,7 +13,7 @@ import {
   type Agent,
 } from "./commands/setup.ts";
 import { describeSecret, serveMcp } from "./mcp.ts";
-import { comment, comments, formatComments, list, loginLink, move, projects, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
+import { comment, comments, formatComments, list, loginLink, move, projects, publish, read, reindex, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
@@ -38,6 +38,7 @@ Pages
   artifact comments <url> [--all]   Open comment threads on a page (--all: settled ones too)
   artifact comment <url> <text…> [--reply-to <id>] [--resolve]
                                     Comment on a page, or reply in a thread and settle it
+  artifact reindex                  Send every page's text and links again, for search (no new versions)
   artifact search <words…> [--limit n]
                                     Pages whose title or text has every word
   artifact move <url> <project>     Move a page, with the pages under it, to another project (--none: out of any project)
@@ -261,11 +262,17 @@ async function main(): Promise<void> {
       return;
     }
 
+    case "reindex": {
+      const r = await reindex((title, result) => console.error(`  ${title}: ${result}`));
+      out(`Sent the text of ${r.updated} of ${r.pages} pages. They are searchable now, and by meaning within a minute.`, r);
+      return;
+    }
+
     case "search": {
       const query = rest.join(" ").trim();
       if (!query) throw new ArtifactError("Usage: artifact search <words…>", "bad_args");
       const r = await search(query, o.limit ? Number(o.limit) : 20);
-      out(r.results.map((h) => `${h.url}  ${h.project ? `[${h.project}] ` : ""}${h.title}\n    ${h.snippet.replace(/\s+/g, " ")}`).join("\n") || "No page has every one of these words.", r);
+      out(r.results.map((h) => `${h.url}  ${h.project ? `[${h.project}] ` : ""}${h.title}${h.match === "meaning" ? "  (by meaning)" : ""}\n    ${h.snippet.replace(/\s+/g, " ")}`).join("\n") || "No page matches.", r);
       return;
     }
 

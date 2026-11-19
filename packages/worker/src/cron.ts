@@ -1,8 +1,9 @@
-import type { Config, Env } from "./env.ts";
+import { semanticEnv, type Config, type Env } from "./env.ts";
 import { AUDIT_RETENTION_DAYS } from "./db/audit.ts";
 import { SECRET_HISTORY_DAYS } from "./db/secrets.ts";
 import { blobKey } from "./routes/api.ts";
 import { purgeStatements } from "./db/search.ts";
+import { forgetPages, indexPending, semanticOn } from "./db/semantic.ts";
 import { purgeCommentStatements } from "./db/comments.ts";
 
 /** Blobs younger than this are kept even when unreferenced: their publish may still be running. */
@@ -13,6 +14,8 @@ export interface CleanupReport {
   purgedArtifacts: number;
   prunedVersions: number;
   deletedBlobs: number;
+  /** Pages embedded for search by meaning. */
+  indexedPages: number;
 }
 
 /** Daily housekeeping. Every step is idempotent, so a failed run is simply repeated the next day. */
@@ -35,6 +38,8 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
 
   // Empty the trash.
   const cutoff = new Date(now.getTime() - config.trashDays * 864e5).toISOString();
+  const doomed = await db.prepare("select id from artifacts where deleted_at is not null and deleted_at <= ?").bind(cutoff).all<{ id: string }>();
+  await forgetPages(semanticEnv(env), doomed.results.map((r) => r.id));
   const purged = await db.batch([
     ...purgeStatements(db, cutoff),
     ...purgeCommentStatements(db, cutoff),
@@ -80,5 +85,16 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
 
-  return { expired, purgedArtifacts, prunedVersions, deletedBlobs };
+  // Search by meaning: a few of the pages not indexed yet (those from before it, or that failed).
+  let indexedPages = 0;
+  const semantic = semanticEnv(env);
+  if (semanticOn(semantic)) {
+    try {
+      indexedPages = (await indexPending(semantic)).indexed;
+    } catch (e) {
+      console.log("semantic index", String(e));
+    }
+  }
+
+  return { expired, purgedArtifacts, prunedVersions, deletedBlobs, indexedPages };
 }

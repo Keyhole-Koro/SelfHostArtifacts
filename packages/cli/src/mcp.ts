@@ -153,8 +153,9 @@ export function createServer(): McpServer {
     {
       title: "Search pages",
       description:
-        "Find published pages whose title, description or text has every word of the query (any part of a word, Japanese included). " +
-        "Use it before writing a page, to link to what exists instead of repeating it.",
+        "Find published pages by their words (every word of the query, any part of a word, Japanese included) and by meaning " +
+        "(pages that say something close in other words, marked \"by meaning\"). Use it before writing a page, to link to what exists " +
+        "instead of repeating it.",
       inputSchema: {
         query: z.string().describe("Words to find, separated by spaces"),
         limit: z.number().int().positive().max(100).optional(),
@@ -165,7 +166,7 @@ export function createServer(): McpServer {
         const { results } = await search(query, limit ?? 20);
         if (results.length === 0) return "No page has every one of these words.";
         return results
-          .map((h) => `${h.title} — ${h.url}${h.project ? ` (${h.project})` : ""}\n  ${h.snippet.replace(/\s+/g, " ")}`)
+          .map((h) => `${h.title} — ${h.url}${h.project ? ` (${h.project})` : ""}${h.match === "meaning" ? " [by meaning]" : ""}\n  ${h.snippet.replace(/\s+/g, " ")}`)
           .join("\n");
       }),
   );

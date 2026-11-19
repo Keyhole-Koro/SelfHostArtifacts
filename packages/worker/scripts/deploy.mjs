@@ -12,7 +12,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { LOCAL, renderConfig } from "./config.mjs";
+import { LOCAL, renderConfig, VECTOR_INDEX, VECTOR_DIMENSIONS } from "./config.mjs";
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const OWNER_LINK = process.argv.includes("--owner-link");
@@ -101,6 +101,11 @@ async function main() {
 
   if (!wrangler(["r2", "bucket", "list"]).includes(BUCKET)) {
     wrangler(["r2", "bucket", "create", BUCKET], { inherit: true });
+  }
+
+  // The index that search by meaning keeps its vectors in.
+  if (!wrangler(["vectorize", "list"]).includes(VECTOR_INDEX)) {
+    wrangler(["vectorize", "create", VECTOR_INDEX, `--dimensions=${VECTOR_DIMENSIONS}`, "--metric=cosine"], { inherit: true });
   }
 
   wrangler(["d1", "migrations", "apply", DB_NAME, "--remote", "-c", LOCAL], { inherit: true });

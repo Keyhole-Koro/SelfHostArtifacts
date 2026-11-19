@@ -83,8 +83,10 @@ export interface SearchResult {
   title: string;
   project: string | null;
   updated_at: string;
-  /** Text around the match; the matched words are between [[ and ]]. */
+  /** Text around the match; the matched words are between [[ and ]]. For a match by meaning, the passage that matched. */
   snippet: string;
+  /** words: it has the words; meaning: it says something close in other words; both. */
+  match: "words" | "meaning" | "both";
 }
 
 export interface SearchResponse {

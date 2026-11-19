@@ -2,6 +2,9 @@ export interface Env {
   DB: D1Database;
   BLOBS: R2Bucket;
   PAIR_LIMITER?: RateLimit;
+  /** Search by meaning (src/db/semantic.ts). Both optional: without them search goes by words. */
+  AI?: Ai;
+  VECTORS?: Vectorize;
 
   APP_HOST: string;
   KEEP_VERSIONS?: string;
@@ -53,5 +56,14 @@ export function loadConfig(env: Env): Config {
     keepVersions: nonNegativeInt(env.KEEP_VERSIONS, 0, "KEEP_VERSIONS"),
     trashDays: nonNegativeInt(env.TRASH_DAYS, 30, "TRASH_DAYS"),
     devLogin,
+  };
+}
+
+/** The bindings that search by meaning uses, typed down to the calls it makes. */
+export function semanticEnv(env: Env): import("./db/semantic.ts").SemanticEnv {
+  return {
+    DB: env.DB,
+    AI: env.AI as unknown as import("./db/semantic.ts").Embedder | undefined,
+    VECTORS: env.VECTORS as unknown as import("./db/semantic.ts").VectorStore | undefined,
   };
 }
