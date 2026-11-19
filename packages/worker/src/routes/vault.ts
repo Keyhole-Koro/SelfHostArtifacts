@@ -16,6 +16,7 @@ import {
   type VaultSealed,
   type VaultVersionResponse,
 } from "@artifact/shared";
+import { formatVaultTarget, leavesPlaintext, parseVaultTarget, vaultDeliveryCreateSchema, vaultTargetCreateSchema, type VaultStatusResponse, type VaultTarget } from "@artifact/shared";
 import { Hono, type Context } from "hono";
 import type { z } from "zod";
 import type { AppEnv } from "../app-env.ts";
@@ -47,8 +48,17 @@ import {
   setOwner,
   updateSecretLedger,
   upsertDeviceMember,
+  addTarget,
+  deliverySummaries,
+  getTarget,
+  recordDelivery,
+  removeTarget,
+  targetView,
+  targetsOfCollection,
+  targetsOfSecret,
   type CollectionRow,
   type MemberRow,
+  type TargetRow,
 } from "../db/vault.ts";
 import { apiError } from "../lib/api-error.ts";
 
@@ -447,4 +457,117 @@ vault.delete("/collections/:name/secrets/:secret", async (c) => {
   await deleteSecret(c.env.DB, secret.id);
   await audit(c, "vault.secret_delete", "vault_secret", secret.id, { collection: loaded.collection.name, name: name.name, versions: secret.current_version });
   return c.json({ deleted: true });
+});
+
+// ---- delivery: where each value goes, and what was delivered (vault push) ----
+
+async function viewTargets(c: Context<AppEnv>, rows: TargetRow[]): Promise<VaultTarget[]> {
+  const summaries = await deliverySummaries(c.env.DB, rows.map((t) => t.id));
+  return rows.map((t) => targetView(t, summaries.get(t.id)));
+}
+
+/** Every secret of the collection with its targets and what was delivered: what `vault status` and `vault push` read. */
+vault.get("/collections/:name/status", async (c) => {
+  const loaded = await loadCollection(c);
+  if (!loaded.ok) return loaded.res;
+  const readable = await readableBy(c, loaded.collection, await callerMember(c));
+  if (!readable.ok) return readable.res;
+  const [secrets, targets] = await Promise.all([listSecrets(c.env.DB, loaded.collection.id), targetsOfCollection(c.env.DB, loaded.collection.id)]);
+  const views = await viewTargets(c, targets);
+  const byId = new Map(views.map((v) => [v.id, v]));
+  return c.json<VaultStatusResponse>({
+    collection: loaded.collection.name,
+    key_version: loaded.collection.key_version,
+    secrets: secrets.map((s) => ({
+      name: s.name,
+      description: s.description,
+      used_by: s.used_by,
+      current_version: s.current_version,
+      updated_at: s.updated_at,
+      targets: targets.filter((t) => t.secret_id === s.id).map((t) => byId.get(t.id)!),
+    })),
+  });
+});
+
+vault.get("/collections/:name/secrets/:secret/targets", async (c) => {
+  const loaded = await loadCollection(c);
+  if (!loaded.ok) return loaded.res;
+  const name = secretName(c);
+  if (!name.ok) return name.res;
+  const readable = await readableBy(c, loaded.collection, await callerMember(c));
+  if (!readable.ok) return readable.res;
+  const secret = await secretByName(c.env.DB, loaded.collection.id, name.name);
+  if (!secret) return apiError(c, 404, "not_found", `"${name.name}" is not in "${loaded.collection.name}".`);
+  return c.json({ targets: await viewTargets(c, await targetsOfSecret(c.env.DB, secret.id)) });
+});
+
+vault.post("/collections/:name/secrets/:secret/targets", async (c) => {
+  const loaded = await loadCollection(c);
+  if (!loaded.ok) return loaded.res;
+  const name = secretName(c);
+  if (!name.ok) return name.res;
+  const readable = await readableBy(c, loaded.collection, await callerMember(c));
+  if (!readable.ok) return readable.res;
+  const parsed = await readJson(c, vaultTargetCreateSchema);
+  if (!parsed.ok) return parsed.res;
+  const secret = await secretByName(c.env.DB, loaded.collection.id, name.name);
+  if (!secret) return apiError(c, 404, "not_found", `"${name.name}" is not in "${loaded.collection.name}". Put a value first.`);
+  let spec;
+  try {
+    spec = parseVaultTarget(parsed.value.address);
+  } catch (e) {
+    return apiError(c, 400, "bad_target", (e as Error).message);
+  }
+  if (leavesPlaintext(spec) && !parsed.value.plaintext_ok) {
+    return apiError(c, 400, "plaintext_required", "An envfile target leaves a plaintext copy on the device. Add it with --plaintext-ok if that is intended.");
+  }
+  const { target, created } = await addTarget(c.env.DB, { secretId: secret.id, kind: spec.kind, address: formatVaultTarget(spec), plaintextOk: Boolean(parsed.value.plaintext_ok), addedBy: c.get("device").id });
+  if (created) await audit(c, "vault.target_add", "vault_secret", secret.id, { collection: loaded.collection.name, name: name.name, kind: spec.kind, address: target.address });
+  return c.json<VaultTarget>((await viewTargets(c, [target]))[0]!, created ? 201 : 200);
+});
+
+async function loadTarget(c: Context<AppEnv>): Promise<{ ok: true; collection: CollectionRow; secretId: string; secretName: string; target: TargetRow } | { ok: false; res: Response }> {
+  const loaded = await loadCollection(c);
+  if (!loaded.ok) return loaded;
+  const name = secretName(c);
+  if (!name.ok) return name;
+  const readable = await readableBy(c, loaded.collection, await callerMember(c));
+  if (!readable.ok) return readable;
+  const secret = await secretByName(c.env.DB, loaded.collection.id, name.name);
+  if (!secret) return { ok: false, res: apiError(c, 404, "not_found", `"${name.name}" is not in "${loaded.collection.name}".`) };
+  const target = await getTarget(c.env.DB, c.req.param("target") ?? "");
+  if (!target || target.secret_id !== secret.id) return { ok: false, res: apiError(c, 404, "not_found", "No delivery target has this id on this secret.") };
+  return { ok: true, collection: loaded.collection, secretId: secret.id, secretName: name.name, target };
+}
+
+vault.delete("/collections/:name/secrets/:secret/targets/:target", async (c) => {
+  const loaded = await loadTarget(c);
+  if (!loaded.ok) return loaded.res;
+  const removed = await removeTarget(c.env.DB, loaded.target.id);
+  if (removed) await audit(c, "vault.target_remove", "vault_secret", loaded.secretId, { collection: loaded.collection.name, name: loaded.secretName, address: loaded.target.address });
+  return c.json({ removed });
+});
+
+/** The device reports what it delivered (or failed to). Only versions that exist can be recorded. */
+vault.post("/collections/:name/secrets/:secret/targets/:target/deliveries", async (c) => {
+  const loaded = await loadTarget(c);
+  if (!loaded.ok) return loaded.res;
+  const parsed = await readJson(c, vaultDeliveryCreateSchema);
+  if (!parsed.ok) return parsed.res;
+  const version = await getVersion(c.env.DB, loaded.secretId, parsed.value.version);
+  if (!version) return apiError(c, 400, "bad_request", `"${loaded.secretName}" has no version ${parsed.value.version}.`);
+  const row = await recordDelivery(c.env.DB, {
+    targetId: loaded.target.id,
+    version: parsed.value.version,
+    result: parsed.value.result,
+    remoteRef: parsed.value.remote_ref,
+    verified: parsed.value.verified,
+    note: parsed.value.note,
+    deliveredBy: c.get("device").id,
+  });
+  await audit(c, "vault.push", "vault_secret", loaded.secretId, {
+    collection: loaded.collection.name, name: loaded.secretName, kind: loaded.target.kind, address: loaded.target.address,
+    version: parsed.value.version, result: parsed.value.result, verified: Boolean(parsed.value.verified),
+  });
+  return c.json((await viewTargets(c, [loaded.target]))[0]!, 201);
 });

@@ -15,6 +15,7 @@ import {
 import { describeSecret, serveMcp } from "./mcp.ts";
 import { activity, comment, comments, formatActivity, formatComments, labels, list, loginLink, move, projects, publish, read, reindex, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
+import { formatPush, formatStatus, vaultImport, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
 import { ALLOWED_COMMANDS, vaultCollections, vaultCreate, vaultDestroy, vaultDevices, vaultGrant, vaultInit, vaultKey, vaultLedger, vaultPut, vaultRecover, vaultRevoke, vaultRotate, vaultSecret, vaultSecrets, vaultUse, type ValueSink, type ValueSource } from "./vault.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
@@ -81,6 +82,15 @@ Vault (secrets only this computer's key and the owner's key can open)
                                     Destroy one version's value, or the whole secret
   artifact vault recover (--recovery-key <k> | --recovery-key-file <f>)
                                     With the recovery key, let this computer read every collection
+  artifact vault target add <collection> <name> <kind://address> [--plaintext-ok]
+                                    Where the value must go: gcp://<project>/<secret>, circleci://<gh>/<org>/<context>/<VAR>[?token=<col>/<name>],
+                                    github://<owner>/<repo>/<NAME>[?environment=…], wrangler://<worker>/<NAME>, envfile:///path/.env#KEY
+  artifact vault target remove|list <collection> <name> [<address|id>]
+  artifact vault status [collection]   Each target: delivered at the current version, stale, or never delivered
+  artifact vault push <collection> [name] [--dry-run] [--force] [--only gcp,github] [--no-verify]
+                                    Deliver the current version where it is stale; records what arrived
+  artifact vault import <collection> <name> gcp://<project>/<secret id>
+                                    Bring a Secret Manager value into the vault and record it as delivered
 
 Agents
   artifact mcp                      Run the stdio MCP server (agents start this themselves)
@@ -134,6 +144,11 @@ function parse() {
       "used-by": { type: "string" },
       "recovery-key": { type: "string" },
       "recovery-key-file": { type: "string" },
+      "plaintext-ok": { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      force: { type: "boolean" },
+      only: { type: "string" },
+      "no-verify": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -547,8 +562,54 @@ async function main(): Promise<void> {
           out(r.collections.length ? `This computer can now open: ${r.collections.join(", ")}.` : "This computer could already open every collection.", r);
           return;
         }
+        case "target": {
+          const [action, collection, name, address] = [a, b, more[0], more[1]];
+          if (action === "add") {
+            if (!collection || !name || !address) throw new ArtifactError("Usage: artifact vault target add <collection> <name> <kind://address> [--plaintext-ok]", "bad_args");
+            const r = await vaultTargetAdd(collection, name, address, { ...(o["plaintext-ok"] ? { plaintextOk: true } : {}) });
+            out(`${collection}/${name} will be delivered to ${r.address}. \`artifact vault push ${collection} ${name}\` delivers it.`, r);
+            return;
+          }
+          if (action === "remove") {
+            if (!collection || !name || !address) throw new ArtifactError("Usage: artifact vault target remove <collection> <name> <address|id>", "bad_args");
+            const r = await vaultTargetRemove(collection, name, address);
+            out(r.removed ? `Removed ${r.address} from ${collection}/${name}. Its delivery records stay.` : `${r.address} was already removed.`, r);
+            return;
+          }
+          if (action === "list") {
+            if (!collection || !name) throw new ArtifactError("Usage: artifact vault target list <collection> <name>", "bad_args");
+            const r = await vaultTargets(collection, name);
+            out(r.map((t) => `${t.id}  ${t.address}${t.delivered ? `  v${t.delivered.version} delivered ${t.delivered.delivered_at.slice(0, 16).replace("T", " ")}` : "  not delivered"}${t.plaintext_ok ? "  [plaintext]" : ""}`).join("\n") || `${collection}/${name} has no targets.`, r);
+            return;
+          }
+          throw new ArtifactError("Usage: artifact vault target add|remove|list <collection> <name> …", "bad_args");
+        }
+        case "status": {
+          if (a) {
+            const r = await vaultStatus(a);
+            out(formatStatus(r), r);
+          } else {
+            const all = await vaultStatusAll();
+            out(all.map((r) => `${r.collection}\n${formatStatus(r).split("\n").map((l) => `  ${l}`).join("\n")}`).join("\n\n") || "No readable collections.", all);
+          }
+          return;
+        }
+        case "push": {
+          if (!a) throw new ArtifactError("Usage: artifact vault push <collection> [name] [--dry-run] [--force] [--only gcp,github] [--no-verify]", "bad_args");
+          const only = o.only ? (o.only.split(",").map((k) => k.trim()) as import("@artifact/shared").VaultTargetKind[]) : undefined;
+          const r = await vaultPush(a, { ...(b ? { name: b } : {}), dryRun: Boolean(o["dry-run"]), force: Boolean(o.force), ...(only ? { only } : {}), verify: !o["no-verify"] });
+          out(formatPush(r), r);
+          if (r.counts.failed) process.exitCode = 1;
+          return;
+        }
+        case "import": {
+          if (!a || !b || !more[0]) throw new ArtifactError("Usage: artifact vault import <collection> <name> gcp://<project>/<secret id> [--description <d>] [--used-by <w>]", "bad_args");
+          const r = await vaultImport(a, b, more[0], { ...(o.description !== undefined ? { description: o.description } : {}), ...(o["used-by"] !== undefined ? { usedBy: o["used-by"] } : {}) });
+          out(`Imported ${r.collection}/${r.name} as version ${r.version} (${r.bytes} bytes) from ${r.target} (${r.remote_ref}), recorded as delivered there.`, r);
+          return;
+        }
         default:
-          throw new ArtifactError("Usage: artifact vault init|key|devices|create|list|show|put|use|ledger|grant|revoke|rotate|destroy|recover. Run `artifact help`.", "bad_args");
+          throw new ArtifactError("Usage: artifact vault init|key|devices|create|list|show|put|use|ledger|grant|revoke|rotate|destroy|recover|target|status|push|import. Run `artifact help`.", "bad_args");
       }
     }
 

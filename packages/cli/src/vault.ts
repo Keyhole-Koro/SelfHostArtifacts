@@ -214,7 +214,7 @@ export async function vaultDevices(): Promise<VaultDeviceInfo[]> {
 
 // ---- values ----
 
-export type ValueSource = { file: string } | { generate: number } | { value: string };
+export type ValueSource = { file: string } | { generate: number } | { value: string } | { bytes: Uint8Array };
 
 function readValue(source: ValueSource): Uint8Array {
   let bytes: Uint8Array;
@@ -227,6 +227,8 @@ function readValue(source: ValueSource): Uint8Array {
     }
     // A trailing newline is almost always the editor's, not the secret's.
     if (bytes.length && bytes[bytes.length - 1] === 10) bytes = bytes.subarray(0, bytes.length - (bytes.length > 1 && bytes[bytes.length - 2] === 13 ? 2 : 1));
+  } else if ("bytes" in source) {
+    bytes = source.bytes;
   } else if ("generate" in source) {
     const n = source.generate || VAULT_GENERATE_BYTES;
     if (!Number.isInteger(n) || n < 16 || n > 128) throw new ArtifactError("Generate between 16 and 128 random bytes.", "bad_args");
@@ -294,6 +296,20 @@ async function currentVersion(s: Session, cname: string, sname: string): Promise
   }
 }
 
+/**
+ * Opens one version (the latest unless given) with this device's key: grant → collection key →
+ * data key → value. The value lives in memory only; callers deliver it and drop it.
+ */
+export async function openSecret(s: Session, collection: string, secret: string, version?: number): Promise<{ version: number; value: Uint8Array }> {
+  const cname = checkName("collection", collection);
+  const sname = checkName("secret", secret);
+  const key = await deviceKey(s, { create: false });
+  const r = await signedJson<VaultVersionResponse>(s, "GET", `/api/v1/vault/collections/${encodeURIComponent(cname)}/secrets/${encodeURIComponent(sname)}/versions/${version ?? "latest"}`);
+  const collectionKey = await importPrivateKey(parsePrivateJwk(fromUtf8(await unwrapWith(key.privateKey, key.publicKey, vaultContext.collectionKey(cname, r.key_version, key.memberId), r.grant))));
+  const dek = await unwrapWith(collectionKey, r.collection_public_key, vaultContext.dataKey(cname, sname, r.version), r.wrapped_dek);
+  return { version: r.version, value: await open(dek, vaultContext.value(cname, sname, r.version), r.ciphertext) };
+}
+
 /** Where a value goes. Only a person at a terminal gets `reveal`. */
 export type ValueSink = { file: string } | { command: string[] } | { reveal: true };
 
@@ -320,12 +336,9 @@ export async function vaultUse(collectionName: string, secretName: string, sink:
       throw new ArtifactError(`A value can be piped only into ${ALLOWED_COMMANDS.join(", ")} (got "${bin ?? ""}"). Write it to a 0600 file instead, or extend the allow list.`, "bad_command");
     }
   }
-  const key = await deviceKey(s, { create: false });
-  const r = await signedJson<VaultVersionResponse>(s, "GET", `/api/v1/vault/collections/${encodeURIComponent(cname)}/secrets/${encodeURIComponent(sname)}/versions/${version ?? "latest"}`);
-  const collectionKey = await importPrivateKey(parsePrivateJwk(fromUtf8(await unwrapWith(key.privateKey, key.publicKey, vaultContext.collectionKey(cname, r.key_version, key.memberId), r.grant))));
-  const dek = await unwrapWith(collectionKey, r.collection_public_key, vaultContext.dataKey(cname, sname, r.version), r.wrapped_dek);
-  const value = await open(dek, vaultContext.value(cname, sname, r.version), r.ciphertext);
-  const base = { collection: cname, name: sname, version: r.version, bytes: value.length };
+  const opened = await openSecret(s, cname, sname, version);
+  const value = opened.value;
+  const base = { collection: cname, name: sname, version: opened.version, bytes: value.length };
   if ("file" in sink) {
     const path = resolve(sink.file);
     writePrivateFile(path, fromUtf8(value));

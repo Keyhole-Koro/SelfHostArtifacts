@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
 import { activity, comment, comments, formatActivity, formatComments, labels, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
+import { formatPush, formatStatus, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
 import { ALLOWED_COMMANDS, vaultCollections, vaultCreate, vaultDestroy, vaultDevices, vaultGrant, vaultPut, vaultSecrets, vaultUse } from "./vault.ts";
 import { VERSION } from "./version.ts";
 
@@ -388,6 +389,78 @@ export function createServer(): McpServer {
         const r = await vaultDestroy(collection, name, version);
         return r.deleted ? `Deleted ${collection}/${name} and all its versions.` : r.destroyed ? `Destroyed version ${r.version} of ${collection}/${name}.` : `Version ${r.version} was already destroyed.`;
       }),
+  );
+
+  server.registerTool(
+    "vault_status",
+    {
+      title: "Where each vault value has been delivered",
+      description:
+        "For each secret of a collection (or of every readable collection), its delivery targets and whether the current version arrived there: " +
+        "delivered, STALE (an older version is there), NOT DELIVERED, or FAILED. Use it before vault_push, and to answer \"is X up to date in CircleCI?\".",
+      inputSchema: { collection: z.string().optional() },
+      annotations: { readOnlyHint: true },
+    },
+    ({ collection }) =>
+      run(async () => {
+        if (collection) return formatStatus(await vaultStatus(collection));
+        const all = await vaultStatusAll();
+        return all.map((r) => `${r.collection}\n${formatStatus(r).split("\n").map((l) => `  ${l}`).join("\n")}`).join("\n\n") || "No readable collections.";
+      }),
+  );
+
+  server.registerTool(
+    "vault_target",
+    {
+      title: "Say where a vault value must be delivered",
+      description:
+        "Lists, adds or removes a secret's delivery targets. A target is `kind://address`: gcp://<project>/<secret id> (Secret Manager), " +
+        "circleci://<gh|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>] (the token is itself a vault secret), " +
+        "github://<owner>/<repo>/<NAME>[?environment=<env>], wrangler://<worker>/<NAME>[?config=…&cwd=…], envfile:///absolute/path/.env#KEY " +
+        "(a plaintext copy on this computer; needs plaintext_ok). Adding a target delivers nothing by itself: call vault_push.",
+      inputSchema: {
+        collection: z.string(),
+        name: z.string(),
+        add: z.string().optional().describe("A target address to add"),
+        remove: z.string().optional().describe("A target address or id to remove"),
+        plaintext_ok: z.boolean().optional().describe("Required to add an envfile target: the user accepted a plaintext copy"),
+      },
+    },
+    ({ collection, name, add, remove, plaintext_ok }) =>
+      run(async () => {
+        if (add) {
+          const t = await vaultTargetAdd(collection, name, add, { ...(plaintext_ok ? { plaintextOk: true } : {}) });
+          return `${collection}/${name} will be delivered to ${t.address}. vault_push delivers it.`;
+        }
+        if (remove) {
+          const r = await vaultTargetRemove(collection, name, remove);
+          return r.removed ? `Removed ${r.address} from ${collection}/${name}; its delivery records stay.` : `${r.address} was already removed.`;
+        }
+        const targets = await vaultTargets(collection, name);
+        return targets.map((t) => `${t.address}${t.delivered ? ` — v${t.delivered.version} delivered ${t.delivered.delivered_at}` : " — not delivered"}${t.plaintext_ok ? " [plaintext]" : ""}`).join("\n") || `${collection}/${name} has no targets.`;
+      }),
+  );
+
+  server.registerTool(
+    "vault_push",
+    {
+      title: "Deliver vault values to their targets",
+      description:
+        "Delivers each stale value of a collection (or of one secret) to its targets: a new Secret Manager version through gcloud, a CircleCI context " +
+        "variable, a GitHub Actions secret through gh, a Worker secret through wrangler, or a KEY in a 0600 env file. Values are opened on this " +
+        "computer and go only to the tool's standard input or an HTTPS body; nothing is returned to you. By default this only shows the plan; " +
+        "pass apply: true when the user asked to deliver. Secret Manager deliveries are read back and compared.",
+      inputSchema: {
+        collection: z.string(),
+        name: z.string().optional().describe("One secret; all of the collection by default"),
+        apply: z.boolean().optional().describe("Actually deliver. Without it, only the plan is shown"),
+        force: z.boolean().optional().describe("Deliver even where the current version is recorded as delivered"),
+        only: z.array(z.enum(["gcp", "circleci", "github", "wrangler", "envfile"])).optional().describe("Only these kinds of targets"),
+      },
+      annotations: { destructiveHint: true },
+    },
+    ({ collection, name, apply, force, only }) =>
+      run(async () => formatPush(await vaultPush(collection, { ...(name ? { name } : {}), dryRun: !apply, force: Boolean(force), ...(only ? { only } : {}) }))),
   );
 
   server.registerTool(

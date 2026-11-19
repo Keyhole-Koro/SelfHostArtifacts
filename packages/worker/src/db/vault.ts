@@ -1,4 +1,4 @@
-import type { VaultEnvelope, VaultMember, VaultMemberKind, VaultOwner, VaultSealed, VaultSecretSummary, VaultVersionInfo } from "@artifact/shared";
+import type { VaultDelivery, VaultEnvelope, VaultMember, VaultMemberKind, VaultOwner, VaultSealed, VaultSecretSummary, VaultTarget, VaultTargetKind, VaultVersionInfo } from "@artifact/shared";
 import { randomId } from "../lib/encoding.ts";
 
 /**
@@ -401,4 +401,135 @@ export async function deleteSecret(db: D1Database, secretId: string): Promise<vo
     db.prepare("delete from vault_versions where secret_id = ?").bind(secretId),
     db.prepare("delete from vault_secrets where id = ?").bind(secretId),
   ]);
+}
+
+// ---- delivery targets and records (migration 0015) ----
+
+export interface TargetRow {
+  id: string;
+  secret_id: string;
+  kind: VaultTargetKind;
+  address: string;
+  plaintext_ok: number;
+  added_by: string;
+  added_at: string;
+  removed_at: string | null;
+}
+
+export interface DeliveryRow {
+  id: string;
+  target_id: string;
+  version: number;
+  result: "delivered" | "failed";
+  remote_ref: string | null;
+  verified_at: string | null;
+  delivered_at: string;
+  delivered_by: string;
+  note: string | null;
+}
+
+export function getTarget(db: D1Database, id: string): Promise<TargetRow | null> {
+  return db.prepare("select * from vault_targets where id = ?").bind(id).first<TargetRow>();
+}
+
+/** Adds a target, or returns the live one with the same address (adding twice is harmless). */
+export async function addTarget(db: D1Database, input: { secretId: string; kind: VaultTargetKind; address: string; plaintextOk: boolean; addedBy: string }): Promise<{ target: TargetRow; created: boolean }> {
+  const existing = await db.prepare("select * from vault_targets where secret_id = ? and address = ? and removed_at is null").bind(input.secretId, input.address).first<TargetRow>();
+  if (existing) return { target: existing, created: false };
+  const id = randomId();
+  await db
+    .prepare("insert into vault_targets (id, secret_id, kind, address, plaintext_ok, added_by, added_at) values (?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, input.secretId, input.kind, input.address, input.plaintextOk ? 1 : 0, input.addedBy, now())
+    .run();
+  return { target: (await getTarget(db, id))!, created: true };
+}
+
+/** Marks a target removed; its delivery records stay. True when it was live. */
+export async function removeTarget(db: D1Database, id: string): Promise<boolean> {
+  const r = await db.prepare("update vault_targets set removed_at = ? where id = ? and removed_at is null").bind(now(), id).run();
+  return (r.meta.changes ?? 0) > 0;
+}
+
+export async function targetsOfSecret(db: D1Database, secretId: string): Promise<TargetRow[]> {
+  const { results } = await db.prepare("select * from vault_targets where secret_id = ? and removed_at is null order by added_at").bind(secretId).all<TargetRow>();
+  return results;
+}
+
+export interface CollectionTargetRow extends TargetRow {
+  secret_name: string;
+}
+
+export async function targetsOfCollection(db: D1Database, collectionId: string): Promise<CollectionTargetRow[]> {
+  const { results } = await db
+    .prepare(
+      `select t.*, s.name as secret_name from vault_targets t join vault_secrets s on s.id = t.secret_id
+       where s.collection_id = ? and t.removed_at is null order by s.name, t.added_at`,
+    )
+    .bind(collectionId)
+    .all<CollectionTargetRow>();
+  return results;
+}
+
+export interface DeliverySummary {
+  latest: DeliveryRow | null;
+  delivered: DeliveryRow | null;
+}
+
+/** For each target, the newest record and the newest successful one. */
+export async function deliverySummaries(db: D1Database, targetIds: string[]): Promise<Map<string, DeliverySummary>> {
+  const out = new Map<string, DeliverySummary>();
+  for (const id of targetIds) out.set(id, { latest: null, delivered: null });
+  for (let i = 0; i < targetIds.length; i += 90) {
+    const chunk = targetIds.slice(i, i + 90);
+    const { results } = await db
+      .prepare(`select * from vault_deliveries where target_id in (${chunk.map(() => "?").join(", ")}) order by delivered_at desc, id desc`)
+      .bind(...chunk)
+      .all<DeliveryRow>();
+    for (const row of results) {
+      const entry = out.get(row.target_id)!;
+      if (!entry.latest) entry.latest = row;
+      if (!entry.delivered && row.result === "delivered") entry.delivered = row;
+    }
+  }
+  return out;
+}
+
+export async function recordDelivery(
+  db: D1Database,
+  input: { targetId: string; version: number; result: "delivered" | "failed"; remoteRef?: string | undefined; verified?: boolean | undefined; note?: string | undefined; deliveredBy: string },
+): Promise<DeliveryRow> {
+  const id = randomId();
+  const t = now();
+  await db
+    .prepare("insert into vault_deliveries (id, target_id, version, result, remote_ref, verified_at, delivered_at, delivered_by, note) values (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .bind(id, input.targetId, input.version, input.result, input.remoteRef ?? null, input.verified && input.result === "delivered" ? t : null, t, input.deliveredBy, input.note ?? null)
+    .run();
+  return (await db.prepare("select * from vault_deliveries where id = ?").bind(id).first<DeliveryRow>())!;
+}
+
+export function deliveryView(row: DeliveryRow): VaultDelivery {
+  return {
+    id: row.id,
+    version: row.version,
+    result: row.result,
+    remote_ref: row.remote_ref,
+    verified_at: row.verified_at,
+    delivered_at: row.delivered_at,
+    delivered_by: row.delivered_by,
+    note: row.note,
+  };
+}
+
+export function targetView(row: TargetRow, summary: DeliverySummary | undefined): VaultTarget {
+  return {
+    id: row.id,
+    kind: row.kind,
+    address: row.address,
+    plaintext_ok: row.plaintext_ok === 1,
+    added_by: row.added_by,
+    added_at: row.added_at,
+    removed_at: row.removed_at,
+    latest: summary?.latest ? deliveryView(summary.latest) : null,
+    delivered: summary?.delivered ? deliveryView(summary.delivered) : null,
+  };
 }

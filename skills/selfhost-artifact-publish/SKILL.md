@@ -115,6 +115,13 @@ owner's recovery key) can open them. Values never pass through you.
 - If a tool says this computer cannot read a collection, tell the user: a computer that can must
   run `artifact vault grant <collection> <this device>`, or they use `artifact vault recover`
   with the recovery key.
+- Delivery: `vault_target({ collection, name, add })` records where a value must go
+  (`gcp://<project>/<secret id>`, `circleci://gh/<org>/<context>/<VAR>?token=<collection>/<name>`,
+  `github://<owner>/<repo>/<NAME>`, `wrangler://<worker>/<NAME>`, `envfile:///path/.env#KEY`
+  with `plaintext_ok`). `vault_status({ collection })` shows which targets are stale.
+  `vault_push({ collection })` only shows the plan; call it with `apply: true` when the user asked
+  to deliver, and report what arrived where, never the values. After a Secret Manager delivery,
+  Cloud Run uses the new version from its next revision, so say that too.
 
 ## Errors
 

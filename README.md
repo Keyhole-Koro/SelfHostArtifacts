@@ -207,6 +207,8 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `vault_use` | Open a value on this computer and write it to a 0600 file, or pipe it into `gcloud`, `gh`, `wrangler` or `circleci` |
 | `vault_create`, `vault_grant`, `vault_devices` | Make a collection; let another computer read it (after comparing key fingerprints); list computers with a vault key |
 | `vault_destroy` | Destroy one version's value, or delete a secret, when the user asks |
+| `vault_target`, `vault_status` | Where a value must go (`gcp://`, `circleci://`, `github://`, `wrangler://`, `envfile://`), and whether the current version arrived there |
+| `vault_push` | Deliver stale values to their targets (plan only, unless `apply: true`); each delivery is recorded |
 
 ### CLI
 
@@ -240,6 +242,11 @@ artifact vault use medishare-prod RESEND_API_KEY --out /tmp/resend.key   # a 060
 artifact vault grant medishare-prod my-laptop   # after comparing `artifact vault key` fingerprints
 artifact vault revoke medishare-prod old-laptop # take it away and replace the collection key
 artifact vault recover --recovery-key-file ./recovery.txt   # a new computer, with the recovery key
+artifact vault target add medishare-prod RESEND_API_KEY gcp://medishare-492402/medishare-resend-api-key
+artifact vault target add medishare-prod RESEND_API_KEY "circleci://gh/Keyhole-Koro/medishare-prod/RESEND_API_KEY_PROD?token=tools/CIRCLECI_API_TOKEN"
+artifact vault status medishare-prod      # which targets have the current version, which are stale
+artifact vault push medishare-prod --dry-run && artifact vault push medishare-prod   # deliver what is stale
+artifact vault import medishare-prod PAYJP_SECRET_KEY gcp://medishare-492402/medishare-payjp-secret-key   # take an existing value in
 artifact uninstall                        # remove the MCP registrations and skills
 ```
 

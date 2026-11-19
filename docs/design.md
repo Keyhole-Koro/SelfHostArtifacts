@@ -545,6 +545,25 @@ alter table secrets add column mode text not null default 'request';  -- request
 - 署名の鍵（`key.pem`）のキーリングへの移行。今回は暗号化用の鍵だけキーリングに置く
 - `/settings` の一覧。いまは CLI と MCP の `vault_list` だけ
 
+### 配達（vault push）
+
+2026-11-19 に足した。秘密ごとに「どこへ配るか」を `種類://住所` で台帳に登録し、`artifact vault push` が遅れている配達先にだけ今の版を配って、何が届いたかを記録する。設計: https://artifacts.keyhole.work/a/cq4gqx5824re9v4c 。Secret Manager の置き換えではない。Cloud Run の起動は Secret Manager から読むままにし、金庫は正本と配達の元になる。
+
+| 種類 | 書き方 | 流し方 | 確かめ方・記録 |
+|---|---|---|---|
+| Secret Manager | `gcp://<project>/<secret id>` | `gcloud secrets versions add … --data-file=-`（`ARTIFACT_GCLOUD` で wrapper を指定できる） | 作られた版番号。`--no-verify` を付けなければ `versions access` で読み戻し、SHA-256 を比べて捨てる |
+| CircleCI の context | `circleci://<gh\|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>]` | v2 API の `PUT /context/{id}/environment-variable/{name}`。token は金庫の秘密から読む（無ければ `CIRCLECI_TOKEN`） | 読み戻せない。一覧の `updated_at` を記録 |
+| GitHub Actions の secret | `github://<owner>/<repo>/<NAME>[?environment=…]` | `gh secret set NAME`（標準入力） | 読み戻せない。`gh secret list` の `updatedAt` を記録 |
+| Cloudflare Worker | `wrangler://<worker>/<NAME>[?config=…&cwd=…]` | `wrangler secret put NAME`（標準入力）。Worker の新しいバージョンが出る | `wrangler secret list` に名前があるか |
+| 手元のファイル | `envfile:///絶対パス#KEY` | 600 のファイルの `KEY=` の行を書き換える | 読み戻して比べる。平文が残る唯一の口なので、登録に `--plaintext-ok` が要り、一覧に印が付く |
+
+- 値が端末の外へ出るのは配達先への入力（標準入力か TLS の本文）だけ。引数・ログ・MCP の結果には出ない。配達先の認証情報は Worker に置かず、gcloud・gh・wrangler はその端末のログインを使う
+- 配達先と配達の記録は D1（`vault_targets`・`vault_deliveries`、0015）に置き、どの端末からも同じ台帳が見える。配達先の住所は秘密ではないが、どこに何があるかは分かるので、grant のある端末にだけ返す
+- push は配達先ごとに「記録の版」と「今の版」を比べ、遅れているものだけ配る（`--force` で全部）。`--dry-run` は値を開かずに予定だけ出す。失敗は結果に残して次へ進み、`failed` として記録する。MCP の `vault_push` は既定で dry-run で、`apply: true` のときだけ配る
+- `artifact vault import <collection> <name> gcp://…` は Secret Manager の最新の版を読んで金庫の版にし、配達先を登録して「届いた」と記録する。CircleCI と GitHub は値を読み戻せないので取り込めない
+- push は Cloud Run を再デプロイしない。Secret Manager の新しい版は次のリビジョンから効く
+- API: `GET /collections/:name/status`、`GET|POST /…/secrets/:secret/targets`、`DELETE /…/targets/:id`、`POST /…/targets/:id/deliveries`。監査は `vault.target_add`・`vault.target_remove`・`vault.push`（配達先と版と結果。値は含まない）
+
 ## 料金
 
 2026-10-16 に Cloudflare の料金ページ（[Workers](https://developers.cloudflare.com/workers/platform/pricing/)、[R2](https://developers.cloudflare.com/r2/pricing/)）で確かめた値。
