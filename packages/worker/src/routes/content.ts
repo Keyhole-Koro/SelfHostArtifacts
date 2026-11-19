@@ -6,6 +6,7 @@ import { blobKey } from "./api.ts";
 import { shareActive } from "../share.ts";
 import { DOC_CSS, DOC_JS, DOC_PATH, EDITOR_JS, EDITOR_PATH, docHtml, editorHtml } from "../doc.ts";
 import { MACROS_PATH, macroData, type MacroData } from "../macros.ts";
+import { RAW_PREFIX, SOURCE_JS, SOURCE_JS_PATH, SOURCE_PATH, editableFiles, sourceHtml } from "../source.ts";
 import type { Role } from "../app-env.ts";
 
 /**
@@ -126,7 +127,20 @@ content.on(["GET", "HEAD"], "/:token/*", async (c) => {
     "!artifact/doc.css": ["text/css; charset=utf-8", () => DOC_CSS],
     [EDITOR_PATH]: viewerFrame && version.entry.endsWith(".md") ? ["text/html; charset=utf-8", () => editorHtml(version.entry)] : undefined,
     "!artifact/editor.js": viewerFrame ? ["text/javascript; charset=utf-8", () => EDITOR_JS] : undefined,
+    [SOURCE_PATH]: viewerFrame && !version.entry.endsWith(".md") ? ["text/html; charset=utf-8", () => sourceHtml(editableFiles(version.files, version.entry), version.entry)] : undefined,
+    [SOURCE_JS_PATH]: viewerFrame ? ["text/javascript; charset=utf-8", () => SOURCE_JS] : undefined,
   };
+  // The source editor reads a file's own bytes, without the link script the viewer appends.
+  if (viewerFrame && path.startsWith(RAW_PREFIX)) {
+    const name = path.slice(RAW_PREFIX.length);
+    const file = editableFiles(version.files, version.entry).includes(name) ? version.files[name] : undefined;
+    if (!file) return plain(404, `No file ${name} to edit in this artifact.`);
+    const headers = contentHeaders("text/plain; charset=utf-8", version.allow_connect);
+    headers.set("cache-control", "no-store");
+    if (c.req.method === "HEAD") return new Response(null, { headers });
+    const object = await c.env.BLOBS.get(blobKey(file.sha256));
+    return object ? new Response(object.body, { headers }) : plain(500, `The stored bytes of ${name} are missing.`);
+  }
   if (path === MACROS_PATH && version.entry.endsWith(".md")) {
     const headers = contentHeaders("application/json; charset=utf-8", version.allow_connect);
     headers.set("cache-control", "no-store");

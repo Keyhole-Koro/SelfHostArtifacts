@@ -11,9 +11,10 @@ import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComme
 import { changeLabels, labelCounts, labeledSearch, labelsOf } from "../db/labels.ts";
 import { BEAT_SECONDS, beat, editing, leave } from "../db/presence.ts";
 import { hasConflictMarks, merge3 } from "../merge.ts";
+import { MAX_SOURCE_BYTES, SOURCE_PATH, editableFiles } from "../source.ts";
 import { BUILT_IN_TEMPLATES, TEMPLATE_LABEL, fromTemplatePage, markdownPages, type MarkdownPage } from "../templates.ts";
 import { activityHref, listActivity, listNotifications, markRead, pageTarget, projectTarget, record, setWatch, watching, type ActivityRow } from "../db/activity.ts";
-import { MAX_TEXT_CHARS, type VersionFile, labelSchema, labelsSchema, MAX_LABELS } from "@artifact/shared";
+import { MAX_TEXT_CHARS, type VersionFile, labelSchema, labelsSchema, MAX_LABELS, pageText, pageLinks } from "@artifact/shared";
 import { z } from "zod";
 import { blobKey } from "./api.ts";
 import { randomId, sha256Hex, utf8 } from "../lib/encoding.ts";
@@ -596,9 +597,9 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
           {viewer.role === "root" && (
             <SharePanel id={id} artifact={artifact} shareUrl={shareUrl} csrf={viewer.csrf} open={c.req.query("share") === "1"} />
           )}
-          {markdown && isLatest && (viewer.role === "root" || editor) && viewer.sessionKind === "full" && (
-            <a href={`/a/${id}/edit`} class="tool" title="Edit this page">
-              ✎ <span class="label">Edit</span>
+          {isLatest && (viewer.role === "root" || editor) && viewer.sessionKind === "full" && (
+            <a href={`/a/${id}/edit`} class="tool" title={markdown ? "Edit this page" : "Change this page's HTML, with a preview"}>
+              ✎ <span class="label">{markdown ? "Edit" : "Edit source"}</span>
             </a>
           )}
           {viewer.sessionKind === "full" && (
@@ -1442,11 +1443,17 @@ async function browserDevice(c: Context<AppEnv>): Promise<string> {
 
 /** Stores a Markdown text as a blob, unless it is there already; returns its file entry. */
 async function storeMarkdown(c: Context<AppEnv>, markdown: string): Promise<VersionFile> {
-  const bytes = utf8(markdown);
+  return storeText(c, markdown, "text/markdown; charset=utf-8");
+}
+
+async function storeText(c: Context<AppEnv>, text: string, type: string): Promise<VersionFile> {
+  const bytes = utf8(text);
   const sha256 = await sha256Hex(bytes);
   if (!(await c.env.BLOBS.head(blobKey(sha256)))) await c.env.BLOBS.put(blobKey(sha256), bytes, { sha256 });
-  return { sha256, size: bytes.length, type: "text/markdown; charset=utf-8" };
+  return { sha256, size: bytes.length, type };
 }
+
+const blobText = async (c: Context<AppEnv>, sha256: string) => (await c.env.BLOBS.get(blobKey(sha256)))?.text();
 
 const titleSchema = z.string().trim().min(1, "A page needs a title.").max(200, "A title is at most 200 characters.");
 
@@ -1524,9 +1531,7 @@ async function writable(c: Context<AppEnv>, id: string): Promise<{ artifact: Art
   if (artifact instanceof Response) return artifact;
   const version = await getVersion(c.env.DB, id, artifact.current_version);
   if (!version) return c.notFound();
-  if (!version.entry.endsWith(".md")) {
-    return c.text("This page is HTML that an agent wrote. Ask the agent to change it, or leave a comment on it.", 400);
-  }
+  if (!/\.(md|html?)$/i.test(version.entry)) return c.text("This page cannot be changed in the browser.", 400);
   return { artifact, version };
 }
 
@@ -1534,6 +1539,7 @@ pages.get("/a/:id/edit", requireViewer("viewer", true), async (c) => {
   const id = c.req.param("id");
   const found = await writable(c, id);
   if (found instanceof Response) return found;
+  if (!found.version.entry.endsWith(".md")) return sourceEditor(c, found.artifact, found.version);
   const { artifact, version } = found;
   const viewer = c.get("viewer");
   // Only the pages this person may see are offered, to link to, to list or to embed.
@@ -1673,7 +1679,15 @@ document.getElementById("save").addEventListener("click", async () => {
   );
 });
 
-const saveSchema = z.object({ base_version: z.number().int().positive(), title: titleSchema, markdown: z.string(), merge: z.boolean().optional() });
+const saveSchema = z.object({
+  base_version: z.number().int().positive(),
+  title: titleSchema,
+  /** A Markdown page's text. */
+  markdown: z.string().optional(),
+  /** An HTML page's changed files, by path. */
+  files: z.record(z.string(), z.string()).optional(),
+  merge: z.boolean().optional(),
+});
 
 /** The Markdown of a version of a page written in Markdown. */
 async function markdownOf(c: Context<AppEnv>, id: string, version: number): Promise<string | undefined> {
@@ -1704,8 +1718,10 @@ pages.post("/a/:id/edit", requireViewer("viewer", true), requireSameOriginJson()
   }
   const parsed = saveSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.issues[0]!.message }, 400);
+  if (!version.entry.endsWith(".md")) return saveSource(c, found, parsed.data);
   const { base_version, title } = parsed.data;
-  let { markdown } = parsed.data;
+  if (parsed.data.markdown === undefined) return c.json({ error: "No text to save." }, 400);
+  let markdown = parsed.data.markdown;
   let base = base_version;
   let merged = false;
   if (new TextEncoder().encode(markdown).length > MAX_MARKDOWN_BYTES) return c.json({ error: "A page is at most 1 MB of text." }, 413);
@@ -1743,6 +1759,187 @@ pages.post("/a/:id/edit", requireViewer("viewer", true), requireSameOriginJson()
   return c.json({ version: base + 1, merged });
 });
 
+
+/** An HTML page's source, in the sandbox, with the files to choose from and a preview. */
+async function sourceEditor(c: Context<AppEnv>, artifact: ArtifactRow, version: VersionRow) {
+  const id = artifact.id;
+  const viewer = c.get("viewer");
+  const files = editableFiles(version.files, version.entry);
+  const { token } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version, undefined, viewer.userId);
+  const nonce = c.get("nonce");
+  return c.html(
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{`Editing ${artifact.title}`}</title>
+        <style>{raw(TOKENS + EDIT_STYLES)}</style>
+      </head>
+      <body>
+        <div class="bar">
+          <input name="title" id="title" value={artifact.title} maxlength={200} aria-label="Title" />
+          {files.length > 1 && (
+            <select id="file" aria-label="File to change">
+              {files.map((f) => (
+                <option value={f}>{f}</option>
+              ))}
+            </select>
+          )}
+          <button type="button" id="preview-toggle" aria-pressed="false" title="Show the page as it is being edited">
+            Preview
+          </button>
+          <span class="status" id="status" aria-live="polite">
+            Editing v{version.version}
+          </span>
+          <span class="who" id="who" aria-live="polite" hidden />
+          <a class="btn" href={`/a/${id}`}>
+            Cancel
+          </a>
+          <button type="button" id="save" class="primary">
+            Save
+          </button>
+        </div>
+        <iframe id="editor" src={`/c/${token}/${SOURCE_PATH}`} sandbox={SANDBOX_FLAGS} title="Source" />
+        <script nonce={nonce}>
+          {raw(`
+const frame = document.getElementById("editor"), status = document.getElementById("status"), who = document.getElementById("who");
+const headers = { "content-type": "application/json", "x-csrf": ${JSON.stringify(viewer.csrf)} };
+const presence = ${JSON.stringify(`/a/${id}/presence`)}, tokenUrl = ${JSON.stringify(`/a/${id}/token?v=${version.version}`)};
+let base = ${version.version}, waiting = null;
+const pick = document.getElementById("file");
+window.addEventListener("message", (e) => {
+  if (e.source !== frame.contentWindow) return;
+  const d = e.data || {};
+  if (d.type === "artifact:files" && waiting) { waiting(d.files || {}); waiting = null; }
+  if (d.type === "artifact:opened" && pick && typeof d.path === "string") pick.value = d.path;
+});
+const changed = () => new Promise((ok, fail) => {
+  waiting = ok;
+  frame.contentWindow.postMessage({ type: "artifact:get-files" }, "*");
+  setTimeout(() => { if (waiting) { waiting = null; fail(new Error("The editor did not answer.")); } }, 5000);
+});
+if (pick) pick.addEventListener("change", () => frame.contentWindow.postMessage({ type: "artifact:open", path: pick.value }, "*"));
+const toggle = document.getElementById("preview-toggle");
+toggle.addEventListener("click", () => {
+  const on = toggle.getAttribute("aria-pressed") !== "true";
+  toggle.setAttribute("aria-pressed", String(on));
+  frame.contentWindow.postMessage({ type: "artifact:preview", on }, "*");
+});
+// The editor's link to the page's files lasts ten minutes: hand it a fresh one before then.
+setInterval(async () => {
+  try {
+    const res = await fetch(tokenUrl, { credentials: "same-origin" });
+    if (!res.ok) return;
+    const { src } = await res.json();
+    frame.contentWindow.postMessage({ type: "artifact:root", root: new URL(src.slice(0, src.indexOf("/", 3) + 1), location.href).href }, "*");
+  } catch {}
+}, 8 * 60 * 1000);
+const beat = async () => {
+  try {
+    const res = await fetch(presence, { method: "POST", credentials: "same-origin", headers, body: "{}" });
+    if (!res.ok) return;
+    const s = await res.json();
+    const parts = [];
+    if (s.editing.length) parts.push(s.editing.join(", ") + (s.editing.length === 1 ? " is" : " are") + " editing too");
+    if (s.version > base) parts.push("v" + s.version + " was saved meanwhile: saving merges your changes into it");
+    who.textContent = parts.join(" · ");
+    who.hidden = parts.length === 0;
+  } catch {}
+};
+beat();
+setInterval(beat, ${BEAT_SECONDS * 1000});
+addEventListener("pagehide", () => { fetch(presence, { method: "DELETE", credentials: "same-origin", headers, keepalive: true }).catch(() => {}); });
+document.getElementById("save").addEventListener("click", async () => {
+  status.className = "status"; status.textContent = "Saving…";
+  try {
+    const body = JSON.stringify({ base_version: base, title: document.getElementById("title").value, files: await changed(), merge: true });
+    const res = await fetch(location.pathname, { method: "POST", credentials: "same-origin", headers, body });
+    const out = await res.json().catch(() => ({}));
+    if (res.ok) { location.href = ${JSON.stringify(`/a/${id}`)}; return; }
+    status.className = "status error";
+    if (res.status === 409 && out.merged_files) {
+      // Both changed the same lines: the merged files, with both sides marked, go into the editor.
+      base = out.current_version;
+      frame.contentWindow.postMessage({ type: "artifact:set-files", files: out.merged_files }, "*");
+      status.textContent = (out.conflicts === 1 ? "1 part" : out.conflicts + " parts") + " changed both by you and in v" + out.current_version + " by " + out.by
+        + ". Both are marked in the source: keep what should stay, delete the <<<<<<<, ======= and >>>>>>> lines, and save.";
+      who.hidden = true;
+      return;
+    }
+    status.textContent = res.status === 409
+      ? "Version " + out.current_version + " was saved meanwhile by " + (out.by || "someone") + " and could not be merged. Copy your changes, reload, and make them again."
+      : (out.error || "Saving failed.");
+  } catch (e) { status.className = "status error"; status.textContent = e.message; }
+});`)}
+        </script>
+      </body>
+    </html>,
+  );
+}
+
+/**
+ * Saves the changed files of an HTML page as a new version, merged into what was saved meanwhile
+ * when asked; the text and links for search come from its HTML again, as the CLI reads them.
+ */
+async function saveSource(c: Context<AppEnv>, found: { artifact: ArtifactRow; version: VersionRow }, data: z.infer<typeof saveSchema>) {
+  const { artifact, version } = found;
+  const id = artifact.id;
+  const allowed = new Set(editableFiles(version.files, version.entry));
+  const mine = data.files ?? {};
+  for (const [path, text] of Object.entries(mine)) {
+    if (!allowed.has(path)) return c.json({ error: `${path} cannot be changed here.` }, 400);
+    if (utf8(text).length > MAX_SOURCE_BYTES) return c.json({ error: `${path} is over 1 MB.` }, 413);
+  }
+  let base = data.base_version;
+  let changes = mine;
+  let merged = false;
+  if (base !== artifact.current_version) {
+    const latest = artifact.current_version;
+    const by = await savedBy(c, id, latest);
+    const was = data.merge ? await getVersion(c.env.DB, id, base) : undefined;
+    if (!was) return c.json({ error: "version_conflict", current_version: latest, by }, 409);
+    const out: Record<string, string> = {};
+    let conflicts = 0;
+    for (const [path, text] of Object.entries(mine)) {
+      const [before, now] = await Promise.all([was.files[path] && blobText(c, was.files[path].sha256), version.files[path] && blobText(c, version.files[path].sha256)]);
+      const result = before !== undefined && now !== undefined ? merge3(before, text, now, { mine: "your text", theirs: `v${latest} by ${by}` }) : undefined;
+      if (!result) return c.json({ error: "version_conflict", current_version: latest, by }, 409);
+      out[path] = result.text;
+      conflicts += result.conflicts;
+    }
+    if (conflicts > 0) return c.json({ error: "version_conflict", current_version: latest, by, merged_files: out, conflicts }, 409);
+    changes = out;
+    base = latest;
+    merged = true;
+  }
+  if (data.merge && Object.values(changes).some(hasConflictMarks)) {
+    return c.json({ error: "The source still has conflict marks (<<<<<<< and >>>>>>>). Keep what should stay and remove them." }, 400);
+  }
+  const files = { ...version.files };
+  for (const [path, text] of Object.entries(changes)) files[path] = await storeText(c, text, version.files[path]!.type);
+  // What the page says and links to, from its HTML files, the entry first.
+  const pagesHtml = [version.entry, ...Object.keys(files).filter((p) => p !== version.entry && /\.html?$/i.test(p))];
+  const htmls = await Promise.all(pagesHtml.map(async (p) => changes[p] ?? (await blobText(c, files[p]!.sha256)) ?? ""));
+  const origin = c.get("config").origin;
+  const added = await addVersion(c.env.DB, id, base, {
+    title: data.title,
+    description: artifact.description ?? undefined,
+    entry: version.entry,
+    files,
+    allowConnect: version.allow_connect,
+    deviceId: await browserDevice(c),
+    text: htmls.map(pageText).join("\n").slice(0, MAX_TEXT_CHARS),
+    links: [...new Set(htmls.flatMap((h) => pageLinks(h, origin)))].slice(0, 1000),
+  });
+  if (!added) return c.json({ error: "version_conflict", current_version: (await getArtifact(c.env.DB, id))?.current_version ?? base + 1 }, 409);
+  const viewer = c.get("viewer");
+  await recordViewerAction(c, "artifact.update", "artifact", id, { version: base + 1, browser: true, merged, files: Object.keys(changes).length });
+  indexLater(semanticEnv(c.env), c.executionCtx, id);
+  await record(c.env.DB, { artifactId: id, project: artifact.project, kind: "updated", actor: { userId: viewer.userId, name: viewer.name }, version: base + 1 });
+  await setWatch(c.env.DB, viewer.userId, pageTarget(id), true);
+  await leave(c.env.DB, id, viewer.userId);
+  return c.json({ version: base + 1, merged });
+}
 
 /** An open editor says it is still open; the answer says who else edits and the latest version. */
 pages.post("/a/:id/presence", requireViewer("viewer", true), requireSameOriginJson(), async (c) => {

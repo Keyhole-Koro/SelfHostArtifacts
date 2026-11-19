@@ -57,7 +57,9 @@ available). So for "change the colours", edit the file and publish it again.
 
 To update a page that was published from another file or computer, pass its `url`. If the
 result says another version is the latest, `read` that version, merge your change into it, and
-publish again. Never overwrite someone else's newer version without merging.
+publish again. Never overwrite someone else's newer version without merging. People also change
+pages in the browser (Markdown pages, and the source of HTML pages), so a page you published may
+have a newer version written by a person: read it before changing the page again.
 
 ## External data
 
