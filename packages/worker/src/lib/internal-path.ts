@@ -9,7 +9,8 @@ export function safeNext(next: string | undefined, origin: string): string {
   try {
     const base = new URL(origin);
     const destination = new URL(next, base);
-    if (destination.origin !== base.origin) return "/";
+    // Dot segments can leave a leading `//` (`/.//evil.example`), which a browser reads as another host.
+    if (destination.origin !== base.origin || destination.pathname.startsWith("//")) return "/";
     return `${destination.pathname}${destination.search}${destination.hash}`;
   } catch {
     return "/";
