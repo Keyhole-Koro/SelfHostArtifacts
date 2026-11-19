@@ -30,6 +30,7 @@ export interface ArtifactSummary {
   parent: string | null;
   /** Its place among the pages with the same parent, from 1. */
   position: number;
+  labels: string[];
   version: number;
   updated_at: string;
   allow_connect: string[];
@@ -168,4 +169,16 @@ export interface ActivityItem {
 
 export interface ActivityResponse {
   activity: ActivityItem[];
+}
+
+/** Changes a page's labels: `set` replaces them all; otherwise `add` and `remove`. */
+export interface LabelRequest {
+  set?: string[];
+  add?: string[];
+  remove?: string[];
+}
+
+export interface LabelResponse {
+  id: string;
+  labels: string[];
 }

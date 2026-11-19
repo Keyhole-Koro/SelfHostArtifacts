@@ -8,8 +8,9 @@ import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../
 import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
 import { EDITOR_PATH, frameSrc, markdownLinks } from "../doc.ts";
 import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComment, listComments, openThreadCounts, setResolved, threadPeople, threadsOf, type CommentRow, type Thread } from "../db/comments.ts";
+import { changeLabels, labelCounts, labeledSearch, labelsOf } from "../db/labels.ts";
 import { activityHref, listActivity, listNotifications, markRead, pageTarget, projectTarget, record, setWatch, watching, type ActivityRow } from "../db/activity.ts";
-import { MAX_TEXT_CHARS, type VersionFile } from "@artifact/shared";
+import { MAX_TEXT_CHARS, type VersionFile, labelSchema, labelsSchema, MAX_LABELS } from "@artifact/shared";
 import { z } from "zod";
 import { blobKey } from "./api.ts";
 import { randomId, sha256Hex, utf8 } from "../lib/encoding.ts";
@@ -57,7 +58,7 @@ import { finishSecret, listSecrets, secretOpen, secretStatus } from "../db/secre
 import { renderSVG } from "uqr";
 import { pageSecurity } from "../ui/security.ts";
 import { Bell, CsrfField, Page, TOKENS, Time, formatTime } from "../ui/layout.tsx";
-import { PageTree, TREE_STYLES } from "../ui/tree.tsx";
+import { LabelChips, PageTree, TREE_STYLES } from "../ui/tree.tsx";
 import { canEditProject, canSeeProject, getSpace, hiddenProjects, peopleWhoCanSee } from "../db/spaces.ts";
 import { MARK_END, MARK_START, linkedFrom, linksTo, type LinkedPage } from "../db/search.ts";
 import { INDEX_BATCH, hybridSearch, indexLater, indexPending, pendingPages, semanticOn } from "../db/semantic.ts";
@@ -103,6 +104,9 @@ function recordViewerAction(
 // --- List ---
 
 const PROJECT_STYLES = `
+.label-strip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); margin: calc(-1 * var(--space-2)) 0 var(--space-4); }
+.label-strip .muted { margin-right: var(--space-1); }
+.rows .chip { vertical-align: 1px; }
 .projects { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0 0 var(--space-4); }
 .projects a { display: inline-flex; align-items: baseline; gap: var(--space-1); padding: 4px var(--space-3); border: 1px solid var(--border); border-radius: 999px; color: var(--text); text-decoration: none; font-size: var(--text-sm); background: var(--surface); }
 .projects a:hover { background: var(--surface-2); }
@@ -120,14 +124,22 @@ pages.get("/", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
   const query = c.req.query("project");
   const selected = query === undefined ? undefined : query.trim() || null;
+  const wanted = labelSchema.safeParse(c.req.query("label") ?? "");
+  const label = wanted.success ? wanted.data : undefined;
   const hidden = await hiddenProjects(c.env.DB, viewer);
   const blocked = typeof selected === "string" && hidden.has(selected);
-  const [all, allProjects, open] = await Promise.all([blocked ? [] : listArtifacts(c.env.DB, 200, selected), listProjects(c.env.DB), openThreadCounts(c.env.DB)]);
+  const [all, allProjects, open, inUse] = await Promise.all([
+    blocked ? [] : listArtifacts(c.env.DB, 200, selected, label),
+    listProjects(c.env.DB),
+    openThreadCounts(c.env.DB),
+    labelCounts(c.env.DB, hidden, selected),
+  ]);
   const artifacts = all.filter((a) => !a.project || !hidden.has(a.project));
   const projects = allProjects.filter((p) => !p.project || !hidden.has(p.project));
   // One project is shown as the tree of its pages, with what the space says about itself.
   const [tree, space] =
-    typeof selected === "string" && !blocked ? await Promise.all([listProjectPages(c.env.DB, selected), getSpace(c.env.DB, selected)]) : [undefined, null];
+    typeof selected === "string" && !blocked && !label ? await Promise.all([listProjectPages(c.env.DB, selected), getSpace(c.env.DB, selected)]) : [undefined, null];
+  const labels = await labelsOf(c.env.DB, tree ? tree.map((r) => r.id) : artifacts.map((a) => a.id));
   const canWrite = tree !== undefined && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, selected as string));
   const [projectWatched, recent] = tree
     ? await Promise.all([watching(c.env.DB, viewer.userId, [projectTarget(selected as string)]), listActivity(c.env.DB, { project: selected as string, limit: 10 })])
@@ -145,6 +157,7 @@ pages.get("/", requireViewer(), async (c) => {
             {tree ? (space?.description ?? `${tree.length} ${tree.length === 1 ? "page" : "pages"}`) : (
               <>
                 {artifacts.length} {artifacts.length === 1 ? "page" : "pages"}
+                {label && ` labeled ${label}`}
                 {scope}, newest first
               </>
             )}
@@ -168,6 +181,21 @@ pages.get("/", requireViewer(), async (c) => {
           {projects.map((p) => (
             <a href={projectHref(p.project)} class={selected === p.project ? "current" : undefined}>
               {p.project ?? "No project"} <span>{p.count}</span>
+            </a>
+          ))}
+        </nav>
+      )}
+      {inUse.length > 0 && (
+        <nav class="label-strip" aria-label="Labels">
+          <span class="muted small">Labels</span>
+          {inUse.slice(0, 30).map((l) => (
+            <a
+              class={`chip${l.label === label ? " current" : ""}`}
+              href={l.label === label ? (selected === undefined ? "/" : projectHref(selected)) : `/?label=${encodeURIComponent(l.label)}${typeof selected === "string" ? `&project=${encodeURIComponent(selected)}` : ""}`}
+              title={l.label === label ? "Show every page again" : `Pages labeled ${l.label}`}
+            >
+              {l.label} {l.count}
+              {l.label === label && " ×"}
             </a>
           ))}
         </nav>
@@ -209,7 +237,7 @@ pages.get("/", requireViewer(), async (c) => {
             </form>
           )}
           <div class="card">
-            <PageTree rows={tree} meta id="artifacts" />
+            <PageTree rows={tree} meta id="artifacts" labels={labels} />
             <p class="empty muted small" id="no-match" hidden>
               No page matches your search.
             </p>
@@ -278,7 +306,8 @@ input.addEventListener("input", () => {
                     <span class="badge" title="Open comment threads">
                       {open.get(a.id)} {open.get(a.id) === 1 ? "comment" : "comments"}
                     </span>
-                  )}
+                  )}{" "}
+                  <LabelChips labels={labels.get(a.id)} />
                   {a.description && <div class="desc">{a.description}</div>}
                 </div>
                 <div class="side">
@@ -347,6 +376,16 @@ body.with-side .side { display: block; }
 .move { width: min(380px, calc(100vw - 24px)); }
 .move select { flex: 1; min-width: 0; font: inherit; padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
 .links { width: min(340px, calc(100vw - 24px)); }
+.chips { display: flex; gap: var(--space-1); min-width: 0; overflow: hidden; }
+.label-panel { width: min(300px, calc(100vw - 24px)); }
+.label-panel ul { list-style: none; margin: 0 0 var(--space-3); padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.label-panel li { display: flex; align-items: center; gap: 2px; }
+.label-panel a.chip { display: inline-block; padding: 0 var(--space-2); line-height: 1.6; margin: 0; }
+.label-panel h3 { margin-top: 0; }
+.label-panel li form { margin: 0; }
+.label-panel li button { border: 0; background: none; color: var(--text-2); cursor: pointer; padding: 0 2px; font: inherit; }
+.label-panel li button:hover { color: var(--danger, var(--warning)); }
+@media (max-width: 900px) { .chips { display: none; } }
 .bell { position: relative; } .bell-count { position: absolute; top: 0; right: 0; min-width: 15px; padding: 0 3px; border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; }
 .mention-list { list-style: none; margin: 0; padding: var(--space-1); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgb(0 0 0 / 0.15); min-width: 180px; }
 .mention-list li { padding: 4px var(--space-2); border-radius: var(--radius-sm); cursor: pointer; }
@@ -417,7 +456,12 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const visible = (rows: LinkedPage[]) => rows.filter((r) => !r.project || !hidden.has(r.project));
   const [from, to, comments] = await Promise.all([linkedFrom(c.env.DB, id).then(visible), linksTo(c.env.DB, id).then(visible), listComments(c.env.DB, id)]);
   const threads = threadsOf(comments);
-  const [watched, people] = await Promise.all([watching(c.env.DB, viewer.userId, [pageTarget(id)]), peopleWhoCanSee(c.env.DB, artifact.project)]);
+  const [watched, people, labelMap] = await Promise.all([
+    watching(c.env.DB, viewer.userId, [pageTarget(id)]),
+    peopleWhoCanSee(c.env.DB, artifact.project),
+    labelsOf(c.env.DB, [id]),
+  ]);
+  const labels = labelMap.get(id) ?? [];
   const openThreads = threads.filter((t) => !t.first.resolved_at);
   const full = viewer.sessionKind === "full";
   const settles = (t: Thread) => full && (viewer.role === "root" || editor || t.first.author_user === viewer.userId);
@@ -477,7 +521,15 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
             </span>
           )}
           {shareUrl && <span class="badge public">public</span>}
+          {labels.length > 0 && (
+            <span class="chips">
+              <LabelChips labels={labels} />
+            </span>
+          )}
           <span class="spacer" />
+          {(viewer.role === "root" || editor) && viewer.sessionKind === "full" && (
+            <LabelPanel id={id} labels={labels} csrf={viewer.csrf} open={c.req.query("labels") === "1"} />
+          )}
           {(viewer.role === "root" || editor) && (
             <MovePanel
               id={id}
@@ -853,6 +905,49 @@ function parentChoices(tree: TreeRow[], id: string): { id: string; label: string
   return out;
 }
 
+/** A page's labels, to add and remove. */
+function LabelPanel(props: { id: string; labels: string[]; csrf: string; open: boolean }) {
+  const { id, labels, csrf } = props;
+  return (
+    <details open={props.open}>
+      <summary class="tool" title="Labels: words that group pages across projects">
+        <span class="label">Labels</span>
+        <span class="short">#</span> ▾
+      </summary>
+      <div class="panel share label-panel">
+        <h3>Labels</h3>
+        {labels.length > 0 ? (
+          <ul>
+            {labels.map((l) => (
+              <li>
+                <a class="chip" href={`/?label=${encodeURIComponent(l)}`}>
+                  {l}
+                </a>
+                <form method="post" action={`/a/${id}/labels/remove`}>
+                  <CsrfField token={csrf} />
+                  <input type="hidden" name="label" value={l} />
+                  <button type="submit" title={`Remove ${l}`} aria-label={`Remove the label ${l}`}>
+                    ×
+                  </button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p class="muted small">No labels yet. A label groups pages across projects, like “decision” or “draft”.</p>
+        )}
+        <form method="post" action={`/a/${id}/labels`} class="link">
+          <CsrfField token={csrf} />
+          <input name="add" type="text" required maxlength={200} placeholder="decision, draft" aria-label="Labels to add, separated by commas" />
+          <button type="submit" class="primary">
+            Add
+          </button>
+        </form>
+      </div>
+    </details>
+  );
+}
+
 /** `projects`: the owner's choice of projects; an editor (without it) only moves pages within the project. */
 function MovePanel(props: { id: string; project: string | null; projects?: string[]; csrf: string; tree?: TreeRow[]; parent: string | null }) {
   const { id, project, projects, csrf, tree } = props;
@@ -1100,13 +1195,14 @@ pages.get("/search", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
   const q = (c.req.query("q") ?? "").trim().slice(0, 200);
   const hidden = await hiddenProjects(c.env.DB, viewer);
-  const hits = q ? (await hybridSearch(semanticEnv(c.env), q, 100)).filter((h) => !h.project || !hidden.has(h.project)) : [];
+  const hits = q ? (await labeledSearch(semanticEnv(c.env), q, 100)).filter((h) => !h.project || !hidden.has(h.project)) : [];
+  const labels = await labelsOf(c.env.DB, hits.map((h) => h.id));
   return c.html(
     <Page title={q ? `${q} · Search` : "Search"} viewer={viewer}>
-      <style>{raw(SEARCH_STYLES)}</style>
+      <style>{raw(SEARCH_STYLES + TREE_STYLES)}</style>
       <h1>Search</h1>
       <form class="searchbar" method="get" action="/search" role="search">
-        <input class="search" type="search" name="q" value={q} placeholder="Words in a page's title or text" aria-label="Search pages" autofocus />
+        <input class="search" type="search" name="q" value={q} placeholder="Words in a page's title or text; label:name for a label" aria-label="Search pages" autofocus />
         <button type="submit" class="primary">
           Search
         </button>
@@ -1124,7 +1220,7 @@ pages.get("/search", requireViewer(), async (c) => {
                 by meaning
               </span>
             )}{" "}
-            <span class="muted small">· <Time iso={h.updated_at} /></span>
+            <LabelChips labels={labels.get(h.id)} /> <span class="muted small">· <Time iso={h.updated_at} /></span>
             {h.snippet && <p class="snip">{raw(marked(h.snippet))}</p>}
           </li>
         ))}
@@ -1582,9 +1678,35 @@ async function editable(c: Context<AppEnv>, id: string): Promise<ArtifactRow | R
   const artifact = await getArtifact(c.env.DB, id);
   const viewer = c.get("viewer");
   if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
-  if (!(await canEditProject(c.env.DB, viewer, artifact.project))) return c.text("Only the owner and this project's editors can move its pages.", 403);
+  if (!(await canEditProject(c.env.DB, viewer, artifact.project))) return c.text("Only the owner and this project's editors can change its pages.", 403);
   return artifact;
 }
+
+/** Adds labels to a page: words separated by commas (or spaces). */
+pages.post("/a/:id/labels", ...editorForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await editable(c, id);
+  if (artifact instanceof Response) return artifact;
+  const form = await c.req.parseBody();
+  const words = (typeof form["add"] === "string" ? form["add"] : "").split(/[,\s]+/).filter(Boolean);
+  const parsed = labelsSchema.safeParse(words);
+  if (!parsed.success || parsed.data.length === 0) return c.text(`Not a label: a label is one word of letters, digits, - and _ (at most 30 characters, ${MAX_LABELS} per page).`, 400);
+  const labels = await changeLabels(c.env.DB, id, { add: parsed.data });
+  await recordViewerAction(c, "artifact.labels", "artifact", id, { labels: labels.length });
+  return c.redirect(`/a/${id}?labels=1`, 303);
+});
+
+pages.post("/a/:id/labels/remove", ...editorForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await editable(c, id);
+  if (artifact instanceof Response) return artifact;
+  const form = await c.req.parseBody();
+  const label = labelSchema.safeParse(typeof form["label"] === "string" ? form["label"] : "");
+  if (!label.success) return c.text("No such label.", 400);
+  const labels = await changeLabels(c.env.DB, id, { remove: [label.data] });
+  await recordViewerAction(c, "artifact.labels", "artifact", id, { labels: labels.length });
+  return c.redirect(`/a/${id}?labels=1`, 303);
+});
 
 /** Puts a page under another page of its project (empty: at the top). */
 pages.post("/a/:id/parent", ...editorForm, async (c) => {

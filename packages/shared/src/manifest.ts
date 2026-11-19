@@ -54,6 +54,16 @@ export const projectSchema = z
   .max(MAX_PROJECT_NAME, `project is longer than ${MAX_PROJECT_NAME} characters`)
   .regex(/^[^\u0000-\u001f\u007f/\\]+$/, "project cannot contain slashes or control characters");
 
+export const MAX_LABELS = 20;
+
+/** A label: one word (letters, digits, - and _), lower case; spaces become -. */
+export const labelSchema = z
+  .string()
+  .transform((l) => l.trim().toLowerCase().replace(/\s+/g, "-"))
+  .pipe(z.string().min(1, "a label is empty").max(30, "a label is at most 30 characters").regex(/^[\p{L}\p{N}][\p{L}\p{N}_-]*$/u, "a label is letters, digits, - and _"));
+
+export const labelsSchema = z.array(labelSchema).max(MAX_LABELS, `at most ${MAX_LABELS} labels`).transform((ls) => [...new Set(ls)]);
+
 /** An artifact's id, as in /a/<id>. */
 export const artifactIdSchema = z.string().regex(/^[0-9a-hjkmnp-tv-z]{16}$/, "an artifact id is the 16 characters after /a/ in its URL");
 
@@ -67,6 +77,8 @@ export const manifestSchema = z
     parent: artifactIdSchema.optional(),
     /** The page's text, as the CLI read it from its HTML: what search finds and what versions are compared by. */
     text: z.string().max(MAX_TEXT_CHARS).optional(),
+    /** Labels. On update, sending them replaces the page's labels; leaving them out keeps them. */
+    labels: labelsSchema.optional(),
     /** The pages it links to (their ids), so each page can show what links to it. */
     links: z.array(artifactIdSchema).max(1000).optional(),
     entry: z.string(),

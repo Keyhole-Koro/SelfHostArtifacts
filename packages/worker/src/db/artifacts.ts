@@ -1,6 +1,7 @@
 import type { ProjectCount, VersionFile } from "@artifact/shared";
 import { ensureSpace } from "./spaces.ts";
 import { indexStatements, linkStatements } from "./search.ts";
+import { setLabelsStatements } from "./labels.ts";
 
 export interface ArtifactRow {
   id: string;
@@ -48,15 +49,16 @@ export interface ArtifactWithVersion extends ArtifactRow {
  * Newest first. `project` narrows the list: a name for that project, null for pages without
  * one, undefined for all pages.
  */
-export async function listArtifacts(db: D1Database, limit: number, project?: string | null): Promise<ArtifactWithVersion[]> {
+export async function listArtifacts(db: D1Database, limit: number, project?: string | null, label?: string): Promise<ArtifactWithVersion[]> {
   const where = project === undefined ? "" : project === null ? "and a.project is null" : "and a.project = ?";
+  const labeled = label ? "and a.id in (select artifact_id from labels where label = ?)" : "";
   const { results } = await db
     .prepare(
       `select a.*, v.allow_connect from artifacts a
        join versions v on v.artifact_id = a.id and v.version = a.current_version
-       where a.deleted_at is null ${where} order by a.updated_at desc limit ?`,
+       where a.deleted_at is null ${where} ${labeled} order by a.updated_at desc limit ?`,
     )
-    .bind(...(typeof project === "string" ? [project, limit] : [limit]))
+    .bind(...(typeof project === "string" ? [project] : []), ...(label ? [label] : []), limit)
     .all<ArtifactRow & { allow_connect: string | null }>();
   return results.map((r) => ({ ...r, allow_connect: r.allow_connect ? (JSON.parse(r.allow_connect) as string[]) : [] }));
 }
@@ -134,6 +136,8 @@ export interface NewVersion {
   /** The page's text and the pages it links to, as the CLI read them; undefined from an older CLI. */
   text?: string | undefined;
   links?: string[] | undefined;
+  /** The page's labels; undefined keeps them (on create: none). */
+  labels?: string[] | undefined;
   entry: string;
   files: Record<string, VersionFile>;
   allowConnect: string[];
@@ -162,6 +166,7 @@ export async function createArtifact(db: D1Database, id: string, v: NewVersion):
     versionInsert(db, id, 1, v, now),
     ...indexStatements(db, id, { title: v.title, description: v.description ?? null, text: v.text ?? "" }),
     ...linkStatements(db, id, v.links),
+    ...(v.labels ? setLabelsStatements(db, id, v.labels) : []),
   ]);
 }
 
@@ -182,6 +187,7 @@ export async function addVersion(db: D1Database, id: string, expected: number, v
         .bind(next, v.title, v.description ?? null, v.project ?? null, now, id),
       ...indexStatements(db, id, { title: v.title, description: v.description ?? null, text: v.text }),
       ...linkStatements(db, id, v.links),
+      ...(v.labels ? setLabelsStatements(db, id, v.labels) : []),
     ]);
     return true;
   } catch (e) {

@@ -13,7 +13,7 @@ import {
   type Agent,
 } from "./commands/setup.ts";
 import { describeSecret, serveMcp } from "./mcp.ts";
-import { activity, comment, comments, formatActivity, formatComments, list, loginLink, move, projects, publish, read, reindex, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
+import { activity, comment, comments, formatActivity, formatComments, labels, list, loginLink, move, projects, publish, read, reindex, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
@@ -33,7 +33,10 @@ Pages
       --title <t> --description <d> --url <page url> --file <published=local> --allow-connect <host>
       --project <name>              A new page goes into the project named after this git repository unless given
       --parent <url>                Put the page under another page, in that page's project
-  artifact list [--limit n] [--project <name> | --none]
+      --labels <a,b>                Set the page's labels (left out: they stay)
+  artifact list [--limit n] [--project <name> | --none] [--label <label>]
+  artifact labels <url> [add|remove <label>...]
+                                    A page's labels, or add and remove some
   artifact projects                 Projects and how many pages each has
   artifact comments <url> [--all]   Open comment threads on a page (--all: settled ones too)
   artifact comment <url> <text…> [--reply-to <id>] [--resolve]
@@ -42,7 +45,7 @@ Pages
                                     What changed lately: new pages, changes, comments
   artifact reindex                  Send every page's text and links again, for search (no new versions)
   artifact search <words…> [--limit n]
-                                    Pages whose title or text has every word
+                                    Pages whose title or text has every word; label:<name> narrows to a label
   artifact move <url> <project>     Move a page, with the pages under it, to another project (--none: out of any project)
   artifact move <url> --parent <url|top> [--position n]
                                     Put a page under another page of its project, or at the top, at place n
@@ -90,6 +93,7 @@ function parse() {
       browser: { type: "string" },
       "skip-login": { type: "boolean" },
       label: { type: "string" },
+      labels: { type: "string" },
       hours: { type: "string" },
       key: { type: "string", multiple: true },
       project: { type: "string" },
@@ -236,14 +240,31 @@ async function main(): Promise<void> {
         allowConnect: o["allow-connect"],
         project: o.project,
         parent: o.parent,
+        labels: o.labels === undefined ? undefined : o.labels.split(/[,\s]+/).filter(Boolean),
       });
       out(`${r.created ? "Published" : "Updated"}: ${r.url} (version ${r.version}, private${r.project ? `, in ${r.project}` : ""})`, r);
       return;
     }
 
     case "list": {
-      const r = await list(o.limit ? Number(o.limit) : 25, o.none ? null : o.project);
-      out(r.artifacts.map((a) => `${a.url}  v${a.version}  ${a.project ? `[${a.project}] ` : ""}${a.title}`).join("\n") || "Nothing here.", r);
+      const r = await list(o.limit ? Number(o.limit) : 25, o.none ? null : o.project, o.label);
+      out(
+        r.artifacts
+          .map((a) => `${a.url}  v${a.version}  ${a.project ? `[${a.project}] ` : ""}${a.title}${a.labels?.length ? `  #${a.labels.join(" #")}` : ""}`)
+          .join("\n") || "Nothing here.",
+        r,
+      );
+      return;
+    }
+
+    case "labels": {
+      const [url, verb, ...words] = rest;
+      if (!url || (verb !== undefined && verb !== "add" && verb !== "remove") || (verb && words.length === 0)) {
+        throw new ArtifactError("Usage: artifact labels <url> [add|remove <label>...]", "bad_args");
+      }
+      const list = words.flatMap((w) => w.split(",")).filter(Boolean);
+      const r = await labels(url, verb === "add" ? { add: list } : verb === "remove" ? { remove: list } : {});
+      out(r.labels.length ? r.labels.join(" ") : "No labels.", r);
       return;
     }
 

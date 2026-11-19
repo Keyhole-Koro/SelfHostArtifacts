@@ -161,3 +161,13 @@ export function cleanupStatements(db: D1Database, now: Date): D1PreparedStatemen
     db.prepare("delete from notifications where created_at <= ?").bind(before(NOTIFICATION_DAYS)),
   ];
 }
+
+/** Pages emptied from the trash lose their activity, its notifications and their watches. */
+export function purgeActivityStatements(db: D1Database, cutoff: string): D1PreparedStatement[] {
+  const purged = "select id from artifacts where deleted_at is not null and deleted_at <= ?";
+  return [
+    db.prepare(`delete from notifications where activity_id in (select id from activity where artifact_id in (${purged}))`).bind(cutoff),
+    db.prepare(`delete from activity where artifact_id in (${purged})`).bind(cutoff),
+    db.prepare(`delete from watches where target in (select 'a:' || id from artifacts where deleted_at is not null and deleted_at <= ?)`).bind(cutoff),
+  ];
+}
