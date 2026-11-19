@@ -48,3 +48,20 @@ export function pageLinks(html: string, origin: string): string[] {
   }
   return [...out].slice(0, 1000);
 }
+
+/** The ids of the pages on `origin` that Markdown links to: [text](/a/<id>), or a URL in <…>. */
+export function markdownLinks(md: string, origin: string): string[] {
+  const host = new URL(origin).host;
+  const out = new Set<string>();
+  for (const m of md.matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)|<(https?:\/\/[^>\s]+)>/g)) {
+    let url: URL;
+    try {
+      url = new URL(m[1] ?? m[2]!, origin);
+    } catch {
+      continue;
+    }
+    const id = /^\/a\/([0-9a-z]{16})(?:\/|$)/.exec(url.pathname)?.[1];
+    if (id && url.host === host) out.add(id);
+  }
+  return [...out].slice(0, 1000);
+}

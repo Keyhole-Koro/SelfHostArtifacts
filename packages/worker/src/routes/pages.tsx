@@ -6,9 +6,17 @@ import type { RegistrationResponseJSON } from "@simplewebauthn/server";
 import { passkeyLabel, registrationOptions, takeCeremony, verifyRegistration } from "../auth/passkeys.ts";
 import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../auth/session.ts";
 import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
+import { EDITOR_PATH, frameSrc, markdownLinks } from "../doc.ts";
+import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComment, listComments, openThreadCounts, setResolved, threadsOf, type CommentRow, type Thread } from "../db/comments.ts";
+import { MAX_TEXT_CHARS, type VersionFile } from "@artifact/shared";
+import { z } from "zod";
+import { blobKey } from "./api.ts";
+import { randomId, sha256Hex, utf8 } from "../lib/encoding.ts";
 import { listRecentAuditEvents, recordAuditEvent } from "../db/audit.ts";
 import {
   ancestorsOf,
+  addVersion,
+  createArtifact,
   getArtifact,
   getVersion,
   versionText,
@@ -29,6 +37,7 @@ import {
   setShare,
   type ArtifactRow,
   type TreeRow,
+  type VersionRow,
 } from "../db/artifacts.ts";
 import { projectSchema } from "@artifact/shared";
 import { SHARE_DAYS, newShareNonce, shareActive, shareExpiry, shareKey, shareKeyValid, sharePath } from "../share.ts";
@@ -43,7 +52,6 @@ import {
   listPasskeys,
   listUsers,
 } from "../db/users.ts";
-import { randomId } from "../lib/encoding.ts";
 import { finishSecret, listSecrets, secretOpen, secretStatus } from "../db/secrets.ts";
 import { renderSVG } from "uqr";
 import { pageSecurity } from "../ui/security.ts";
@@ -53,6 +61,11 @@ import { canEditProject, canSeeProject, getSpace, hiddenProjects } from "../db/s
 import { MARK_END, MARK_START, linkedFrom, linksTo, searchPages, type LinkedPage } from "../db/search.ts";
 
 export const pages = new Hono<AppEnv>();
+
+/** A value written into an inline script: as JSON that cannot end the script element early (</script>) or a line (U+2028). */
+function jsonInScript(value: unknown): string {
+  return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
 
 const SECRET_STATUS_LABEL = {
   waiting: "Not opened",
@@ -106,12 +119,13 @@ pages.get("/", requireViewer(), async (c) => {
   const selected = query === undefined ? undefined : query.trim() || null;
   const hidden = await hiddenProjects(c.env.DB, viewer);
   const blocked = typeof selected === "string" && hidden.has(selected);
-  const [all, allProjects] = await Promise.all([blocked ? [] : listArtifacts(c.env.DB, 200, selected), listProjects(c.env.DB)]);
+  const [all, allProjects, open] = await Promise.all([blocked ? [] : listArtifacts(c.env.DB, 200, selected), listProjects(c.env.DB), openThreadCounts(c.env.DB)]);
   const artifacts = all.filter((a) => !a.project || !hidden.has(a.project));
   const projects = allProjects.filter((p) => !p.project || !hidden.has(p.project));
   // One project is shown as the tree of its pages, with what the space says about itself.
   const [tree, space] =
     typeof selected === "string" && !blocked ? await Promise.all([listProjectPages(c.env.DB, selected), getSpace(c.env.DB, selected)]) : [undefined, null];
+  const canWrite = tree !== undefined && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, selected as string));
   const total = projects.reduce((n, p) => n + p.count, 0);
   const showProjects = projects.some((p) => p.project !== null);
   const scope = selected === undefined ? "" : selected === null ? " without a project" : ` in ${selected}`;
@@ -168,6 +182,16 @@ pages.get("/", requireViewer(), async (c) => {
         </div>
       ) : tree ? (
         <>
+          {canWrite && (
+            <form method="post" action="/new" class="field-row" style="margin-bottom:var(--space-4)">
+              <CsrfField token={viewer.csrf} />
+              <input type="hidden" name="project" value={selected as string} />
+              <input name="title" type="text" required maxlength={200} placeholder="Title of a new page" aria-label="Title of a new page" />
+              <button type="submit" class="primary">
+                Write a page
+              </button>
+            </form>
+          )}
           <div class="card">
             <PageTree rows={tree} meta id="artifacts" />
             <p class="empty muted small" id="no-match" hidden>
@@ -212,6 +236,11 @@ input.addEventListener("input", () => {
                   {shareActive(a) && (
                     <span class="badge accent" title={`Anyone with the link can view it until ${formatTime(a.share_expires_at)}`}>
                       public
+                    </span>
+                  )}{" "}
+                  {(open.get(a.id) ?? 0) > 0 && (
+                    <span class="badge" title="Open comment threads">
+                      {open.get(a.id)} {open.get(a.id) === 1 ? "comment" : "comments"}
                     </span>
                   )}
                   {a.description && <div class="desc">{a.description}</div>}
@@ -282,6 +311,31 @@ body.with-side .side { display: block; }
 .move { width: min(380px, calc(100vw - 24px)); }
 .move select { flex: 1; min-width: 0; font: inherit; padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
 .links { width: min(340px, calc(100vw - 24px)); }
+.main { position: relative; }
+.count { font-size: var(--text-xs); font-weight: 600; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); text-align: center; }
+.comments { display: none; width: 340px; flex-shrink: 0; overflow: auto; border-left: 1px solid var(--border); background: var(--surface); padding: var(--space-3); }
+body.with-comments .comments { display: block; }
+.comments h2 { font-size: var(--text-sm); margin: 0 0 var(--space-3); }
+.comments textarea { width: 100%; box-sizing: border-box; min-height: 64px; font: inherit; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); resize: vertical; }
+.comments button { font: inherit; padding: 3px var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; }
+.comments button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text, #fff); }
+.comments blockquote { margin: 0 0 var(--space-2); padding: 2px var(--space-2); border-left: 3px solid #e0b000; color: var(--text-2); cursor: pointer; white-space: pre-wrap; }
+.c-new { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
+.c-new button { justify-self: end; }
+.thread { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-3); background: var(--bg); }
+.thread.flash { outline: 2px solid var(--accent); }
+.thread.settled { opacity: 0.75; }
+.c-head { color: var(--text-2); font-size: var(--text-xs); display: flex; gap: var(--space-1); align-items: baseline; flex-wrap: wrap; }
+.c-head strong { color: var(--text); }
+.c-del { margin-left: auto; } .c-del button { border: 0; background: none; color: var(--text-2); padding: 0; font-size: var(--text-xs); }
+.c-body { white-space: pre-wrap; word-break: break-word; margin: 2px 0 var(--space-2); }
+.reply { border-top: 1px solid var(--border); padding-top: var(--space-2); }
+.c-actions { display: flex; gap: var(--space-2); align-items: flex-start; flex-wrap: wrap; }
+.c-actions details { flex: 1; } .c-actions summary { cursor: pointer; color: var(--accent); }
+.c-actions details form { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+.settled-list summary { cursor: pointer; color: var(--text-2); margin-bottom: var(--space-2); }
+.sel-btn { position: absolute; right: 16px; top: 12px; z-index: 2; font: inherit; font-weight: 600; padding: 6px var(--space-3); border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); box-shadow: 0 2px 10px rgb(0 0 0 / 0.2); cursor: pointer; }
+body.with-comments .sel-btn { right: 356px; }
 .links h3 { margin: var(--space-2) var(--space-3) var(--space-1); font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
 .panel a.compare { border-top: 1px solid var(--border); border-radius: 0; margin-top: var(--space-1); color: var(--accent); }
 .move h3 { margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -299,6 +353,8 @@ body.with-side .side { display: block; }
 @media (max-width: 640px) {
   .meta, .label, .divider, .crumbs a, .crumbs .sep { display: none; }
   body.with-side .side { position: fixed; top: 44px; bottom: 0; left: 0; z-index: 3; width: min(300px, 85vw); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); }
+  body.with-comments .comments { position: fixed; top: 44px; bottom: 0; right: 0; z-index: 3; width: min(340px, 90vw); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); }
+  body.with-comments .sel-btn { right: 16px; }
   .panel.share { position: fixed; top: 50px; left: 12px; right: 12px; width: auto; }
   .short { display: inline; }
 }
@@ -318,15 +374,21 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const editor = viewer.role !== "root" && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, artifact.project));
   const hidden = await hiddenProjects(c.env.DB, viewer);
   const visible = (rows: LinkedPage[]) => rows.filter((r) => !r.project || !hidden.has(r.project));
-  const [from, to] = await Promise.all([linkedFrom(c.env.DB, id).then(visible), linksTo(c.env.DB, id).then(visible)]);
+  const [from, to, comments] = await Promise.all([linkedFrom(c.env.DB, id).then(visible), linksTo(c.env.DB, id).then(visible), listComments(c.env.DB, id)]);
+  const threads = threadsOf(comments);
+  const openThreads = threads.filter((t) => !t.first.resolved_at);
+  const full = viewer.sessionKind === "full";
+  const settles = (t: Thread) => full && (viewer.role === "root" || editor || t.first.author_user === viewer.userId);
+  const deletes = (x: CommentRow) => full && (viewer.role === "root" || x.author_user === viewer.userId);
   const projects = viewer.role === "root" ? await listProjects(c.env.DB) : [];
   const shareUrl = shareActive(artifact)
     ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
     : undefined;
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, versionNumber);
-  const src = `/c/${token}/${encodeURI(version.entry)}`;
+  const src = frameSrc(token, version.entry);
   const nonce = c.get("nonce");
   const isLatest = versionNumber === artifact.current_version;
+  const markdown = version.entry.endsWith(".md");
   return c.html(
     <html lang="en">
       <head>
@@ -387,6 +449,16 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
           {viewer.role === "root" && (
             <SharePanel id={id} artifact={artifact} shareUrl={shareUrl} csrf={viewer.csrf} open={c.req.query("share") === "1"} />
           )}
+          {markdown && isLatest && (viewer.role === "root" || editor) && viewer.sessionKind === "full" && (
+            <a href={`/a/${id}/edit`} class="tool" title="Edit this page">
+              ✎ <span class="label">Edit</span>
+            </a>
+          )}
+          <button type="button" id="comments-toggle" class="tool" aria-controls="comments" title="Comments" style="border:0;background:none;font:inherit">
+            <span class="label">Comments</span>
+            <span class="short">✉</span>
+            {openThreads.length > 0 && <span class="count">{openThreads.length}</span>}
+          </button>
           {(from.length > 0 || to.length > 0) && <LinksPanel from={from} to={to} />}
           <details>
             <summary class="tool">
@@ -424,6 +496,10 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
             </nav>
           )}
           <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
+          <button type="button" id="sel-btn" class="sel-btn" hidden>
+            Comment on the selection
+          </button>
+          <CommentsPanel id={id} threads={threads} csrf={viewer.csrf} canWrite={full} canSettle={settles} canDelete={deletes} />
         </div>
         <script nonce={nonce}>
           {raw(`
@@ -439,11 +515,39 @@ if (toggle) {
 }
 let exp = ${exp};
 const tokenUrl = ${JSON.stringify(`/a/${id}/token?v=${versionNumber}`)};
+// Comments beside the page; a passage selected in the page can be commented on, and commented ones are marked.
+const frame = document.getElementById("frame");
+const commentsOn = (on) => { document.body.classList.toggle("with-comments", on); document.getElementById("comments-toggle").setAttribute("aria-expanded", String(on)); };
+document.getElementById("comments-toggle").addEventListener("click", () => commentsOn(!document.body.classList.contains("with-comments")));
+if (new URLSearchParams(location.search).get("comments") === "1") commentsOn(true);
+const quotes = ${jsonInScript(openThreads.filter((t) => t.first.quote).map((t) => ({ id: t.first.id, text: t.first.quote })))};
+const selBtn = document.getElementById("sel-btn");
+let selected = "";
+window.addEventListener("message", (e) => {
+  if (e.source !== frame.contentWindow) return;
+  const d = e.data || {};
+  if (d.type === "artifact:ready") frame.contentWindow.postMessage({ type: "artifact:highlight", quotes }, "*");
+  if (d.type === "artifact:selection" && typeof d.text === "string") { selected = d.text.slice(0, 500); selBtn.hidden = !selected || !document.getElementById("c-body"); }
+  if (d.type === "artifact:comment" && typeof d.id === "string") {
+    commentsOn(true);
+    const t = document.getElementById("c-" + d.id.replace(/[^0-9a-z]/g, ""));
+    if (t) { t.scrollIntoView({ block: "center" }); t.classList.add("flash"); setTimeout(() => t.classList.remove("flash"), 1500); }
+  }
+});
+selBtn.addEventListener("click", () => {
+  commentsOn(true);
+  document.getElementById("c-quote").value = selected;
+  const show = document.getElementById("c-quote-show");
+  show.textContent = selected; show.hidden = false;
+  document.getElementById("c-body").focus();
+  selBtn.hidden = true;
+});
+for (const q of document.querySelectorAll("[data-focus]")) q.addEventListener("click", () => frame.contentWindow.postMessage({ type: "artifact:focus", id: q.dataset.focus }, "*"));
 // A link to another artifact, clicked inside the page (see NAV_JS in content.ts).
 window.addEventListener("message", (e) => {
   if (e.source !== document.getElementById("frame").contentWindow) return;
   const d = e.data;
-  if (d && d.type === "artifact:navigate" && typeof d.path === "string" && /^\/a\/[0-9a-z]{16}(\/v\/[0-9]+)?\/?(#[^\s<>"]*)?$/.test(d.path)) location.href = d.path;
+  if (d && d.type === "artifact:navigate" && typeof d.path === "string" && /^\\/a\\/[0-9a-z]{16}(\\/v\\/[0-9]+)?\\/?(#[^\\s<>"]*)?$/.test(d.path)) location.href = d.path;
 });
 async function refresh() {
   if (Date.now() / 1000 < exp - 120) return;
@@ -525,6 +629,84 @@ function SharePanel(props: { id: string; artifact: ArtifactRow; shareUrl: string
 }
 
 /** Moves the page to another project. Shares the share panel's look. */
+/** The comments beside a page: open threads first, then the settled ones folded. */
+function CommentsPanel(props: { id: string; threads: Thread[]; csrf: string; canWrite: boolean; canSettle: (t: Thread) => boolean; canDelete: (c: CommentRow) => boolean }) {
+  const { id, threads, csrf } = props;
+  const open = threads.filter((t) => !t.first.resolved_at), settled = threads.filter((t) => t.first.resolved_at);
+  const one = (c: CommentRow, reply: boolean) => (
+    <div class={reply ? "reply" : undefined}>
+      <div class="c-head">
+        <strong>{c.author_name}</strong>
+        {c.author_device && " (agent)"} · <Time iso={c.created_at} /> · v{c.version}
+        {props.canDelete(c) && (
+          <form method="post" action={`/a/${id}/comments/${c.id}/delete`} class="inline c-del">
+            <CsrfField token={csrf} />
+            <button type="submit" title={reply ? "Delete this reply" : "Delete this thread"}>
+              Delete
+            </button>
+          </form>
+        )}
+      </div>
+      <div class="c-body">{c.body}</div>
+    </div>
+  );
+  const thread = (t: Thread) => (
+    <article class={`thread${t.first.resolved_at ? " settled" : ""}`} id={`c-${t.first.id}`}>
+      {t.first.quote && (
+        <blockquote data-focus={t.first.id} title="Show this passage in the page">
+          {t.first.quote}
+        </blockquote>
+      )}
+      {one(t.first, false)}
+      {t.replies.map((r) => one(r, true))}
+      <div class="c-actions">
+        {props.canWrite && (
+          <details>
+            <summary>Reply</summary>
+            <form method="post" action={`/a/${id}/comments`}>
+              <CsrfField token={csrf} />
+              <input type="hidden" name="reply_to" value={t.first.id} />
+              <textarea name="body" required maxlength={4000} aria-label="Reply" />
+              <button type="submit">Reply</button>
+            </form>
+          </details>
+        )}
+        {props.canSettle(t) && (
+          <form method="post" action={`/a/${id}/comments/${t.first.id}/resolve`} class="inline">
+            <CsrfField token={csrf} />
+            <input type="hidden" name="resolved" value={t.first.resolved_at ? "0" : "1"} />
+            <button type="submit">{t.first.resolved_at ? "Reopen" : "Resolve"}</button>
+          </form>
+        )}
+      </div>
+    </article>
+  );
+  return (
+    <aside id="comments" class="comments" aria-label="Comments">
+      <h2>Comments</h2>
+      {props.canWrite && (
+        <form method="post" action={`/a/${id}/comments`} class="c-new">
+          <CsrfField token={csrf} />
+          <input type="hidden" name="quote" id="c-quote" value="" />
+          <blockquote id="c-quote-show" hidden />
+          <textarea name="body" id="c-body" required maxlength={4000} placeholder="Comment on this page, or select a passage in it first" aria-label="New comment" />
+          <button type="submit" class="primary">
+            Comment
+          </button>
+        </form>
+      )}
+      {open.length === 0 && settled.length === 0 && <p class="muted">No comments yet.</p>}
+      {open.map(thread)}
+      {settled.length > 0 && (
+        <details class="settled-list">
+          <summary>Resolved ({settled.length})</summary>
+          {settled.map(thread)}
+        </details>
+      )}
+    </aside>
+  );
+}
+
 /** The pages that link to this one and the pages it links to (only those the viewer may see). */
 function LinksPanel(props: { from: LinkedPage[]; to: LinkedPage[] }) {
   const list = (rows: LinkedPage[]) => rows.map((r) => <a href={`/a/${r.id}`}>{r.title}{r.project && <span>{r.project}</span>}</a>);
@@ -611,6 +793,13 @@ function MovePanel(props: { id: string; project: string | null; projects?: strin
                 ))}
               </div>
             )}
+            <h3>New page under this one</h3>
+            <form method="post" action="/new" class="link">
+              <CsrfField token={csrf} />
+              <input type="hidden" name="parent" value={id} />
+              <input name="title" type="text" required maxlength={200} placeholder="Title" aria-label="Title of the new page" />
+              <button type="submit">Write</button>
+            </form>
             {projects && <h3>Project</h3>}
           </>
         )}
@@ -662,7 +851,7 @@ pages.get("/a/:id/token", requireViewer(), async (c) => {
   const version = await getVersion(c.env.DB, id, Number(c.req.query("v") ?? artifact.current_version));
   if (!version) return c.json({ error: "not found" }, 404);
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version);
-  return c.json({ src: `/c/${token}/${encodeURI(version.entry)}`, exp });
+  return c.json({ src: frameSrc(token, version.entry), exp });
 });
 
 /** A version's text as recorded when it was published, for comparing versions. */
@@ -835,6 +1024,261 @@ pages.get("/search", requireViewer(), async (c) => {
 });
 
 
+// --- Pages written in the browser (Markdown) ---
+
+const MAX_MARKDOWN_BYTES = 1_000_000;
+
+/** The device that browser edits are recorded under: one per person, revoked, so it can never sign a request. */
+async function browserDevice(c: Context<AppEnv>): Promise<string> {
+  const viewer = c.get("viewer");
+  const id = `web-${viewer.userId}`;
+  const now = new Date().toISOString();
+  await c.env.DB.prepare("insert or ignore into devices (id, name, public_key, created_at, revoked_at, user_id) values (?, ?, '', ?, ?, ?)")
+    .bind(id, `${viewer.name} (browser)`, now, now, viewer.userId)
+    .run();
+  return id;
+}
+
+/** Stores a Markdown text as a blob, unless it is there already; returns its file entry. */
+async function storeMarkdown(c: Context<AppEnv>, markdown: string): Promise<VersionFile> {
+  const bytes = utf8(markdown);
+  const sha256 = await sha256Hex(bytes);
+  if (!(await c.env.BLOBS.head(blobKey(sha256)))) await c.env.BLOBS.put(blobKey(sha256), bytes, { sha256 });
+  return { sha256, size: bytes.length, type: "text/markdown; charset=utf-8" };
+}
+
+const titleSchema = z.string().trim().min(1, "A page needs a title.").max(200, "A title is at most 200 characters.");
+
+/** A new Markdown page, in a project (the owner, or its editors) and optionally under a page of it. */
+pages.post("/new", requireViewer("viewer", true), requireSameOriginForm(), async (c) => {
+  const viewer = c.get("viewer");
+  const form = await c.req.parseBody();
+  const title = titleSchema.safeParse(typeof form["title"] === "string" ? form["title"] : "");
+  if (!title.success) return c.text(title.error.issues[0]!.message, 400);
+  const parentId = typeof form["parent"] === "string" && form["parent"] ? form["parent"] : undefined;
+  const parent = parentId ? await getArtifact(c.env.DB, parentId) : undefined;
+  if (parentId && !parent) return c.text("The page to put it under no longer exists.", 400);
+  const project = parent ? parent.project : typeof form["project"] === "string" && form["project"] ? form["project"] : null;
+  if (project !== null && !projectSchema.safeParse(project).success) return c.text("That is not a project name.", 400);
+  if (!(await canSeeProject(c.env.DB, viewer, project)) || !(await canEditProject(c.env.DB, viewer, project))) {
+    return c.text("Only the owner and this project's editors can add pages to it.", 403);
+  }
+  const markdown = `# ${title.data}\n\n`;
+  const id = randomId();
+  await createArtifact(c.env.DB, id, {
+    title: title.data,
+    description: undefined,
+    project: project ?? undefined,
+    parent: parent?.id,
+    entry: "index.md",
+    files: { "index.md": await storeMarkdown(c, markdown) },
+    allowConnect: [],
+    deviceId: await browserDevice(c),
+    text: markdown,
+    links: [],
+  });
+  await recordViewerAction(c, "artifact.create", "artifact", id, { version: 1, browser: true });
+  return c.redirect(`/a/${id}/edit`, 303);
+});
+
+const EDIT_STYLES = `
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 400 var(--text-sm)/1.4 var(--font-sans); }
+.bar { flex-shrink: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+.bar input[name=title] { flex: 1; min-width: 180px; font: 600 var(--text-md) var(--font-sans); padding: 6px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.bar select, .bar button, .bar a.btn { font: inherit; padding: 6px var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); text-decoration: none; cursor: pointer; }
+.bar button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text, #fff); }
+.status { color: var(--text-2); min-width: 0; }
+.status.error { color: var(--negative, #c0362c); }
+iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+@media (prefers-color-scheme: dark) { iframe { background: #1c1c1b; } }
+`;
+
+/** Who may write a page in the browser: it is Markdown, and the viewer is the owner or an editor of its project. */
+async function writable(c: Context<AppEnv>, id: string): Promise<{ artifact: ArtifactRow; version: VersionRow } | Response> {
+  const artifact = await editable(c, id);
+  if (artifact instanceof Response) return artifact;
+  const version = await getVersion(c.env.DB, id, artifact.current_version);
+  if (!version) return c.notFound();
+  if (!version.entry.endsWith(".md")) {
+    return c.text("This page is HTML that an agent wrote. Ask the agent to change it, or leave a comment on it.", 400);
+  }
+  return { artifact, version };
+}
+
+pages.get("/a/:id/edit", requireViewer("viewer", true), async (c) => {
+  const id = c.req.param("id");
+  const found = await writable(c, id);
+  if (found instanceof Response) return found;
+  const { artifact, version } = found;
+  const viewer = c.get("viewer");
+  const tree = artifact.project ? await listProjectPages(c.env.DB, artifact.project) : [];
+  const { token } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version);
+  const nonce = c.get("nonce");
+  return c.html(
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{`Editing ${artifact.title}`}</title>
+        <style>{raw(TOKENS + EDIT_STYLES)}</style>
+      </head>
+      <body>
+        <div class="bar">
+          <input name="title" id="title" value={artifact.title} maxlength={200} aria-label="Title" />
+          {tree.length > 1 && (
+            <select id="link" aria-label="Insert a link to a page">
+              <option value="">Link to a page…</option>
+              {tree
+                .filter((r) => r.id !== id)
+                .map((r) => (
+                  <option value={r.id}>{r.title}</option>
+                ))}
+            </select>
+          )}
+          <span class="status" id="status" aria-live="polite">
+            Editing v{version.version}
+          </span>
+          <a class="btn" href={`/a/${id}`}>
+            Cancel
+          </a>
+          <button type="button" id="save" class="primary">
+            Save
+          </button>
+        </div>
+        <iframe id="editor" src={`/c/${token}/${EDITOR_PATH}`} sandbox={SANDBOX_FLAGS} title="Editor" />
+        <script nonce={nonce}>
+          {raw(`
+const frame = document.getElementById("editor"), status = document.getElementById("status");
+const titles = ${jsonInScript(Object.fromEntries(tree.map((r) => [r.id, r.title])))};
+let base = ${version.version}, waiting = null;
+window.addEventListener("message", (e) => {
+  if (e.source !== frame.contentWindow) return;
+  const d = e.data || {};
+  if (d.type === "artifact:markdown" && waiting && typeof d.markdown === "string") { waiting(d.markdown); waiting = null; }
+});
+const markdown = () => new Promise((ok, fail) => {
+  waiting = ok;
+  frame.contentWindow.postMessage({ type: "artifact:get" }, "*");
+  setTimeout(() => { if (waiting) { waiting = null; fail(new Error("The editor did not answer.")); } }, 5000);
+});
+const link = document.getElementById("link");
+if (link) link.addEventListener("change", () => {
+  if (!link.value) return;
+  frame.contentWindow.postMessage({ type: "artifact:insert", text: "[" + titles[link.value].replace(/[\\[\\]]/g, "") + "](/a/" + link.value + ")" }, "*");
+  link.value = "";
+});
+document.getElementById("save").addEventListener("click", async () => {
+  status.className = "status"; status.textContent = "Saving…";
+  try {
+    const body = JSON.stringify({ base_version: base, title: document.getElementById("title").value, markdown: await markdown() });
+    const res = await fetch(location.pathname, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-csrf": ${JSON.stringify(viewer.csrf)} }, body });
+    const out = await res.json().catch(() => ({}));
+    if (res.ok) { location.href = ${JSON.stringify(`/a/${id}`)}; return; }
+    status.className = "status error";
+    status.textContent = res.status === 409
+      ? "Version " + out.current_version + " was saved meanwhile. Copy your text, reload, and add your change to it."
+      : (out.error || "Saving failed.");
+  } catch (e) { status.className = "status error"; status.textContent = e.message; }
+});`)}
+        </script>
+      </body>
+    </html>,
+  );
+});
+
+const saveSchema = z.object({ base_version: z.number().int().positive(), title: titleSchema, markdown: z.string() });
+
+/** Saves a page written in the browser as a new version. */
+pages.post("/a/:id/edit", requireViewer("viewer", true), requireSameOriginJson(), async (c) => {
+  const id = c.req.param("id");
+  const found = await writable(c, id);
+  if (found instanceof Response) return found instanceof Response && found.status < 500 ? c.json({ error: await found.text() }, found.status as 400) : found;
+  const { artifact, version } = found;
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "The request is not JSON." }, 400);
+  }
+  const parsed = saveSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: parsed.error.issues[0]!.message }, 400);
+  const { base_version, title, markdown } = parsed.data;
+  if (new TextEncoder().encode(markdown).length > MAX_MARKDOWN_BYTES) return c.json({ error: "A page is at most 1 MB of text." }, 413);
+  if (base_version !== artifact.current_version) return c.json({ error: "version_conflict", current_version: artifact.current_version }, 409);
+  const added = await addVersion(c.env.DB, id, base_version, {
+    title,
+    description: artifact.description ?? undefined,
+    entry: version.entry,
+    files: { ...version.files, [version.entry]: await storeMarkdown(c, markdown) },
+    allowConnect: version.allow_connect,
+    deviceId: await browserDevice(c),
+    text: markdown.slice(0, MAX_TEXT_CHARS),
+    links: markdownLinks(markdown, c.get("config").origin),
+  });
+  if (!added) return c.json({ error: "version_conflict", current_version: (await getArtifact(c.env.DB, id))?.current_version ?? base_version + 1 }, 409);
+  await recordViewerAction(c, "artifact.update", "artifact", id, { version: base_version + 1, browser: true });
+  return c.json({ version: base_version + 1 });
+});
+
+
+// --- Comments ---
+
+const commentForm = [requireViewer("viewer", true), requireSameOriginForm()] as const;
+
+/** A comment on a page, or a reply in one of its threads; a passage quoted from the page starts a thread on it. */
+pages.post("/a/:id/comments", ...commentForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await getArtifact(c.env.DB, id);
+  const viewer = c.get("viewer");
+  if (!artifact || !(await canSeeProject(c.env.DB, viewer, artifact.project))) return c.notFound();
+  const form = await c.req.parseBody();
+  const body = typeof form["body"] === "string" ? form["body"].trim() : "";
+  if (!body || body.length > MAX_COMMENT_CHARS) return c.text(`A comment is 1 to ${MAX_COMMENT_CHARS} characters.`, 400);
+  const replyTo = typeof form["reply_to"] === "string" && form["reply_to"] ? form["reply_to"] : null;
+  if (replyTo) {
+    const first = await getComment(c.env.DB, replyTo);
+    if (!first || first.artifact_id !== id || first.reply_to) return c.text("That thread is not on this page.", 400);
+  }
+  const quote = !replyTo && typeof form["quote"] === "string" && form["quote"].trim() ? form["quote"].replace(/\s+/g, " ").trim().slice(0, MAX_QUOTE_CHARS) : null;
+  const cid = await addComment(c.env.DB, {
+    artifact_id: id, version: artifact.current_version, reply_to: replyTo,
+    author_user: viewer.userId, author_device: null, author_name: viewer.name, body, quote,
+  });
+  await recordViewerAction(c, "comment.create", "artifact", id, { comment: cid, reply: !!replyTo });
+  return c.redirect(`/a/${id}?comments=1#c-${replyTo ?? cid}`, 303);
+});
+
+/** The owner, the project's editors, and whoever started a thread may settle it. */
+async function mayManage(c: Context<AppEnv>, artifact: ArtifactRow, comment: CommentRow, action: "settle" | "delete"): Promise<boolean> {
+  const viewer = c.get("viewer");
+  if (viewer.role === "root" || comment.author_user === viewer.userId) return true;
+  return action === "settle" && (await canEditProject(c.env.DB, viewer, artifact.project));
+}
+
+pages.post("/a/:id/comments/:cid/resolve", ...commentForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await getArtifact(c.env.DB, id);
+  const comment = await getComment(c.env.DB, c.req.param("cid"));
+  if (!artifact || !comment || comment.artifact_id !== id || comment.reply_to || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.notFound();
+  if (!(await mayManage(c, artifact, comment, "settle"))) return c.text("Only the owner, the project's editors and the thread's author can settle it.", 403);
+  const form = await c.req.parseBody();
+  await setResolved(c.env.DB, comment.id, form["resolved"] !== "0");
+  return c.redirect(`/a/${id}?comments=1#c-${comment.id}`, 303);
+});
+
+pages.post("/a/:id/comments/:cid/delete", ...commentForm, async (c) => {
+  const id = c.req.param("id");
+  const artifact = await getArtifact(c.env.DB, id);
+  const comment = await getComment(c.env.DB, c.req.param("cid"));
+  if (!artifact || !comment || comment.artifact_id !== id || !(await canSeeProject(c.env.DB, c.get("viewer"), artifact.project))) return c.notFound();
+  if (!(await mayManage(c, artifact, comment, "delete"))) return c.text("Only the owner and the comment's author can delete it.", 403);
+  await deleteComment(c.env.DB, comment.id);
+  await recordViewerAction(c, "comment.delete", "artifact", id, { comment: comment.id });
+  return c.redirect(`/a/${id}?comments=1`, 303);
+});
+
+
 // --- Public links (owner turns them on; anyone with the link views) ---
 
 async function shareAction(c: Context<AppEnv>, mode: "open" | "reset" | "off") {
@@ -930,7 +1374,7 @@ pages.get("/s/:id/:key", async (c) => {
   const version = await getVersion(c.env.DB, artifact.id, artifact.current_version);
   if (!version) return c.text(LINK_GONE, 404);
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, artifact.id, version.version, artifact.share_nonce);
-  const src = `/c/${token}/${encodeURI(version.entry)}`;
+  const src = frameSrc(token, version.entry);
   return c.html(
     <html lang="en">
       <head>
@@ -981,7 +1425,7 @@ pages.get("/s/:id/:key/token", async (c) => {
   const version = await getVersion(c.env.DB, artifact.id, artifact.current_version);
   if (!version) return c.json({ error: LINK_GONE }, 404);
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, artifact.id, version.version, artifact.share_nonce);
-  return c.json({ src: `/c/${token}/${encodeURI(version.entry)}`, exp });
+  return c.json({ src: frameSrc(token, version.entry), exp });
 });
 
 // --- Account (everyone): your passkeys ---

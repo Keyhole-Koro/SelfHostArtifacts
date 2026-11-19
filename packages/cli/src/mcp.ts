@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
-import { list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
+import { comment, comments, formatComments, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
 import { VERSION } from "./version.ts";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -104,6 +104,47 @@ export function createServer(): McpServer {
               `${a.title} — ${a.url} (v${a.version}, updated ${a.updated_at}${a.project ? `, ${a.project}` : ""})${a.description ? `\n  ${a.description}` : ""}`,
           )
           .join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "comments",
+    {
+      title: "Read a page's comments",
+      description:
+        "The comment threads on a page: what people asked or noted, each on the whole page or on a quoted passage. " +
+        "Settled threads are left out unless all is true. Reply with the comment tool, after changing the page if they asked for a change.",
+      inputSchema: {
+        url: z.string().describe("The page URL"),
+        all: z.boolean().optional().describe("Include settled (resolved) threads"),
+      },
+    },
+    ({ url, all }) =>
+      run(async () => {
+        const r = await comments(url);
+        return formatComments(r.comments, !!all) || "No open comments.";
+      }),
+  );
+
+  server.registerTool(
+    "comment",
+    {
+      title: "Comment on a page",
+      description:
+        "Comment on a page, or reply in a thread (reply_to: the id in brackets that the comments tool shows). With resolve, the thread is " +
+        "settled after the reply: use it when you did what the thread asked.",
+      inputSchema: {
+        url: z.string().describe("The page URL"),
+        body: z.string().describe("The comment"),
+        reply_to: z.string().optional().describe("The thread to reply in"),
+        quote: z.string().optional().describe("For a new thread: the passage of the page it is about, as it appears there"),
+        resolve: z.boolean().optional().describe("With reply_to: settle the thread"),
+      },
+    },
+    ({ url, body, reply_to, quote, resolve }) =>
+      run(async () => {
+        const r = await comment(url, { body, ...(reply_to ? { reply_to } : {}), ...(quote ? { quote } : {}), ...(resolve ? { resolve } : {}) });
+        return `Commented: ${r.url}`;
       }),
   );
 

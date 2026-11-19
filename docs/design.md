@@ -192,6 +192,8 @@ Codex と Gemini を同じ端末で使うなら、鍵は1つで共有する。�
 | `GET` | `/api/v1/artifacts` | 一覧（更新日時の新しい順）。`?project=<名前>` でそのプロジェクトだけ、`?project=` で属さないものだけ |
 | `PATCH` | `/api/v1/artifacts/:id` | 版を作らずに動かす。`{project}` で別のプロジェクトへ（下のページごと。`null` で外す）、`{parent}` で同じプロジェクトの別のページの下へ（`null` で一番上）、`{position}` で兄弟の中の何番目か（1 から） |
 | `GET` | `/api/v1/projects` | プロジェクトとページ数（属さないものは `null`） |
+| `GET` | `/api/v1/artifacts/:id/comments` | ページのコメント。スレッドの最初のコメントの後に、その返信が続く |
+| `POST` | `/api/v1/artifacts/:id/comments` | `{body, reply_to?, quote?, resolve?}` でコメントか返信（端末の名前で）。`resolve` は返信したスレッドを解決にする |
 | `GET` | `/api/v1/search?q=` | タイトル・説明・本文に、言葉を全部含むページ（スペース区切り）。抜粋では見つかった所を `[[` と `]]` で囲む |
 | `GET` | `/api/v1/artifacts/:id` | メタデータと版の一覧 |
 | `GET` | `/api/v1/artifacts/:id/files/*path` | ファイルを読む（`?version=` で過去の版） |
@@ -227,7 +229,7 @@ Workers の無料プランは1回の処理あたり CPU 10ms まで。数 MB の
 
 - 1ファイル 25MB、1版 100MB、1版 500ファイルまで（画面キャプチャの一覧のような、画像の多いページが収まるように。files の JSON は500件でも D1 の1行に十分収まる）
 - 拡張子から決めた Content-Type だけを許可（html, css, js, json, svg, png, jpg, webp, gif, woff2, mp4, pdf, txt, md, csv）
-- 入口（`entry`）は `.html` だけ。Markdown のページは受け付けず、skill で「HTML にして公開する」と教える（`.md` は付属ファイルとしては置ける）
+- 入口（`entry`）は `.html` か `.md`。`.md` は人がブラウザで書くページ（「ブラウザで書くページ」の節）。エージェントは新しいページを HTML で作り、`.md` はそのページを直すときだけ使う
 
 ## データ
 
@@ -283,6 +285,20 @@ create table links (            -- 0009。今の版が指すページ
 );
 -- 0009。今の版のタイトル・説明・本文の全文検索
 -- create virtual table page_text using fts5(id unindexed, title, description, body, tokenize = 'trigram');
+
+create table comments (         -- 0010。ページのコメント。reply_to が null ならスレッドの最初
+  id text primary key,
+  artifact_id text not null,
+  version integer not null,     -- 書いたときの版
+  reply_to text,
+  author_user text,             -- 人なら users.id
+  author_device text,           -- エージェントなら devices.id
+  author_name text not null,
+  body text not null,
+  quote text,                   -- 本文の一部へのコメントなら、その文字
+  resolved_at text,
+  created_at text not null
+);
 
 create table devices (
   id text primary key,
@@ -565,6 +581,8 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 | `read` | `url`, `path?` | 公開中の中身を読む |
 | `list` | `limit?`, `project?` | 一覧。`project` でそのプロジェクトだけ |
 | `move` | `url`, `project?`, `parent?`, `position?` | 版を作らずに動かす。別のプロジェクトへ（下のページごと）、別のページの下へ、兄弟の中の順番へ |
+| `comments` | `url`, `all?` | ページのコメントのスレッド（解決したものは `all` のときだけ） |
+| `comment` | `url`, `body`, `reply_to?`, `quote?`, `resolve?` | コメントするか、スレッドに返信する。頼まれたことをしたら `resolve` で解決にする |
 | `search` | `query`, `limit?` | タイトル・説明・本文の全文検索。書く前に、既にあるページを探してリンクするため |
 | `delete` | `url` | ゴミ箱へ移す。ツール説明に「ユーザーが頼んだときだけ」と書く |
 | `secret_share` | `label`, `file_path`, `keys?`, `expires_in_hours?` | ファイルの値を手元で暗号化して置き、`#` の後ろに鍵の入ったリンクを返す。最初に開いたブラウザだけが読める |
@@ -715,6 +733,31 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
   - 公開リンクの iframe と、新しいタブで直接開いたページには足さない・働かない（そのときはふつうのリンクとして動く）。`target="_blank"` のリンクは今までどおり新しいタブで開く
 - 版の比較（`/a/:id/diff?from=&to=`）: ブラウザが 2 つの版の本文（`/a/:id/text?v=`）を取り、行ごとに比べる（最長共通部分列）。変わった行の前後 2 行だけ見せ、残りは畳む。本文の無い版（0009 より前、古い CLI）はそう伝える
 
+### ブラウザで書くページ
+
+2026-11-19 に足した。スペースの 3 段目。エージェントの HTML のページとは別に、人がブラウザで書くページ。
+
+- 中身は Markdown（入口は `index.md`）。持ち主と、プロジェクトの editor が書ける。プロジェクトの画面の「Write a page」、ページの「Move → New page under this one」で作り（`POST /new`）、ページの「Edit」（`/a/:id/edit`）で直す
+- 表示も編集も、ほかのページと同じ sandbox の中で動く。`/c/:token/!artifact/` の下に、Worker が持っている表示用の HTML（`doc.html`）と編集器（`editor.html`）を出す。`!` は公開できるファイル名に使えないので、ページのファイルとは重ならない
+  - 表示は marked と DOMPurify（jsDelivr。版を固定し、integrity を付ける）で描く。読み込めなかったときは、Markdown をそのまま見せる
+  - 編集器は Toast UI Editor 3.2.3（jsDelivr の `+esm`。ProseMirror も同じ CDN から読む）。Markdown と、見たまま編集（WYSIWYG）を切り替えられる。CDN が使えないときは、Markdown を直接書く欄になる
+  - 管理画面（外枠）の側は外部のスクリプトを何も読まない。編集器は `postMessage` で Markdown を外枠に渡し、外枠が CSRF のヘッダー（`x-csrf`）を付けて `POST /a/:id/edit` に送る
+- 保存は新しい版になる。`base_version` が今の版と違えば 409 で、今の版の番号を返す（上書きしない）。本文（Markdown）は検索と版の比較に、`[文字](/a/<id>)` はリンクに入る。1 MB まで
+- 版の `created_by` は端末を指すので、ブラウザでの編集は人ごとの「ブラウザ用の端末」（`web-<user id>`、公開鍵なし、最初から失効）で記録する。署名には使えず、Settings の端末の一覧にも出ない
+- エージェントも、`.md` のファイルを `publish`（`url` 付き）すれば、そのページを直せる。CLI は `.md` のとき、本文に Markdown を、リンクに Markdown のリンクを送る
+
+### コメント
+
+2026-11-19 に足した。スペースの 3 段目。
+
+- ページ全体へのコメントと、本文の一部（選んだ文字）へのコメント。どちらもスレッドになり、返信できる。スレッドは解決（Resolve）にでき、戻せる
+- ページの画面の「Comments」で右にパネルを開く。本文の文字を選ぶと「Comment on the selection」が出る。選んだ文字は、ページの中の `nav.js` が外枠に知らせる。コメントの付いた箇所は、外枠が `nav.js` に頼んで黄色く印を付け、押すとそのスレッドへ移る
+- 書けるのは、そのページを見られる人（パスキーのセッション）。解決にできるのは、持ち主、プロジェクトの editor、スレッドを始めた人。消せるのは持ち主と書いた人（スレッドの最初を消すと、スレッドごと消える）
+- 一覧には、ページごとに開いているスレッドの数を出す
+- エージェントは `comments` で読み、`comment` で返信して、頼まれたことをしたら `resolve` で解決にする。名前は端末の名前で、「(agent)」と付く
+- D1: `comments`（id、artifact_id、version、reply_to、author_user か author_device、author_name、body、quote、resolved_at、created_at）。ページを本当に消すときに一緒に消す
+- コメントの本文と引用は文字として扱い、外枠では全部エスケープする。引用をスクリプトに渡すときは、`</script>` で閉じられないように `<` などを逃がす
+
 ### 公開リンク（`/s/:id/:key`）
 
 ログインしていない人にも見せたいとき（応募書類に載せる URL など）のための、リンクを知っている人なら誰でも開ける URL。2026-11-02 に追加。
@@ -797,7 +840,7 @@ npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）�
 4. **スペース（Confluence のように）**: 2026-11-19 に持ち主と決めた計画。段階ごとに本番に出す
    1. プロジェクトの木と見せる相手（済み。「スペース」の節）
    2. ページどうしのリンクと被リンク、本文の全文検索、版どうしの差分（済み。「検索・リンク・版の比較」の節）
-   3. ブラウザで書くページ（Markdown を元にし、見たまま編集もできる）と、ページ全体・本文の一部へのコメント。エージェントは MCP でコメントを読んで返す
+   3. ブラウザで書くページ（Markdown を元にし、見たまま編集もできる）と、ページ全体・本文の一部へのコメント（済み。「ブラウザで書くページ」と「コメント」の節）
 5. **v4（ページの機能）**: ページから使える共有 DB とページごとの保存領域（外枠が `postMessage` で受けて、Artifact ごとの Durable Object に読み書きする。sandbox のページは localStorage が使えないので、その代わり）、コメント
 
 ## 決定事項
@@ -809,5 +852,5 @@ npm に公開するのは `packages/cli` だけ（`@keyhole-koro/artifacts`）�
 - 配布: npm。`artifact setup` が各エージェントの公式コマンドで MCP を登録し、skills を配る
 - 言語: UI・README・skills は英語
 - 外部通信: 既定で禁止、`allow_connect` でページごとに許可
-- 入口は HTML だけ（Markdown は受け付けない）
+- 入口は HTML か Markdown（`.md`）。Markdown のページは、人がブラウザで書くページ（2026-11-19 に、HTML だけという決定を変えた。エージェントは今までどおり HTML のページを作る）
 - 削除は論理削除で30日後に本当に消す。版は既定で全部残す

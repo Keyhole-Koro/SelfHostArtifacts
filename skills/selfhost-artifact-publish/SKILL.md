@@ -37,6 +37,9 @@ CLI: `artifact publish <file.html|folder> [--title …] [--description …]`
 - Before writing a page about something, `search` for pages that cover it already and link to
   them with their URLs (`https://<host>/a/<id>`) instead of repeating them. Links between pages
   show up on both pages, and clicking one opens the other in the viewer.
+- People comment on pages. When asked to act on them, read the threads with `comments`, change
+  the page, then answer each thread with `comment` (`reply_to` its id) and `resolve: true` when
+  you did what it asked. Do not resolve a thread you only replied to with a question.
 - Give the user the URL from the result. Do not paste the page's content back into the chat.
 
 ## Update

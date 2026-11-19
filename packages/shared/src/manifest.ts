@@ -84,8 +84,9 @@ export const manifestSchema = z
       const reason = invalidPathReason(p);
       if (reason) ctx.addIssue({ code: "custom", message: `${p}: ${reason}`, path: ["files", p] });
     }
-    if (extensionOf(m.entry) !== "html") {
-      ctx.addIssue({ code: "custom", message: "entry must be an .html file", path: ["entry"] });
+    // An .md entry is a page written in Markdown (in the browser, or by an agent updating one).
+    if (extensionOf(m.entry) !== "html" && extensionOf(m.entry) !== "md") {
+      ctx.addIssue({ code: "custom", message: "entry must be an .html (or .md) file", path: ["entry"] });
     } else if (!(m.entry in m.files)) {
       ctx.addIssue({ code: "custom", message: `entry ${m.entry} is not in files`, path: ["entry"] });
     }

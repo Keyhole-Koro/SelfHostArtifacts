@@ -98,6 +98,12 @@ an agent. The CLI reads a page's text and links when it publishes, so a page sho
 link to it (**Links**), a link to another page opens it in the viewer, and **Versions → Compare
 versions** shows what changed in the text.
 
+People write pages too: **Write a page** in a project (or **Move → New page under this one**)
+opens an editor in the browser, in Markdown or as you see it. Anyone who can see a page can
+**comment** on it, on the whole page or on a passage they select; threads take replies and can be
+resolved. Agents read them with `comments` and answer with `comment`, so "fix what the comments
+say" works.
+
 To show a page to someone without an account, open it and choose **Share → Create public link**:
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
 it, replace it with a new link or turn it off; agents cannot make pages public.
@@ -168,6 +174,8 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `list` | Recent pages, optionally of one project |
 | `move` | Move a page to another project, under another page, or to another place among its siblings |
 | `search` | Find pages by words in their title, description or text |
+| `comments` | Read a page's comment threads |
+| `comment` | Comment on a page, or reply in a thread and resolve it |
 | `delete` | Move a page to the trash (restorable in Settings for 30 days) |
 | `secret_share` | Encrypt values from a local file and make a link that only the first browser to open it can read |
 | `secret_request` | Make a link for handing a secret to someone |
@@ -183,6 +191,8 @@ artifact publish ./site --allow-connect api.example.com
 artifact list [--project MediShare]       # pages are grouped by project
 artifact projects                         # projects and how many pages each has
 artifact search 要求の列 ring                # pages with every word, Japanese included
+artifact comments https://artifacts.example.com/a/<id>   # open comment threads
+artifact comment https://artifacts.example.com/a/<id> "Done" --reply-to <thread> --resolve
 artifact move https://artifacts.example.com/a/<id> MediShare
 artifact publish ./setup.html --parent https://artifacts.example.com/a/<id>   # a page under another
 artifact move https://artifacts.example.com/a/<id> --parent top --position 1

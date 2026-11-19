@@ -15,6 +15,7 @@ import {
   type ListResponse,
   type ProjectListResponse,
   type SearchResponse,
+  type CommentListResponse,
   type Manifest,
   type PairPollResponse,
   type PairStartResponse,
@@ -54,6 +55,7 @@ import { createSecret, finishSecret, getSecret, listSecrets, sealSecret, secretS
 import { safeNext } from "../lib/internal-path.ts";
 import { recordAuditEvent } from "../db/audit.ts";
 import { MARK_END, MARK_START, linkedFrom, linksTo, searchPages } from "../db/search.ts";
+import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, getComment, listComments, setResolved } from "../db/comments.ts";
 
 export const blobKey = (sha256: string) => `blobs/${sha256}`;
 
@@ -330,6 +332,52 @@ signed.get("/search", async (c) => {
       snippet: h.snippet.replaceAll(MARK_START, "[[").replaceAll(MARK_END, "]]"),
     })),
   });
+});
+
+/** A page's comments, oldest first: each thread's first comment, then its replies after it. */
+signed.get("/artifacts/:id/comments", async (c) => {
+  const artifact = await getArtifact(c.env.DB, c.req.param("id"));
+  if (!artifact) return apiError(c, 404, "not_found", "No artifact has this id (or it is in the trash).");
+  const rows = await listComments(c.env.DB, artifact.id);
+  return c.json<CommentListResponse>({
+    comments: rows.map((r) => ({
+      id: r.id, reply_to: r.reply_to, author: r.author_name, by_agent: r.author_device !== null, body: r.body,
+      quote: r.quote, version: r.version, resolved: r.resolved_at !== null, created_at: r.created_at,
+    })),
+  });
+});
+
+const commentSchema = z.object({
+  body: z.string().trim().min(1).max(MAX_COMMENT_CHARS),
+  reply_to: z.string().optional(),
+  quote: z.string().trim().max(MAX_QUOTE_CHARS).optional(),
+  resolve: z.boolean().optional(),
+});
+
+/** An agent comments on a page, or replies in a thread (and may settle it, after doing what it asked). */
+signed.post("/artifacts/:id/comments", async (c) => {
+  const artifact = await getArtifact(c.env.DB, c.req.param("id"));
+  if (!artifact) return apiError(c, 404, "not_found", "No artifact has this id (or it is in the trash).");
+  const parsed = await readJson(c, commentSchema);
+  if (!parsed.ok) return parsed.res;
+  const req = parsed.value;
+  if (req.reply_to) {
+    const first = await getComment(c.env.DB, req.reply_to);
+    if (!first || first.artifact_id !== artifact.id || first.reply_to) return apiError(c, 400, "bad_thread", "reply_to is not a thread on this page (use the id of a thread's first comment).");
+  } else if (req.resolve) {
+    return apiError(c, 400, "bad_request", "resolve settles the thread you reply in; send it with reply_to.");
+  }
+  const device = c.get("device");
+  const id = await addComment(c.env.DB, {
+    artifact_id: artifact.id, version: artifact.current_version, reply_to: req.reply_to ?? null,
+    author_user: null, author_device: device.id, author_name: device.name, body: req.body, quote: req.reply_to ? null : (req.quote || null),
+  });
+  if (req.reply_to && req.resolve) await setResolved(c.env.DB, req.reply_to, true);
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "comment.create", targetType: "artifact", targetId: artifact.id, metadata: { comment: id, reply: !!req.reply_to },
+  });
+  return c.json({ id, url: `${artifactUrl(c, artifact.id)}?comments=1#c-${req.reply_to ?? id}` }, 201);
 });
 
 signed.get("/projects", async (c) => {

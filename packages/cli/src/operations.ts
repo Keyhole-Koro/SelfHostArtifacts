@@ -15,6 +15,9 @@ import {
   type MoveResponse,
   MAX_TEXT_CHARS,
   type SearchResponse,
+  type CommentListResponse,
+  type CommentSummary,
+  type CommentRequest,
 } from "@artifact/shared";
 import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,7 +25,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactError, artifactIdFromUrl, expectOk, session, sha256Hex, signedFetch, signedJson, type Session } from "./client.ts";
 import { forgetArtifact, loadState, rememberPublish } from "./profile.ts";
 import { detectProject } from "./project.ts";
-import { pageLinks, pageText } from "./text.ts";
+import { markdownLinks, pageLinks, pageText } from "./text.ts";
 import { encryptForLink, encryptForRecipient, fingerprint, readSecretItems, type KeySelection } from "./secret.ts";
 
 export interface PublishInput {
@@ -111,7 +114,10 @@ function collectFiles(input: PublishInput): { entry: string; entryLocal: string;
     }
     if (!files.has(entry)) throw new ArtifactError(`${target} has no index.html to open first.`, "no_entry");
   } else {
-    if (extensionOf(target) !== "html") throw new ArtifactError(`The page must be an .html file; got ${basename(target)}.`, "not_html");
+    // An .md file updates a page written in Markdown (one made in the browser).
+    if (extensionOf(target) !== "html" && extensionOf(target) !== "md") {
+      throw new ArtifactError(`The page must be an .html file; got ${basename(target)}.`, "not_html");
+    }
     base = dirname(target);
     entry = basename(target);
     files.set(entry, readLocal(entry, target));
@@ -123,7 +129,7 @@ function collectFiles(input: PublishInput): { entry: string; entryLocal: string;
 }
 
 function titleFrom(html: string, fallback: string): string {
-  const match = /<title[^>]*>([^<]*)<\/title>/i.exec(html);
+  const match = /<title[^>]*>([^<]*)<\/title>/i.exec(html) ?? /^#\s+(.+)$/m.exec(html);
   const title = match?.[1]?.replace(/\s+/g, " ").trim();
   return title || fallback;
 }
@@ -153,9 +159,10 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
 
   const entryFile = files.find((f) => f.published === entry)!;
   // What the page says and links to, from every HTML file, the entry first.
+  const markdown = entry.endsWith(".md");
   const pagesHtml = [entryFile, ...files.filter((f) => f !== entryFile && f.published.endsWith(".html"))].map((f) => f.bytes.toString("utf8"));
-  const text = pagesHtml.map(pageText).join("\n").slice(0, MAX_TEXT_CHARS);
-  const links = [...new Set(pagesHtml.flatMap((h) => pageLinks(h, s.origin)))].slice(0, 1000);
+  const text = (markdown ? pagesHtml[0]! : pagesHtml.map(pageText).join("\n")).slice(0, MAX_TEXT_CHARS);
+  const links = [...new Set(pagesHtml.flatMap((h) => (markdown ? markdownLinks(h, s.origin) : pageLinks(h, s.origin))))].slice(0, 1000);
   const parent = input.parent ? artifactIdFromUrl(s, input.parent) : undefined;
   // Under a parent, the page goes into the parent's project; the repository's name is only a default.
   const project = existing || parent ? input.project : (input.project ?? detectProject());
@@ -186,6 +193,18 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
 export async function list(limit = 25, project?: string | null): Promise<ListResponse> {
   const filter = project === undefined ? "" : `&project=${encodeURIComponent(project ?? "")}`;
   return signedJson<ListResponse>(session(), "GET", `/api/v1/artifacts?limit=${limit}${filter}`);
+}
+
+/** A page's comments, oldest first. */
+export async function comments(url: string): Promise<CommentListResponse> {
+  const s = session();
+  return signedJson<CommentListResponse>(s, "GET", `/api/v1/artifacts/${artifactIdFromUrl(s, url)}/comments`);
+}
+
+/** Comments on a page, or replies in a thread (and settles it with resolve). */
+export async function comment(url: string, req: CommentRequest): Promise<{ id: string; url: string }> {
+  const s = session();
+  return signedJson<{ id: string; url: string }>(s, "POST", `/api/v1/artifacts/${artifactIdFromUrl(s, url)}/comments`, req);
 }
 
 /** Pages whose title, description or text has every word of `query`. */
@@ -361,4 +380,16 @@ export async function secretSend(id: string, filePath: string, keys?: KeySelecti
 
 export async function secretDelete(id: string): Promise<{ status: string }> {
   return signedJson<{ status: string }>(session(), "DELETE", `/api/v1/secrets/${secretId(id)}`);
+}
+
+/** Threads as text: the quote, then each comment with its author; settled threads only with `all`. */
+export function formatComments(rows: CommentSummary[], all: boolean): string {
+  const firsts = rows.filter((r) => !r.reply_to && (all || !r.resolved));
+  return firsts
+    .map((f) => {
+      const replies = rows.filter((r) => r.reply_to === f.id);
+      const line = (r: CommentSummary) => `  ${r.author}${r.by_agent ? " (agent)" : ""}, v${r.version}: ${r.body.replace(/\n/g, "\n    ")}`;
+      return [`[${f.id}]${f.resolved ? " (resolved)" : ""}${f.quote ? ` on “${f.quote}”` : " on the page"}`, line(f), ...replies.map(line)].join("\n");
+    })
+    .join("\n\n");
 }

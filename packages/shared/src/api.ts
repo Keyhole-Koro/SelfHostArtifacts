@@ -119,3 +119,35 @@ export interface MoveResponse {
   parent: string | null;
   position: number;
 }
+
+export interface CommentSummary {
+  id: string;
+  /** The thread's first comment, for a reply; null for a thread's first comment. */
+  reply_to: string | null;
+  author: string;
+  /** Written by an agent (a device), not a person. */
+  by_agent: boolean;
+  body: string;
+  /** The passage of the page it is about; null for the whole page. */
+  quote: string | null;
+  /** The version it was written on. */
+  version: number;
+  /** For a thread's first comment: whether the thread is settled. */
+  resolved: boolean;
+  created_at: string;
+}
+
+export interface CommentListResponse {
+  comments: CommentSummary[];
+}
+
+/** POST /api/v1/artifacts/:id/comments */
+export interface CommentRequest {
+  body: string;
+  /** Reply in this thread (the id of its first comment). */
+  reply_to?: string;
+  /** A passage of the page, for a new thread about it. */
+  quote?: string;
+  /** With reply_to: settle the thread after replying. */
+  resolve?: boolean;
+}

@@ -80,7 +80,11 @@ describe("links between pages", () => {
     expect(Number(res.headers.get("content-length"))).toBe(new TextEncoder().encode(body).length);
     const nav = await SELF.fetch(`${ORIGIN}${src.replace(/index\.html$/, "")}!artifact/nav.js`);
     expect(nav.status).toBe(200);
-    expect(await nav.text()).toContain("artifact:navigate");
+    const script = await nav.text();
+    expect(script).toContain("artifact:navigate");
+    // The pattern must reach the browser with its backslashes (a template string drops single ones).
+    expect(script).toContain("/^\\/a\\/[0-9a-z]{16}(\\/v\\/[0-9]+)?\\/?$/");
+    expect(script).toContain(".replace(/\\s+/g");
     expect(await (await SELF.fetch(`${ORIGIN}${src.replace(/index\.html$/, "data.json")}`)).text()).toBe("{}");
   });
 });

@@ -13,7 +13,7 @@ import {
   type Agent,
 } from "./commands/setup.ts";
 import { describeSecret, serveMcp } from "./mcp.ts";
-import { list, loginLink, move, projects, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
+import { comment, comments, formatComments, list, loginLink, move, projects, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
@@ -35,6 +35,9 @@ Pages
       --parent <url>                Put the page under another page, in that page's project
   artifact list [--limit n] [--project <name> | --none]
   artifact projects                 Projects and how many pages each has
+  artifact comments <url> [--all]   Open comment threads on a page (--all: settled ones too)
+  artifact comment <url> <text…> [--reply-to <id>] [--resolve]
+                                    Comment on a page, or reply in a thread and settle it
   artifact search <words…> [--limit n]
                                     Pages whose title or text has every word
   artifact move <url> <project>     Move a page, with the pages under it, to another project (--none: out of any project)
@@ -90,6 +93,9 @@ function parse() {
       parent: { type: "string" },
       position: { type: "string" },
       none: { type: "boolean" },
+      all: { type: "boolean" },
+      "reply-to": { type: "string" },
+      resolve: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -235,6 +241,23 @@ async function main(): Promise<void> {
     case "list": {
       const r = await list(o.limit ? Number(o.limit) : 25, o.none ? null : o.project);
       out(r.artifacts.map((a) => `${a.url}  v${a.version}  ${a.project ? `[${a.project}] ` : ""}${a.title}`).join("\n") || "Nothing here.", r);
+      return;
+    }
+
+    case "comments": {
+      const url = rest[0];
+      if (!url) throw new ArtifactError("Usage: artifact comments <url> [--all]", "bad_args");
+      const r = await comments(url);
+      out(formatComments(r.comments, !!o.all) || "No open comments.", r);
+      return;
+    }
+
+    case "comment": {
+      const url = rest[0];
+      const text = rest.slice(1).join(" ").trim();
+      if (!url || !text) throw new ArtifactError("Usage: artifact comment <url> <text…> [--reply-to <id>] [--resolve]", "bad_args");
+      const r = await comment(url, { body: text, ...(o["reply-to"] ? { reply_to: o["reply-to"] } : {}), ...(o.resolve ? { resolve: true } : {}) });
+      out(`Commented: ${r.url}`, r);
       return;
     }
 

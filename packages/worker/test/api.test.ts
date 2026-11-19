@@ -157,14 +157,16 @@ describe("publishing", () => {
     expect(((await res.json()) as any).error.message).toContain(reason);
   });
 
-  it("refuses a Markdown entry", async () => {
+  it("takes an .html or a Markdown entry, and refuses any other", async () => {
     const device = await createDevice();
     const res = await signedJson(device, "POST", "/api/v1/artifacts", {
       title: "x",
-      entry: "README.md",
-      files: { "README.md": `sha256:${"a".repeat(64)}` },
+      entry: "notes.txt",
+      files: { "notes.txt": `sha256:${"a".repeat(64)}` },
     });
     expect(((await res.json()) as any).error.message).toContain(".html");
+    // A Markdown entry is a page written in the browser, or an agent's update of one.
+    expect((await publish(device, { "README.md": "# Hi" }, { entry: "README.md" })).status).toBe(201);
   });
 
   it("refuses a bare * in allow_connect", async () => {
