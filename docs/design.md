@@ -189,7 +189,9 @@ Codex と Gemini を同じ端末で使うなら、鍵は1つで共有する。�
 | `PUT` | `/api/v1/blobs/:sha256` | ファイル1つを生のまま送る。Worker は R2 へそのまま流し込み、R2 がハッシュを検証する |
 | `POST` | `/api/v1/artifacts` | 新規作成。本文は `manifest`（JSON）だけ。参照するハッシュが全部 R2 にあることを確かめ、`{id, url, version}` を返す |
 | `PUT` | `/api/v1/artifacts/:id` | 新しい版を作る。`base_version` が最新と違えば 409 と最新の版番号を返す |
-| `GET` | `/api/v1/artifacts` | 一覧（更新日時の新しい順） |
+| `GET` | `/api/v1/artifacts` | 一覧（更新日時の新しい順）。`?project=<名前>` でそのプロジェクトだけ、`?project=` で属さないものだけ |
+| `PATCH` | `/api/v1/artifacts/:id` | `{project}` でプロジェクトを移す（`null` で外す）。版は作らない |
+| `GET` | `/api/v1/projects` | プロジェクトとページ数（属さないものは `null`） |
 | `GET` | `/api/v1/artifacts/:id` | メタデータと版の一覧 |
 | `GET` | `/api/v1/artifacts/:id/files/*path` | ファイルを読む（`?version=` で過去の版） |
 | `DELETE` | `/api/v1/artifacts/:id` | ゴミ箱へ移す（`TRASH_DAYS` 日後に本当に消える） |
@@ -240,7 +242,8 @@ create table artifacts (
   updated_at text not null,
   deleted_at text,              -- ゴミ箱に入れた日時。TRASH_DAYS 日後に Cron で本当に消す
   share_nonce text,             -- 公開リンクの nonce。null なら公開していない
-  share_expires_at text         -- 公開リンクの期限
+  share_expires_at text,        -- 公開リンクの期限
+  project text                  -- 0007。属するプロジェクト（1 つだけ）。null なら属さない
 );
 
 create table versions (
@@ -532,9 +535,10 @@ Claude の Artifact ツールに合わせる。エージェントにとって分
 
 | ツール | 引数 | 内容 |
 |---|---|---|
-| `publish` | `file_path`, `files?`, `title?`, `description?`, `url?`, `allow_connect?` | `url` なしで新規、ありで更新。`files` は `{公開パス: ローカルパス}`。`allow_connect` はページから通信してよいホスト |
+| `publish` | `file_path`, `files?`, `title?`, `description?`, `url?`, `allow_connect?`, `project?` | `url` なしで新規、ありで更新。`files` は `{公開パス: ローカルパス}`。`allow_connect` はページから通信してよいホスト。`project` を省くと、新規は作業中の git リポジトリの名前のプロジェクトに入り、更新はそのまま |
 | `read` | `url`, `path?` | 公開中の中身を読む |
-| `list` | `limit?` | 一覧 |
+| `list` | `limit?`, `project?` | 一覧。`project` でそのプロジェクトだけ |
+| `move` | `url`, `project` | ページを別のプロジェクトへ移す（`null` で外す） |
 | `delete` | `url` | ゴミ箱へ移す。ツール説明に「ユーザーが頼んだときだけ」と書く |
 | `secret_share` | `label`, `file_path`, `keys?`, `expires_in_hours?` | ファイルの値を手元で暗号化して置き、`#` の後ろに鍵の入ったリンクを返す。最初に開いたブラウザだけが読める |
 | `secret_request` | `label`, `expires_in_hours?` | 秘密の受け取り用の URL を作る |
@@ -638,7 +642,17 @@ UI は英語。README と skills も英語にする（汎用の OSS として出
 
 - 更新日時の新しい順。タイトル・説明・更新日時・版、外部通信ありの印
 - タイトルと説明で絞り込み（クライアント側。件数が増えたら D1 の検索に変える）
+- プロジェクトのボタンで絞り込み（`/?project=<名前>`。サーバー側）。「All」のときは各行にプロジェクト名を出す
 - サムネイルは v2
+
+### プロジェクト
+
+2026-11-19 に足した。ページが増えて、別々の作業のページが 1 つの一覧に混ざったため。
+
+- 1 ページは 1 つのプロジェクトに入る（フォルダの形）。タグにしなかったのは、付け方がばらつくため
+- 新しいページは、CLI（MCP サーバー）が動いているフォルダの git リポジトリの名前のプロジェクトに入る。名前は `origin` の URL の最後（`git@github.com:Owner/MediShare.git` なら `MediShare`）。`origin` がなければ、元のチェックアウトのフォルダ名（worktree のフォルダ名は使わない）。git の外ならプロジェクトなし。`ARTIFACT_PROJECT` で上書きできる（空ならなし）
+- 更新はプロジェクトを変えない。`project` を渡したときだけ移す
+- 一覧（`/`）の上にプロジェクトのボタンを並べ、`/?project=<名前>` で絞る。ページの画面の「Project」から持ち主が移せる。閲覧者ごとに見せるプロジェクトを分けることはしない
 
 ### 公開リンク（`/s/:id/:key`）
 

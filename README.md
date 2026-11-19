@@ -86,6 +86,10 @@ Then, in **Settings → People → Create invite link**, invite viewers. Each li
 person opening it creates their own passkey. Add a passkey for each of your devices under
 **Account** (passkeys synced by iCloud Keychain or Google Password Manager follow you anyway).
 
+Pages are grouped by **project**: a new page goes into the project named after the git
+repository the agent works in, and the list has a button for each project. Move a page from its
+**Project** menu or with `artifact move`.
+
 To show a page to someone without an account, open it and choose **Share → Create public link**:
 anyone with that link can view the latest version, without signing in, for 30 days. You can extend
 it, replace it with a new link or turn it off; agents cannot make pages public.
@@ -153,7 +157,8 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 |---|---|
 | `publish` | Publish a local `.html` file, or a folder with `index.html`; the same file again updates the same URL |
 | `read` | Read a published page or one of its files |
-| `list` | Recent pages |
+| `list` | Recent pages, optionally of one project |
+| `move` | Move a page to another project |
 | `delete` | Move a page to the trash (restorable in Settings for 30 days) |
 | `secret_share` | Encrypt values from a local file and make a link that only the first browser to open it can read |
 | `secret_request` | Make a link for handing a secret to someone |
@@ -166,7 +171,9 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 ```bash
 artifact publish ./report.html            # or a folder; prints the URL
 artifact publish ./site --allow-connect api.example.com
-artifact list
+artifact list [--project MediShare]       # pages are grouped by project
+artifact projects                         # projects and how many pages each has
+artifact move https://artifacts.example.com/a/<id> MediShare
 artifact read https://artifacts.example.com/a/<id> data.json
 artifact delete https://artifacts.example.com/a/<id>
 artifact status

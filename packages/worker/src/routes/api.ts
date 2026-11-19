@@ -6,10 +6,12 @@ import {
   contentTypeFor,
   hashOf,
   manifestSchema,
+  projectSchema,
   type ArtifactDetail,
   type ArtifactSummary,
   type BlobCheckResponse,
   type ListResponse,
+  type ProjectListResponse,
   type Manifest,
   type PairPollResponse,
   type PairStartResponse,
@@ -32,7 +34,9 @@ import {
   getArtifact,
   getVersion,
   listArtifacts,
+  listProjects,
   listVersions,
+  setProject,
   trashArtifact,
   type ArtifactRow,
 } from "../db/artifacts.ts";
@@ -60,6 +64,7 @@ function summary(c: Context<AppEnv>, a: ArtifactRow, allowConnect: string[]): Ar
     url: artifactUrl(c, a.id),
     title: a.title,
     description: a.description,
+    project: a.project,
     version: a.current_version,
     updated_at: a.updated_at,
     allow_connect: allowConnect,
@@ -200,6 +205,7 @@ signed.post("/artifacts", async (c) => {
   await createArtifact(c.env.DB, id, {
     title: manifest.title,
     description: manifest.description,
+    project: manifest.project,
     entry: manifest.entry,
     files: resolved.files,
     allowConnect: manifest.allow_connect ?? [],
@@ -237,6 +243,7 @@ signed.put("/artifacts/:id", async (c) => {
   const added = await addVersion(c.env.DB, artifact.id, base, {
     title: manifest.title,
     description: manifest.description,
+    project: manifest.project,
     entry: manifest.entry,
     files: resolved.files,
     allowConnect: manifest.allow_connect ?? [],
@@ -255,10 +262,34 @@ signed.put("/artifacts/:id", async (c) => {
   return c.json<PublishResponse>({ id: artifact.id, url: artifactUrl(c, artifact.id), version: base + 1 });
 });
 
+/** `?project=<name>` lists one project; `?project=` (empty) lists pages without a project. */
 signed.get("/artifacts", async (c) => {
   const limit = Math.min(Math.max(Number(c.req.query("limit") ?? 25) || 25, 1), 200);
-  const rows = await listArtifacts(c.env.DB, limit);
+  const project = c.req.query("project");
+  const rows = await listArtifacts(c.env.DB, limit, project === undefined ? undefined : project.trim() || null);
   return c.json<ListResponse>({ artifacts: rows.map((a) => summary(c, a, a.allow_connect)) });
+});
+
+signed.get("/projects", async (c) => {
+  return c.json<ProjectListResponse>({ projects: await listProjects(c.env.DB) });
+});
+
+const moveSchema = z.object({ project: projectSchema.nullable() });
+
+/** Moves a page to another project without a new version. `null` leaves it without one. */
+signed.patch("/artifacts/:id", async (c) => {
+  const artifact = await getArtifact(c.env.DB, c.req.param("id"));
+  if (!artifact) return apiError(c, 404, "not_found", "No artifact has this id (or it is in the trash).");
+  const parsed = await readJson(c, moveSchema);
+  if (!parsed.ok) return parsed.res;
+  await setProject(c.env.DB, artifact.id, parsed.value.project);
+  const device = c.get("device");
+  await recordAuditEvent(c, {
+    actorType: "device", actorId: device.id, actorLabel: device.name,
+    action: "artifact.move", targetType: "artifact", targetId: artifact.id,
+    metadata: { project: parsed.value.project },
+  });
+  return c.json({ id: artifact.id, project: parsed.value.project });
 });
 
 signed.get("/artifacts/:id", async (c) => {

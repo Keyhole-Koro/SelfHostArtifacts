@@ -28,6 +28,9 @@ CLI: `artifact publish <file.html|folder> [--title …] [--description …]`
   put everything in one folder with an `index.html` and pass the folder.
 - `files` adds individual files: `{ "data/sales.json": "/abs/path/sales.json" }`.
 - `title` defaults to the page's `<title>`. `description` is one sentence for the list.
+- A new page goes into the project named after the git repository you are working in, so the
+  list stays sorted by itself. Pass `project` only when the page belongs somewhere else (the
+  user names a project, or you work outside the repository it is about).
 - Give the user the URL from the result. Do not paste the page's content back into the chat.
 
 ## Update

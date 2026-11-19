@@ -10,12 +10,14 @@ import {
   type SecretCreateResponse,
   type SecretListResponse,
   type SecretSummary,
+  type ProjectListResponse,
 } from "@artifact/shared";
 import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactError, artifactIdFromUrl, expectOk, session, sha256Hex, signedFetch, signedJson, type Session } from "./client.ts";
 import { forgetArtifact, loadState, rememberPublish } from "./profile.ts";
+import { detectProject } from "./project.ts";
 import { encryptForLink, encryptForRecipient, fingerprint, readSecretItems, type KeySelection } from "./secret.ts";
 
 export interface PublishInput {
@@ -28,6 +30,11 @@ export interface PublishInput {
   /** Update this artifact instead of the one remembered for filePath. */
   url?: string;
   allowConnect?: string[];
+  /**
+   * The project. A new page without it goes into the project named after the git repository
+   * this runs in; an update without it keeps the page's project.
+   */
+  project?: string;
 }
 
 export interface PublishResult {
@@ -37,6 +44,7 @@ export interface PublishResult {
   created: boolean;
   files: number;
   uploaded: number;
+  project: string | null;
 }
 
 interface LocalFile {
@@ -137,12 +145,14 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
   }
 
   const entryFile = files.find((f) => f.published === entry)!;
+  const project = existing ? input.project : (input.project ?? detectProject());
   const manifest = {
     title: input.title ?? existing?.title ?? titleFrom(entryFile.bytes.toString("utf8"), basename(entryLocal)),
     description: input.description ?? existing?.description ?? undefined,
     entry,
     files: Object.fromEntries(files.map((f) => [f.published, `sha256:${f.sha256}`])),
     allow_connect: input.allowConnect ?? existing?.allow_connect ?? [],
+    ...(project ? { project } : {}),
     // The version this computer last published. If another device has published since, the
     // server answers 409 instead of silently overwriting that work.
     base_version: existing ? (remembered?.id === existing.id ? remembered.version : existing.version) : undefined,
@@ -153,11 +163,24 @@ export async function publish(input: PublishInput): Promise<PublishResult> {
     ? await signedJson<PublishResponse>(s, "PUT", `/api/v1/artifacts/${existing.id}`, manifest)
     : await signedJson<PublishResponse>(s, "POST", "/api/v1/artifacts", manifest);
   rememberPublish(entryLocal, { id: result.id, url: result.url, version: result.version });
-  return { ...result, created: !existing, files: files.length, uploaded };
+  return { ...result, created: !existing, files: files.length, uploaded, project: project ?? existing?.project ?? null };
 }
 
-export async function list(limit = 25): Promise<ListResponse> {
-  return signedJson<ListResponse>(session(), "GET", `/api/v1/artifacts?limit=${limit}`);
+/** `project`: a name for one project, null for pages without one, undefined for all. */
+export async function list(limit = 25, project?: string | null): Promise<ListResponse> {
+  const filter = project === undefined ? "" : `&project=${encodeURIComponent(project ?? "")}`;
+  return signedJson<ListResponse>(session(), "GET", `/api/v1/artifacts?limit=${limit}${filter}`);
+}
+
+export async function projects(): Promise<ProjectListResponse> {
+  return signedJson<ProjectListResponse>(session(), "GET", "/api/v1/projects");
+}
+
+/** Moves a page to another project (null: none) without making a new version. */
+export async function move(url: string, project: string | null): Promise<{ id: string; project: string | null }> {
+  const s = session();
+  const id = artifactIdFromUrl(s, url);
+  return signedJson<{ id: string; project: string | null }>(s, "PATCH", `/api/v1/artifacts/${id}`, { project });
 }
 
 export interface ReadResult {

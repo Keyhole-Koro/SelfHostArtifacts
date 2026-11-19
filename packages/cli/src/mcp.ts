@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
-import { list, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
+import { list, move, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
 import { VERSION } from "./version.ts";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -30,7 +30,8 @@ export function createServer(): McpServer {
       title: "Publish a page",
       description:
         "Publish a local HTML page as a private web page and return its URL. Publishing the same file_path again updates the same URL " +
-        "(a new version). Pass url to update a page that was published from another file. Read the selfhost-artifact-design skill before writing " +
+        "(a new version). Pass url to update a page that was published from another file. A new page goes into the project named after the " +
+        "git repository you are working in; pass project only to choose another. Read the selfhost-artifact-design skill before writing " +
         "the page. Never put secrets, credentials or personal data in a page.",
       inputSchema: {
         file_path: z.string().describe("Absolute path of the .html page, or of a folder that has an index.html (all its files are published)"),
@@ -45,12 +46,17 @@ export function createServer(): McpServer {
           .array(z.string())
           .optional()
           .describe('Hostnames the page may fetch from, e.g. ["api.example.com"]. Only when the page needs live data from them'),
+        project: z
+          .string()
+          .optional()
+          .describe("Project to put the page in. Leave it out: a new page goes into the current git repository's project, an update stays where it is"),
       },
     },
-    ({ file_path, files, title, description, url, allow_connect }) =>
+    ({ file_path, files, title, description, url, allow_connect, project }) =>
       run(async () => {
-        const r = await publish({ filePath: file_path, files, title, description, url, allowConnect: allow_connect });
-        return `${r.created ? "Published" : "Updated"}: ${r.url} (version ${r.version}, private; ${r.files} files, ${r.uploaded} uploaded)`;
+        const r = await publish({ filePath: file_path, files, title, description, url, allowConnect: allow_connect, project });
+        const where = r.project ? `, in ${r.project}` : "";
+        return `${r.created ? "Published" : "Updated"}: ${r.url} (version ${r.version}, private${where}; ${r.files} files, ${r.uploaded} uploaded)`;
       }),
   );
 
@@ -78,16 +84,39 @@ export function createServer(): McpServer {
     "list",
     {
       title: "List published pages",
-      description: "List published pages, most recently updated first.",
-      inputSchema: { limit: z.number().int().min(1).max(200).optional() },
+      description: "List published pages, most recently updated first, optionally of one project.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(200).optional(),
+        project: z.string().optional().describe("Only pages in this project"),
+      },
     },
-    ({ limit }) =>
+    ({ limit, project }) =>
       run(async () => {
-        const { artifacts } = await list(limit ?? 25);
-        if (artifacts.length === 0) return "Nothing is published yet.";
+        const { artifacts } = await list(limit ?? 25, project);
+        if (artifacts.length === 0) return project ? `No page in ${project}.` : "Nothing is published yet.";
         return artifacts
-          .map((a) => `${a.title} — ${a.url} (v${a.version}, updated ${a.updated_at})${a.description ? `\n  ${a.description}` : ""}`)
+          .map(
+            (a) =>
+              `${a.title} — ${a.url} (v${a.version}, updated ${a.updated_at}${a.project ? `, ${a.project}` : ""})${a.description ? `\n  ${a.description}` : ""}`,
+          )
           .join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "move",
+    {
+      title: "Move a page to another project",
+      description: "Put a page in another project, or out of any project with project null. Does not make a new version.",
+      inputSchema: {
+        url: z.string().describe("The page URL"),
+        project: z.string().nullable().describe("The project name, or null for none"),
+      },
+    },
+    ({ url, project }) =>
+      run(async () => {
+        const r = await move(url, project);
+        return r.project ? `Moved to ${r.project}.` : "Now without a project.";
       }),
   );
 

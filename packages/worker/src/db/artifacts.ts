@@ -1,9 +1,10 @@
-import type { VersionFile } from "@artifact/shared";
+import type { ProjectCount, VersionFile } from "@artifact/shared";
 
 export interface ArtifactRow {
   id: string;
   title: string;
   description: string | null;
+  project: string | null;
   current_version: number;
   created_at: string;
   updated_at: string;
@@ -39,16 +40,38 @@ export interface ArtifactWithVersion extends ArtifactRow {
   allow_connect: string[];
 }
 
-export async function listArtifacts(db: D1Database, limit: number): Promise<ArtifactWithVersion[]> {
+/**
+ * Newest first. `project` narrows the list: a name for that project, null for pages without
+ * one, undefined for all pages.
+ */
+export async function listArtifacts(db: D1Database, limit: number, project?: string | null): Promise<ArtifactWithVersion[]> {
+  const where = project === undefined ? "" : project === null ? "and a.project is null" : "and a.project = ?";
   const { results } = await db
     .prepare(
       `select a.*, v.allow_connect from artifacts a
        join versions v on v.artifact_id = a.id and v.version = a.current_version
-       where a.deleted_at is null order by a.updated_at desc limit ?`,
+       where a.deleted_at is null ${where} order by a.updated_at desc limit ?`,
     )
-    .bind(limit)
+    .bind(...(typeof project === "string" ? [project, limit] : [limit]))
     .all<ArtifactRow & { allow_connect: string | null }>();
   return results.map((r) => ({ ...r, allow_connect: r.allow_connect ? (JSON.parse(r.allow_connect) as string[]) : [] }));
+}
+
+/** Projects with how many pages each, the most recently updated first; pages without a project count as null. */
+export async function listProjects(db: D1Database): Promise<ProjectCount[]> {
+  const { results } = await db
+    .prepare(
+      `select project, count(*) as count from artifacts where deleted_at is null
+       group by project order by max(updated_at) desc`,
+    )
+    .all<ProjectCount>();
+  return results;
+}
+
+/** Moves a page to another project (null: none). False when there is no such page. */
+export async function setProject(db: D1Database, id: string, project: string | null): Promise<boolean> {
+  const r = await db.prepare("update artifacts set project = ? where id = ? and deleted_at is null").bind(project, id).run();
+  return r.meta.changes === 1;
 }
 
 export async function listTrash(db: D1Database): Promise<ArtifactRow[]> {
@@ -88,6 +111,8 @@ export async function listVersions(db: D1Database, id: string): Promise<VersionR
 export interface NewVersion {
   title: string;
   description: string | undefined;
+  /** On create, the project. On update, undefined keeps the page's project. */
+  project?: string | undefined;
   entry: string;
   files: Record<string, VersionFile>;
   allowConnect: string[];
@@ -107,9 +132,9 @@ export async function createArtifact(db: D1Database, id: string, v: NewVersion):
   await db.batch([
     db
       .prepare(
-        "insert into artifacts (id, title, description, current_version, created_at, updated_at) values (?, ?, ?, 1, ?, ?)",
+        "insert into artifacts (id, title, description, project, current_version, created_at, updated_at) values (?, ?, ?, ?, 1, ?, ?)",
       )
-      .bind(id, v.title, v.description ?? null, now, now),
+      .bind(id, v.title, v.description ?? null, v.project ?? null, now, now),
     versionInsert(db, id, 1, v, now),
   ]);
 }
@@ -126,8 +151,8 @@ export async function addVersion(db: D1Database, id: string, expected: number, v
     await db.batch([
       versionInsert(db, id, next, v, now),
       db
-        .prepare("update artifacts set current_version = ?, title = ?, description = ?, updated_at = ? where id = ?")
-        .bind(next, v.title, v.description ?? null, now, id),
+        .prepare("update artifacts set current_version = ?, title = ?, description = ?, project = coalesce(?, project), updated_at = ? where id = ?")
+        .bind(next, v.title, v.description ?? null, v.project ?? null, now, id),
     ]);
     return true;
   } catch (e) {

@@ -13,7 +13,7 @@ import {
   type Agent,
 } from "./commands/setup.ts";
 import { describeSecret, serveMcp } from "./mcp.ts";
-import { list, loginLink, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
+import { list, loginLink, move, projects, publish, read, remove, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
@@ -31,7 +31,10 @@ Setup
 Pages
   artifact publish <file.html|dir>  Publish; publishing the same file again updates the same URL
       --title <t> --description <d> --url <page url> --file <published=local> --allow-connect <host>
-  artifact list [--limit n]
+      --project <name>              A new page goes into the project named after this git repository unless given
+  artifact list [--limit n] [--project <name> | --none]
+  artifact projects                 Projects and how many pages each has
+  artifact move <url> <project>     Move a page to another project (--none: out of any project)
   artifact read <url> [path] [--version n]
   artifact delete <url>             Move to the trash (restorable for 30 days)
 
@@ -78,6 +81,8 @@ function parse() {
       label: { type: "string" },
       hours: { type: "string" },
       key: { type: "string", multiple: true },
+      project: { type: "string" },
+      none: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -213,14 +218,30 @@ async function main(): Promise<void> {
         description: o.description,
         url: o.url,
         allowConnect: o["allow-connect"],
+        project: o.project,
       });
-      out(`${r.created ? "Published" : "Updated"}: ${r.url} (version ${r.version}, private)`, r);
+      out(`${r.created ? "Published" : "Updated"}: ${r.url} (version ${r.version}, private${r.project ? `, in ${r.project}` : ""})`, r);
       return;
     }
 
     case "list": {
-      const r = await list(o.limit ? Number(o.limit) : 25);
-      out(r.artifacts.map((a) => `${a.url}  v${a.version}  ${a.title}`).join("\n") || "Nothing is published yet.", r);
+      const r = await list(o.limit ? Number(o.limit) : 25, o.none ? null : o.project);
+      out(r.artifacts.map((a) => `${a.url}  v${a.version}  ${a.project ? `[${a.project}] ` : ""}${a.title}`).join("\n") || "Nothing here.", r);
+      return;
+    }
+
+    case "projects": {
+      const r = await projects();
+      out(r.projects.map((p) => `${String(p.count).padStart(4)}  ${p.project ?? "(no project)"}`).join("\n") || "Nothing is published yet.", r);
+      return;
+    }
+
+    case "move": {
+      const url = rest[0];
+      const name = o.none ? null : (rest[1] ?? o.project);
+      if (!url || name === undefined) throw new ArtifactError("Usage: artifact move <url> <project>, or artifact move <url> --none", "bad_args");
+      const r = await move(url, name);
+      out(r.project ? `Moved to ${r.project}.` : "Now without a project.", r);
       return;
     }
 

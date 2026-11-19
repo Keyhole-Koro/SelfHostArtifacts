@@ -12,14 +12,17 @@ import {
   getVersion,
   listArtifacts,
   listConnecting,
+  listProjects,
   listTrash,
   listVersions,
   restoreArtifact,
   revokeConnect,
   clearShare,
+  setProject,
   setShare,
   type ArtifactRow,
 } from "../db/artifacts.ts";
+import { projectSchema } from "@artifact/shared";
 import { SHARE_DAYS, newShareNonce, shareActive, shareExpiry, shareKey, shareKeyValid, sharePath } from "../share.ts";
 import {
   INVITE_DAYS,
@@ -72,21 +75,60 @@ function recordViewerAction(
 
 // --- List ---
 
+const PROJECT_STYLES = `
+.projects { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0 0 var(--space-4); }
+.projects a { display: inline-flex; align-items: baseline; gap: var(--space-1); padding: 4px var(--space-3); border: 1px solid var(--border); border-radius: 999px; color: var(--text); text-decoration: none; font-size: var(--text-sm); background: var(--surface); }
+.projects a:hover { background: var(--surface-2); }
+.projects a.current { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.projects span { color: var(--text-2); font-variant-numeric: tabular-nums; }
+.projects a.current span { color: inherit; }
+`;
+
+/** `/` lists every page; `/?project=<name>` one project; `/?project=` the pages without one. */
+function projectHref(project: string | null): string {
+  return `/?project=${encodeURIComponent(project ?? "")}`;
+}
+
 pages.get("/", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
-  const artifacts = await listArtifacts(c.env.DB, 200);
+  const query = c.req.query("project");
+  const selected = query === undefined ? undefined : query.trim() || null;
+  const [artifacts, projects] = await Promise.all([listArtifacts(c.env.DB, 200, selected), listProjects(c.env.DB)]);
+  const total = projects.reduce((n, p) => n + p.count, 0);
+  const showProjects = projects.some((p) => p.project !== null);
+  const scope = selected === undefined ? "" : selected === null ? " without a project" : ` in ${selected}`;
   return c.html(
-    <Page title="Artifacts" viewer={viewer}>
+    <Page title={typeof selected === "string" ? `${selected} · Artifacts` : "Artifacts"} viewer={viewer}>
+      <style>{raw(PROJECT_STYLES)}</style>
       <div class="page-head">
         <div>
           <h1>Artifacts</h1>
           <p class="lead">
-            {artifacts.length} {artifacts.length === 1 ? "page" : "pages"}, newest first
+            {artifacts.length} {artifacts.length === 1 ? "page" : "pages"}
+            {scope}, newest first
           </p>
         </div>
         {artifacts.length > 0 && <input id="filter" class="search" type="search" placeholder="Search" aria-label="Search titles and descriptions" />}
       </div>
-      {artifacts.length === 0 ? (
+      {showProjects && (
+        <nav class="projects" aria-label="Projects">
+          <a href="/" class={selected === undefined ? "current" : undefined}>
+            All <span>{total}</span>
+          </a>
+          {projects.map((p) => (
+            <a href={projectHref(p.project)} class={selected === p.project ? "current" : undefined}>
+              {p.project ?? "No project"} <span>{p.count}</span>
+            </a>
+          ))}
+        </nav>
+      )}
+      {artifacts.length === 0 && selected !== undefined ? (
+        <div class="card">
+          <p class="muted small" style="margin:0">
+            No page here. <a href="/">Show all pages</a>
+          </p>
+        </div>
+      ) : artifacts.length === 0 ? (
         <div class="card">
           <h2>Nothing published yet</h2>
           <p class="muted small" style="margin:var(--space-2) 0 0">
@@ -98,11 +140,12 @@ pages.get("/", requireViewer(), async (c) => {
         <>
           <ul class="rows links" id="artifacts">
             {artifacts.map((a) => (
-              <li data-text={`${a.title} ${a.description ?? ""}`.toLowerCase()}>
+              <li data-text={`${a.title} ${a.description ?? ""} ${a.project ?? ""}`.toLowerCase()}>
                 <div class="main">
                   <a class="title" href={`/a/${a.id}`}>
                     {a.title}
                   </a>{" "}
+                  {selected === undefined && a.project && <span class="badge">{a.project}</span>}{" "}
                   {a.allow_connect.length > 0 && (
                     <span class="badge warn" title={`May connect to ${a.allow_connect.join(", ")}`}>
                       external
@@ -195,6 +238,7 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   if (!version) return c.notFound();
   const versions = await listVersions(c.env.DB, id);
   const viewer = c.get("viewer");
+  const projects = viewer.role === "root" ? await listProjects(c.env.DB) : [];
   const shareUrl = shareActive(artifact)
     ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
     : undefined;
@@ -212,8 +256,8 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
       </head>
       <body>
         <div class="bar">
-          <a href="/" class="back" aria-label="All artifacts">
-            ← <span class="label">Artifacts</span>
+          <a href={artifact.project ? projectHref(artifact.project) : "/"} class="back" aria-label={artifact.project ? `Pages in ${artifact.project}` : "All artifacts"}>
+            ← <span class="label">{artifact.project ?? "Artifacts"}</span>
           </a>
           <span class="divider" aria-hidden="true" />
           <span class="title">{artifact.title}</span>
@@ -228,6 +272,9 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
           )}
           {shareUrl && <span class="badge public">public</span>}
           <span class="spacer" />
+          {viewer.role === "root" && (
+            <ProjectPanel id={id} project={artifact.project} projects={projects.flatMap((p) => (p.project ? [p.project] : []))} csrf={viewer.csrf} />
+          )}
           {viewer.role === "root" && (
             <SharePanel id={id} artifact={artifact} shareUrl={shareUrl} csrf={viewer.csrf} open={c.req.query("share") === "1"} />
           )}
@@ -336,6 +383,43 @@ function SharePanel(props: { id: string; artifact: ArtifactRow; shareUrl: string
   );
 }
 
+/** Moves the page to another project. Shares the share panel's look. */
+function ProjectPanel(props: { id: string; project: string | null; projects: string[]; csrf: string }) {
+  const { id, project, projects, csrf } = props;
+  return (
+    <details>
+      <summary class="tool">
+        <span class="label">Project</span>
+        <span class="short">▤</span> ▾
+      </summary>
+      <div class="panel share">
+        <p>{project ? `In ${project}. Move it to another project:` : "Not in a project. Put it in one:"}</p>
+        <form method="post" action={`/a/${id}/project`} class="link">
+          <CsrfField token={csrf} />
+          <input name="project" type="text" list="project-names" required maxlength={60} value={project ?? ""} aria-label="Project" />
+          <datalist id="project-names">
+            {projects.map((p) => (
+              <option value={p} />
+            ))}
+          </datalist>
+          <button type="submit" class="primary">
+            Move
+          </button>
+        </form>
+        {project && (
+          <div class="actions">
+            <form method="post" action={`/a/${id}/project`}>
+              <CsrfField token={csrf} />
+              <input type="hidden" name="project" value="" />
+              <button type="submit">Remove from {project}</button>
+            </form>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
 pages.get("/a/:id", requireViewer(), (c) => viewerPage(c, c.req.param("id"), undefined));
 
 pages.get("/a/:id/v/:version{[0-9]+}", requireViewer(), (c) => viewerPage(c, c.req.param("id"), Number(c.req.param("version"))));
@@ -372,6 +456,17 @@ async function shareAction(c: Context<AppEnv>, mode: "open" | "reset" | "off") {
 
 // Middleware per route, not `use` on a sub-app: mounted at "/", that would also guard /s/*.
 const ownerForm = [requireViewer("root", true), requireSameOriginForm()] as const;
+
+pages.post("/a/:id/project", ...ownerForm, async (c) => {
+  const id = c.req.param("id");
+  const form = await c.req.parseBody();
+  const name = typeof form["project"] === "string" ? form["project"].trim() : "";
+  const parsed = name === "" ? { success: true as const, data: null } : projectSchema.safeParse(name);
+  if (!parsed.success) return c.text("A project name is one line of at most 60 characters, without slashes.", 400);
+  if (!(await setProject(c.env.DB, id, parsed.data))) return c.notFound();
+  await recordViewerAction(c, "artifact.move", "artifact", id, { project: parsed.data });
+  return c.redirect(`/a/${id}`, 303);
+});
 pages.post("/a/:id/share", ...ownerForm, (c) => shareAction(c, "open"));
 pages.post("/a/:id/share/reset", ...ownerForm, (c) => shareAction(c, "reset"));
 pages.post("/a/:id/share/off", ...ownerForm, (c) => shareAction(c, "off"));

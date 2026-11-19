@@ -24,6 +24,8 @@ export interface ArtifactSummary {
   url: string;
   title: string;
   description: string | null;
+  /** The project it belongs to, or null. */
+  project: string | null;
   version: number;
   updated_at: string;
   allow_connect: string[];
@@ -31,6 +33,16 @@ export interface ArtifactSummary {
 
 export interface ListResponse {
   artifacts: ArtifactSummary[];
+}
+
+export interface ProjectCount {
+  /** null for pages without a project. */
+  project: string | null;
+  count: number;
+}
+
+export interface ProjectListResponse {
+  projects: ProjectCount[];
 }
 
 export interface VersionFile {
