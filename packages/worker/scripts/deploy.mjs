@@ -8,11 +8,9 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
-import { LOCAL, renderConfig, VECTOR_INDEX, VECTOR_DIMENSIONS } from "./config.mjs";
+import { LOCAL, renderConfig, VECTOR_INDEX, VECTOR_DIMENSIONS, withSecretsFile } from "./config.mjs";
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const OWNER_LINK = process.argv.includes("--owner-link");
@@ -122,13 +120,7 @@ async function main() {
     if (!existingSecrets.includes(name)) secrets[name] = randomBytes(32).toString("base64url");
   }
   if (Object.keys(secrets).length) {
-    const file = join(tmpdir(), `artifact-secrets-${process.pid}.json`);
-    writeFileSync(file, JSON.stringify(secrets), { mode: 0o600 });
-    try {
-      wrangler(["secret", "bulk", file, "-c", LOCAL], { inherit: true });
-    } finally {
-      rmSync(file, { force: true });
-    }
+    withSecretsFile(secrets, (file) => wrangler(["secret", "bulk", file, "-c", LOCAL], { inherit: true }));
   }
 
   const ownerLink = ownerInvite(host);
