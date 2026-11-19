@@ -34,7 +34,7 @@ describe("pages written in the browser", () => {
     const md = `# Meeting notes\n\nWe agreed on the 枠 count. See [Other](/a/${other.body.id}).`;
     const saved = await save(created.id!, owner, { base_version: 1, title: "Meeting notes", markdown: md });
     expect(saved.status).toBe(200);
-    expect(await saved.json()).toEqual({ version: 2 });
+    expect(await saved.json()).toEqual({ version: 2, merged: false });
     expect(await file(created.id!, "index.md")).toBe(md);
     const detail = (await (await signedFetch(device, "GET", `/api/v1/artifacts/${other.body.id}`)).json()) as { linked_from: { id: string }[] };
     expect(detail.linked_from.map((l) => l.id)).toContain(created.id);

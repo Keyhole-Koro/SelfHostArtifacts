@@ -9,6 +9,8 @@ import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
 import { EDITOR_PATH, frameSrc, markdownLinks } from "../doc.ts";
 import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComment, listComments, openThreadCounts, setResolved, threadPeople, threadsOf, type CommentRow, type Thread } from "../db/comments.ts";
 import { changeLabels, labelCounts, labeledSearch, labelsOf } from "../db/labels.ts";
+import { BEAT_SECONDS, beat, editing, leave } from "../db/presence.ts";
+import { hasConflictMarks, merge3 } from "../merge.ts";
 import { BUILT_IN_TEMPLATES, TEMPLATE_LABEL, fromTemplatePage, markdownPages, type MarkdownPage } from "../templates.ts";
 import { activityHref, listActivity, listNotifications, markRead, pageTarget, projectTarget, record, setWatch, watching, type ActivityRow } from "../db/activity.ts";
 import { MAX_TEXT_CHARS, type VersionFile, labelSchema, labelsSchema, MAX_LABELS } from "@artifact/shared";
@@ -547,6 +549,8 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
             {isLatest ? `v${versionNumber}` : <span class="old">v{versionNumber} (latest is v{artifact.current_version})</span>} ·{" "}
             <Time iso={version.created_at} />
           </span>
+          <a id="newer" class="badge public" href={`/a/${id}`} hidden title="A newer version was saved after you opened this page" />
+          <span id="editing" class="badge public" hidden />
           {version.allow_connect.length > 0 && (
             <span class="badge" title={`May connect to ${version.allow_connect.join(", ")}`}>
               external
@@ -670,6 +674,25 @@ if (toggle) {
 }
 let exp = ${exp};
 const tokenUrl = ${JSON.stringify(`/a/${id}/token?v=${versionNumber}`)};
+// Someone saving or editing this page meanwhile: say so, and offer the newer version.
+{
+  const shown = ${versionNumber}, latest = ${JSON.stringify(isLatest)};
+  const newer = document.getElementById("newer"), editors = document.getElementById("editing");
+  const poll = async () => {
+    if (document.hidden) return;
+    try {
+      const res = await fetch(${JSON.stringify(`/a/${id}/state`)}, { credentials: "same-origin" });
+      if (!res.ok) return;
+      const s = await res.json();
+      if (latest && s.version > shown) { newer.textContent = "v" + s.version + " by " + s.by + " · show it"; newer.hidden = false; }
+      editors.textContent = s.editing.length ? s.editing.join(", ") + " editing" : "";
+      editors.hidden = !s.editing.length;
+    } catch {}
+  };
+  setInterval(poll, 30000);
+  document.addEventListener("visibilitychange", poll);
+  poll();
+}
 // Comments beside the page; a passage selected in the page can be commented on, and commented ones are marked.
 const frame = document.getElementById("frame");
 const commentsOn = (on) => { document.body.classList.toggle("with-comments", on); document.getElementById("comments-toggle").setAttribute("aria-expanded", String(on)); };
@@ -1490,6 +1513,7 @@ body { display: flex; flex-direction: column; background: var(--bg); color: var(
 .bar button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text, #fff); }
 .status { color: var(--text-2); min-width: 0; }
 .status.error { color: var(--negative, #c0362c); }
+.who { color: var(--accent); font-weight: 600; min-width: 0; }
 iframe { flex: 1; width: 100%; border: 0; background: #fff; }
 @media (prefers-color-scheme: dark) { iframe { background: #1c1c1b; } }
 `;
@@ -1565,6 +1589,7 @@ pages.get("/a/:id/edit", requireViewer("viewer", true), async (c) => {
           <span class="status" id="status" aria-live="polite">
             Editing v{version.version}
           </span>
+          <span class="who" id="who" aria-live="polite" hidden />
           <a class="btn" href={`/a/${id}`}>
             Cancel
           </a>
@@ -1601,16 +1626,44 @@ if (link) link.addEventListener("change", () => {
   frame.contentWindow.postMessage({ type: "artifact:insert", text: "[" + titles[link.value].replace(/[\\[\\]]/g, "") + "](/a/" + link.value + ")" }, "*");
   link.value = "";
 });
+const headers = { "content-type": "application/json", "x-csrf": ${JSON.stringify(viewer.csrf)} };
+const presence = ${JSON.stringify(`/a/${id}/presence`)};
+// While this editor is open it says so, and hears who else edits and what was saved meanwhile.
+const who = document.getElementById("who");
+const beat = async () => {
+  try {
+    const res = await fetch(presence, { method: "POST", credentials: "same-origin", headers, body: "{}" });
+    if (!res.ok) return;
+    const s = await res.json();
+    const parts = [];
+    if (s.editing.length) parts.push(s.editing.join(", ") + (s.editing.length === 1 ? " is" : " are") + " editing too");
+    if (s.version > base) parts.push("v" + s.version + " was saved meanwhile: saving merges your changes into it");
+    who.textContent = parts.join(" · ");
+    who.hidden = parts.length === 0;
+  } catch {}
+};
+beat();
+setInterval(beat, ${BEAT_SECONDS * 1000});
+addEventListener("pagehide", () => { fetch(presence, { method: "DELETE", credentials: "same-origin", headers, keepalive: true }).catch(() => {}); });
 document.getElementById("save").addEventListener("click", async () => {
   status.className = "status"; status.textContent = "Saving…";
   try {
-    const body = JSON.stringify({ base_version: base, title: document.getElementById("title").value, markdown: await markdown() });
-    const res = await fetch(location.pathname, { method: "POST", credentials: "same-origin", headers: { "content-type": "application/json", "x-csrf": ${JSON.stringify(viewer.csrf)} }, body });
+    const body = JSON.stringify({ base_version: base, title: document.getElementById("title").value, markdown: await markdown(), merge: true });
+    const res = await fetch(location.pathname, { method: "POST", credentials: "same-origin", headers, body });
     const out = await res.json().catch(() => ({}));
     if (res.ok) { location.href = ${JSON.stringify(`/a/${id}`)}; return; }
     status.className = "status error";
+    if (res.status === 409 && typeof out.merged === "string") {
+      // Both changed the same lines: the merge, with both sides marked, goes into the editor.
+      base = out.current_version;
+      frame.contentWindow.postMessage({ type: "artifact:set", markdown: out.merged, mode: "markdown" }, "*");
+      status.textContent = (out.conflicts === 1 ? "1 part" : out.conflicts + " parts") + " changed both by you and in v" + out.current_version + " by " + out.by
+        + ". Both are marked in the text: keep what should stay, delete the <<<<<<<, ======= and >>>>>>> lines, and save.";
+      who.hidden = true;
+      return;
+    }
     status.textContent = res.status === 409
-      ? "Version " + out.current_version + " was saved meanwhile. Copy your text, reload, and add your change to it."
+      ? "Version " + out.current_version + " was saved meanwhile by " + (out.by || "someone") + " and could not be merged. Copy your text, reload, and add your change to it."
       : (out.error || "Saving failed.");
   } catch (e) { status.className = "status error"; status.textContent = e.message; }
 });`)}
@@ -1620,7 +1673,22 @@ document.getElementById("save").addEventListener("click", async () => {
   );
 });
 
-const saveSchema = z.object({ base_version: z.number().int().positive(), title: titleSchema, markdown: z.string() });
+const saveSchema = z.object({ base_version: z.number().int().positive(), title: titleSchema, markdown: z.string(), merge: z.boolean().optional() });
+
+/** The Markdown of a version of a page written in Markdown. */
+async function markdownOf(c: Context<AppEnv>, id: string, version: number): Promise<string | undefined> {
+  const row = await getVersion(c.env.DB, id, version);
+  const file = row?.entry.endsWith(".md") ? row.files[row.entry] : undefined;
+  return file ? await (await c.env.BLOBS.get(blobKey(file.sha256)))?.text() : undefined;
+}
+
+/** Who saved a version: the person, or the agent's device. */
+async function savedBy(c: Context<AppEnv>, id: string, version: number): Promise<string> {
+  const row = await c.env.DB.prepare("select d.name from versions v join devices d on d.id = v.created_by where v.artifact_id = ? and v.version = ?")
+    .bind(id, version)
+    .first<{ name: string }>();
+  return (row?.name ?? "someone").replace(/ \(browser\)$/, "");
+}
 
 /** Saves a page written in the browser as a new version. */
 pages.post("/a/:id/edit", requireViewer("viewer", true), requireSameOriginJson(), async (c) => {
@@ -1636,10 +1704,26 @@ pages.post("/a/:id/edit", requireViewer("viewer", true), requireSameOriginJson()
   }
   const parsed = saveSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: parsed.error.issues[0]!.message }, 400);
-  const { base_version, title, markdown } = parsed.data;
+  const { base_version, title } = parsed.data;
+  let { markdown } = parsed.data;
+  let base = base_version;
+  let merged = false;
   if (new TextEncoder().encode(markdown).length > MAX_MARKDOWN_BYTES) return c.json({ error: "A page is at most 1 MB of text." }, 413);
-  if (base_version !== artifact.current_version) return c.json({ error: "version_conflict", current_version: artifact.current_version }, 409);
-  const added = await addVersion(c.env.DB, id, base_version, {
+  if (base_version !== artifact.current_version) {
+    // Saved meanwhile: merge this text into the latest, when asked to and when both can be read.
+    const latest = artifact.current_version;
+    const [was, now] = parsed.data.merge ? await Promise.all([markdownOf(c, id, base_version), markdownOf(c, id, latest)]) : [];
+    const by = await savedBy(c, id, latest);
+    const result = was !== undefined && now !== undefined ? merge3(was, markdown, now, { mine: "your text", theirs: `v${latest} by ${by}` }) : undefined;
+    if (!result || result.conflicts > 0) {
+      return c.json({ error: "version_conflict", current_version: latest, by, ...(result ? { merged: result.text, conflicts: result.conflicts } : {}) }, 409);
+    }
+    markdown = result.text;
+    base = latest;
+    merged = true;
+  }
+  if (hasConflictMarks(markdown) && parsed.data.merge) return c.json({ error: "The text still has conflict marks (<<<<<<< and >>>>>>>). Keep what should stay and remove them." }, 400);
+  const added = await addVersion(c.env.DB, id, base, {
     title,
     description: artifact.description ?? undefined,
     entry: version.entry,
@@ -1649,15 +1733,41 @@ pages.post("/a/:id/edit", requireViewer("viewer", true), requireSameOriginJson()
     text: markdown.slice(0, MAX_TEXT_CHARS),
     links: markdownLinks(markdown, c.get("config").origin),
   });
-  if (!added) return c.json({ error: "version_conflict", current_version: (await getArtifact(c.env.DB, id))?.current_version ?? base_version + 1 }, 409);
-  await recordViewerAction(c, "artifact.update", "artifact", id, { version: base_version + 1, browser: true });
+  if (!added) return c.json({ error: "version_conflict", current_version: (await getArtifact(c.env.DB, id))?.current_version ?? base + 1 }, 409);
+  await recordViewerAction(c, "artifact.update", "artifact", id, { version: base + 1, browser: true, merged });
   indexLater(semanticEnv(c.env), c.executionCtx, id);
   const viewer = c.get("viewer");
-  await record(c.env.DB, { artifactId: id, project: artifact.project, kind: "updated", actor: { userId: viewer.userId, name: viewer.name }, version: base_version + 1 });
+  await record(c.env.DB, { artifactId: id, project: artifact.project, kind: "updated", actor: { userId: viewer.userId, name: viewer.name }, version: base + 1 });
   await setWatch(c.env.DB, viewer.userId, pageTarget(id), true);
-  return c.json({ version: base_version + 1 });
+  await leave(c.env.DB, id, viewer.userId);
+  return c.json({ version: base + 1, merged });
 });
 
+
+/** An open editor says it is still open; the answer says who else edits and the latest version. */
+pages.post("/a/:id/presence", requireViewer("viewer", true), requireSameOriginJson(), async (c) => {
+  const id = c.req.param("id");
+  const found = await writable(c, id);
+  if (found instanceof Response) return c.json({ error: "not allowed" }, 403);
+  const viewer = c.get("viewer");
+  await beat(c.env.DB, id, viewer);
+  return c.json({ version: found.artifact.current_version, editing: await editing(c.env.DB, id, viewer.userId), every: BEAT_SECONDS });
+});
+
+pages.delete("/a/:id/presence", requireViewer("viewer", true), requireSameOriginJson(), async (c) => {
+  await leave(c.env.DB, c.req.param("id"), c.get("viewer").userId);
+  return c.json({ ok: true });
+});
+
+/** For an open page: its latest version and who is editing it, so the viewer can say so. */
+pages.get("/a/:id/state", requireViewer(), async (c) => {
+  const id = c.req.param("id");
+  const artifact = await getArtifact(c.env.DB, id);
+  const viewer = c.get("viewer");
+  if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.json({ error: "not found" }, 404);
+  const latest = artifact.current_version;
+  return c.json({ version: latest, by: await savedBy(c, id, latest), editing: await editing(c.env.DB, id, viewer.userId) });
+});
 
 // --- Comments ---
 
