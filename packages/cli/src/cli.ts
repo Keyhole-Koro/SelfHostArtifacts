@@ -15,6 +15,8 @@ import {
 import { describeSecret, serveMcp } from "./mcp.ts";
 import { activity, comment, comments, formatActivity, formatComments, labels, list, loginLink, move, projects, publish, read, reindex, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus } from "./operations.ts";
 import type { KeySelection } from "./secret.ts";
+import { formatPush, formatStatus, vaultImport, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
+import { ALLOWED_COMMANDS, vaultCollections, vaultCreate, vaultDestroy, vaultDevices, vaultGrant, vaultInit, vaultKey, vaultLedger, vaultPut, vaultRecover, vaultRevoke, vaultRotate, vaultSecret, vaultSecrets, vaultUse, type ValueSink, type ValueSource } from "./vault.ts";
 import { loadConfig, originFor, profileDir } from "./profile.ts";
 import { VERSION } from "./version.ts";
 
@@ -61,6 +63,35 @@ Secrets (only the recipient's browser can decrypt)
                                     Encrypt values from a .env, JSON or text file and send them
   artifact secret delete <id>                       End the request and delete the ciphertext
 
+Vault (secrets only this computer's key and the owner's key can open)
+  artifact vault init               Make this computer's key and the owner key; prints the recovery key once
+  artifact vault key                Make (if needed) and show this computer's key fingerprint
+  artifact vault devices            Computers with a vault key, with fingerprints
+  artifact vault create <collection>
+  artifact vault list [collection]  Collections, or the secrets of one (names and the ledger, never values)
+  artifact vault show <collection> <name>              Versions of a secret
+  artifact vault put <collection> <name> (--from <file> | --generate [--bytes n] | --stdin)
+      [--description <d>] [--used-by <what reads it>]  Encrypt a value here and store it as a new version
+  artifact vault use <collection> <name> (--out <file> | --run -- <gcloud|gh|wrangler|circleci> args… | --reveal) [--version n]
+                                    Open a value and write it to a 0600 file, pipe it into a command, or print it
+  artifact vault ledger <collection> <name> [--description <d>] [--used-by <w>]
+  artifact vault grant <collection> <device>           Let another computer read (compare its fingerprint first)
+  artifact vault revoke <collection> <device>          Take that away and replace the collection key
+  artifact vault rotate <collection>                   Replace the collection key (after a device was lost)
+  artifact vault destroy <collection> <name> [--version n]
+                                    Destroy one version's value, or the whole secret
+  artifact vault recover (--recovery-key <k> | --recovery-key-file <f>)
+                                    With the recovery key, let this computer read every collection
+  artifact vault target add <collection> <name> <kind://address> [--plaintext-ok]
+                                    Where the value must go: gcp://<project>/<secret>, circleci://<gh>/<org>/<context>/<VAR>[?token=<col>/<name>],
+                                    github://<owner>/<repo>/<NAME>[?environment=…], wrangler://<worker>/<NAME>, envfile:///path/.env#KEY
+  artifact vault target remove|list <collection> <name> [<address|id>]
+  artifact vault status [collection]   Each target: delivered at the current version, stale, or never delivered
+  artifact vault push <collection> [name] [--dry-run] [--force] [--only gcp,github] [--no-verify]
+                                    Deliver the current version where it is stale; records what arrived
+  artifact vault import <collection> <name> gcp://<project>/<secret id>
+                                    Bring a Secret Manager value into the vault and record it as delivered
+
 Agents
   artifact mcp                      Run the stdio MCP server (agents start this themselves)
 
@@ -103,6 +134,21 @@ function parse() {
       all: { type: "boolean" },
       "reply-to": { type: "string" },
       resolve: { type: "boolean" },
+      from: { type: "string" },
+      generate: { type: "boolean" },
+      bytes: { type: "string" },
+      stdin: { type: "boolean" },
+      out: { type: "string" },
+      run: { type: "boolean" },
+      reveal: { type: "boolean" },
+      "used-by": { type: "string" },
+      "recovery-key": { type: "string" },
+      "recovery-key-file": { type: "string" },
+      "plaintext-ok": { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      force: { type: "boolean" },
+      only: { type: "string" },
+      "no-verify": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -392,9 +438,194 @@ async function main(): Promise<void> {
       }
     }
 
+    case "vault": {
+      const [sub, a, b, ...more] = rest;
+      const versionOf = () => (o.version ? Number(o.version) : undefined);
+      switch (sub) {
+        case "init": {
+          const r = await vaultInit();
+          const device = `This computer: member ${r.device.member_id}, key fingerprint ${r.device.fingerprint} (kept in the ${r.device.store === "keyring" ? "OS keyring" : "profile directory"}).`;
+          if (r.owner_existed) {
+            out(`${device}\nThe vault already had an owner key; nothing else to do.`, r);
+          } else {
+            out(
+              `${device}\n\nRecovery key (shown only now; put it in a password manager or on paper — without it, losing every computer loses every secret):\n\n  ${r.recovery_key}\n`,
+              r,
+            );
+          }
+          return;
+        }
+        case "key": {
+          const r = await vaultKey();
+          out(`This computer: member ${r.member_id}, key fingerprint ${r.fingerprint} (${r.store === "keyring" ? "OS keyring" : "file in the profile directory"}).`, r);
+          return;
+        }
+        case "devices": {
+          const r = await vaultDevices();
+          out(r.map((m) => `${m.id}  ${m.kind === "owner" ? "owner" : (m.device_name ?? m.device_id ?? "")}${m.revoked_at ? "  (revoked)" : ""}  ${m.fingerprint}`).join("\n") || "No vault keys yet. Run `artifact vault init`.", r);
+          return;
+        }
+        case "create": {
+          if (!a) throw new ArtifactError("Usage: artifact vault create <collection>", "bad_args");
+          const r = await vaultCreate(a);
+          out(`Created collection ${r.name}. This computer and the owner key can open it; \`artifact vault grant ${r.name} <device>\` adds another computer.`, r);
+          return;
+        }
+        case "list": {
+          if (a) {
+            const r = await vaultSecrets(a);
+            out(
+              r.secrets.map((x) => `${x.name}  v${x.current_version}  ${x.updated_at.slice(0, 10)}  ${x.description ?? ""}${x.used_by ? `  [${x.used_by}]` : ""}`).join("\n") || `${r.collection} has no secrets yet.`,
+              r,
+            );
+          } else {
+            const r = await vaultCollections();
+            out(r.collections.map((x) => `${x.name}  ${x.secrets} secret${x.secrets === 1 ? "" : "s"}  ${x.members} reader${x.members === 1 ? "" : "s"}  ${x.readable ? "readable here" : "not readable here"}`).join("\n") || "No collections yet. `artifact vault create <name>` makes one.", r);
+          }
+          return;
+        }
+        case "show": {
+          if (!a || !b) throw new ArtifactError("Usage: artifact vault show <collection> <name>", "bad_args");
+          const r = await vaultSecret(a, b);
+          out(
+            `${r.collection}/${r.name}  v${r.current_version}${r.description ? `  ${r.description}` : ""}${r.used_by ? `\nUsed by: ${r.used_by}` : ""}\n` +
+              r.versions.map((v) => `  v${v.version}  ${v.created_at}  by ${v.created_by}${v.destroyed_at ? `  destroyed ${v.destroyed_at}` : ""}`).join("\n"),
+            r,
+          );
+          return;
+        }
+        case "put": {
+          if (!a || !b) throw new ArtifactError("Usage: artifact vault put <collection> <name> (--from <file> | --generate [--bytes n] | --stdin) [--description <d>] [--used-by <w>]", "bad_args");
+          let source: ValueSource;
+          if (o.from) source = { file: o.from };
+          else if (o.generate) source = { generate: o.bytes ? Number(o.bytes) : 0 };
+          else if (o.stdin) source = { value: (await readStdin()).replace(/\r?\n$/, "") };
+          else throw new ArtifactError("Say where the value comes from: --from <file>, --generate, or --stdin. Do not pass the value as an argument.", "bad_args");
+          const r = await vaultPut(a, b, source, { ...(o.description !== undefined ? { description: o.description } : {}), ...(o["used-by"] !== undefined ? { usedBy: o["used-by"] } : {}) });
+          out(`Stored ${r.collection}/${r.name} as version ${r.version} (${r.bytes} bytes${r.generated ? ", generated" : ""}).`, r);
+          return;
+        }
+        case "use": {
+          if (!a || !b) throw new ArtifactError("Usage: artifact vault use <collection> <name> (--out <file> | --run -- <command…> | --reveal) [--version n]", "bad_args");
+          let sink: ValueSink;
+          if (o.out) sink = { file: o.out };
+          else if (o.run) sink = { command: more };
+          else if (o.reveal) sink = { reveal: true };
+          else throw new ArtifactError(`Say where the value goes: --out <file>, --run -- <${ALLOWED_COMMANDS.join("|")} …>, or --reveal (prints it).`, "bad_args");
+          const r = await vaultUse(a, b, sink, versionOf());
+          if ("value" in r.delivered) {
+            if (o.json) out("", r);
+            else process.stdout.write(r.delivered.value + (process.stdout.isTTY ? "\n" : ""));
+          } else if ("file" in r.delivered) {
+            out(`Wrote ${r.collection}/${r.name} v${r.version} to ${r.delivered.file} (0600).`, r);
+          } else {
+            out(`Piped ${r.collection}/${r.name} v${r.version} into ${r.delivered.command}.${r.delivered.stdout.trim() ? `\n${r.delivered.stdout.trim()}` : ""}`, r);
+          }
+          return;
+        }
+        case "ledger": {
+          if (!a || !b) throw new ArtifactError("Usage: artifact vault ledger <collection> <name> [--description <d>] [--used-by <w>]", "bad_args");
+          const r = await vaultLedger(a, b, { ...(o.description !== undefined ? { description: o.description } : {}), ...(o["used-by"] !== undefined ? { usedBy: o["used-by"] } : {}) });
+          out(`${r.name}: ${r.description ?? "(no description)"}${r.used_by ? ` — used by ${r.used_by}` : ""}`, r);
+          return;
+        }
+        case "grant": {
+          if (!a || !b) throw new ArtifactError("Usage: artifact vault grant <collection> <device name | member id>", "bad_args");
+          const r = await vaultGrant(a, b);
+          out(`${r.member.device_name ?? r.member.id} can now open ${r.collection}. Its key fingerprint is ${r.member.fingerprint}; \`artifact vault key\` on that computer must show the same digits.`, r);
+          return;
+        }
+        case "revoke": {
+          if (!a || !b) throw new ArtifactError("Usage: artifact vault revoke <collection> <device name | member id>", "bad_args");
+          const r = await vaultRevoke(a, b);
+          out(`${r.removed ? "Removed" : "There was no grant for"} ${r.member} on ${r.collection}, and replaced the collection key (version ${r.key_version}, ${r.members} readers, ${r.versions} versions re-wrapped). Values that computer could read should be changed too.`, r);
+          return;
+        }
+        case "rotate": {
+          if (!a) throw new ArtifactError("Usage: artifact vault rotate <collection>", "bad_args");
+          const r = await vaultRotate(a);
+          out(`Replaced the key of ${r.collection} (version ${r.key_version}): ${r.members} readers, ${r.versions} versions re-wrapped.`, r);
+          return;
+        }
+        case "destroy": {
+          if (!a || !b) throw new ArtifactError("Usage: artifact vault destroy <collection> <name> [--version n]", "bad_args");
+          const r = await vaultDestroy(a, b, versionOf());
+          out(r.deleted ? `Deleted ${a}/${b} and all its versions.` : r.destroyed ? `Destroyed version ${r.version} of ${a}/${b}.` : `Version ${r.version} was already destroyed.`, r);
+          return;
+        }
+        case "recover": {
+          let recoveryKey = o["recovery-key"];
+          if (!recoveryKey && o["recovery-key-file"]) recoveryKey = (await import("node:fs")).readFileSync(o["recovery-key-file"], "utf8").trim();
+          if (!recoveryKey && !process.stdin.isTTY) recoveryKey = (await readStdin()).trim();
+          if (!recoveryKey) throw new ArtifactError("Usage: artifact vault recover --recovery-key <key> (or --recovery-key-file <file>, or the key on standard input)", "bad_args");
+          const r = await vaultRecover(recoveryKey);
+          out(r.collections.length ? `This computer can now open: ${r.collections.join(", ")}.` : "This computer could already open every collection.", r);
+          return;
+        }
+        case "target": {
+          const [action, collection, name, address] = [a, b, more[0], more[1]];
+          if (action === "add") {
+            if (!collection || !name || !address) throw new ArtifactError("Usage: artifact vault target add <collection> <name> <kind://address> [--plaintext-ok]", "bad_args");
+            const r = await vaultTargetAdd(collection, name, address, { ...(o["plaintext-ok"] ? { plaintextOk: true } : {}) });
+            out(`${collection}/${name} will be delivered to ${r.address}. \`artifact vault push ${collection} ${name}\` delivers it.`, r);
+            return;
+          }
+          if (action === "remove") {
+            if (!collection || !name || !address) throw new ArtifactError("Usage: artifact vault target remove <collection> <name> <address|id>", "bad_args");
+            const r = await vaultTargetRemove(collection, name, address);
+            out(r.removed ? `Removed ${r.address} from ${collection}/${name}. Its delivery records stay.` : `${r.address} was already removed.`, r);
+            return;
+          }
+          if (action === "list") {
+            if (!collection || !name) throw new ArtifactError("Usage: artifact vault target list <collection> <name>", "bad_args");
+            const r = await vaultTargets(collection, name);
+            out(r.map((t) => `${t.id}  ${t.address}${t.delivered ? `  v${t.delivered.version} delivered ${t.delivered.delivered_at.slice(0, 16).replace("T", " ")}` : "  not delivered"}${t.plaintext_ok ? "  [plaintext]" : ""}`).join("\n") || `${collection}/${name} has no targets.`, r);
+            return;
+          }
+          throw new ArtifactError("Usage: artifact vault target add|remove|list <collection> <name> …", "bad_args");
+        }
+        case "status": {
+          if (a) {
+            const r = await vaultStatus(a);
+            out(formatStatus(r), r);
+          } else {
+            const all = await vaultStatusAll();
+            out(all.map((r) => `${r.collection}\n${formatStatus(r).split("\n").map((l) => `  ${l}`).join("\n")}`).join("\n\n") || "No readable collections.", all);
+          }
+          return;
+        }
+        case "push": {
+          if (!a) throw new ArtifactError("Usage: artifact vault push <collection> [name] [--dry-run] [--force] [--only gcp,github] [--no-verify]", "bad_args");
+          const only = o.only ? (o.only.split(",").map((k) => k.trim()) as import("@artifact/shared").VaultTargetKind[]) : undefined;
+          const r = await vaultPush(a, { ...(b ? { name: b } : {}), dryRun: Boolean(o["dry-run"]), force: Boolean(o.force), ...(only ? { only } : {}), verify: !o["no-verify"] });
+          out(formatPush(r), r);
+          if (r.counts.failed) process.exitCode = 1;
+          return;
+        }
+        case "import": {
+          if (!a || !b || !more[0]) throw new ArtifactError("Usage: artifact vault import <collection> <name> gcp://<project>/<secret id> [--description <d>] [--used-by <w>]", "bad_args");
+          const r = await vaultImport(a, b, more[0], { ...(o.description !== undefined ? { description: o.description } : {}), ...(o["used-by"] !== undefined ? { usedBy: o["used-by"] } : {}) });
+          out(`Imported ${r.collection}/${r.name} as version ${r.version} (${r.bytes} bytes) from ${r.target} (${r.remote_ref}), recorded as delivered there.`, r);
+          return;
+        }
+        default:
+          throw new ArtifactError("Usage: artifact vault init|key|devices|create|list|show|put|use|ledger|grant|revoke|rotate|destroy|recover|target|status|push|import. Run `artifact help`.", "bad_args");
+      }
+    }
+
     default:
       throw new ArtifactError(`Unknown command "${command}". Run \`artifact help\`.`, "bad_args");
   }
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => (data += chunk));
+    process.stdin.on("end", () => resolvePromise(data));
+    process.stdin.on("error", reject);
+  });
 }
 
 main().catch((e: unknown) => {

@@ -477,6 +477,93 @@ create table secrets (          -- 0005_secrets.sql
 alter table secrets add column mode text not null default 'request';  -- request | share。share は開かれるまで ciphertext に内側の封筒
 ```
 
+## 金庫（vault）
+
+2026-11-19 に足した。API キーやパスワードを、持ち主の鍵と端末の鍵でしか開けない形で保管する。Worker に置くのは暗号文・公開鍵・包んだ鍵だけで、平文も秘密鍵も持たない。設計の合意は https://artifacts.keyhole.work/a/b243c7kyg2nm5pzt （既定の 6 項目で進めた）。
+
+受け渡し（上の節）は「外の人に 1 回渡す」もので、金庫は「自分の端末とエージェントが何度も使う」もの。エージェントは値を見ずに、決めたコマンドの標準入力か 600 のファイルへ流す。
+
+### 鍵の重ね方
+
+| 鍵 | 何を包むか | 秘密鍵の置き場所 | Worker に置くもの |
+|---|---|---|---|
+| 非常用の鍵（recovery key） | 持ち主の鍵 | 1Password か紙。`artifact vault init` が 1 回だけ表示する | なし |
+| 持ち主の鍵（owner key、P-256） | コレクションの鍵 | どこにも平文で置かない。復旧のときだけメモリーに置く | 公開鍵と、非常用の鍵で包んだ秘密鍵（`vault_owner_key_wraps`） |
+| 端末の鍵（P-256。署名の Ed25519 鍵とは別） | コレクションの鍵 | OS のキーリング（libsecret / Keychain / Credential Manager、`@napi-rs/keyring`）。使えなければプロファイルの `vault-key.json`（600）。`ARTIFACT_KEYRING=file` で強制 | 公開鍵（`vault_members`） |
+| コレクションの鍵（P-256） | 秘密ごとのデータ鍵 | 使うときだけメモリーに置く | メンバーごとに包んだ秘密鍵（`vault_grants`）と公開鍵 |
+| データ鍵（AES-256、版ごと） | 値 | 使うときだけメモリーに置く | コレクションの公開鍵で包んだもの（`vault_versions.wrapped_dek`） |
+
+- 公開鍵へ包むのは受け渡しと同じ封筒 v1（使い捨ての P-256 で ECDH → HKDF-SHA256 → AES-256-GCM）。HKDF の info と追加認証データは `artifact-vault v1\0<用途>\0<コレクション>\0<版や相手>` で、別の場所へ暗号文を付け替えると開かない（`vaultContext`、`@artifact/shared` の vault.ts）
+- 値は AES-256-GCM。追加認証データにコレクション・秘密の名前・版を入れる
+- 非常用の鍵は 32 バイトの乱数を Crockford base32（I・L・O・U なし）13 組で表示する。HKDF-SHA256 で AES の鍵にして持ち主の秘密鍵（JWK）を包む
+- 読める相手を足すときは、コレクションの秘密鍵を相手の公開鍵へ包み直すだけ（秘密を 1 つずつ包み直さない）。端末を外したときは、コレクションの鍵を作り直し、残るメンバーに包み直し、生きている版のデータ鍵も新しい鍵で包み直す（`rotate`）
+
+### 流れ
+
+1. `artifact vault init`（持ち主が 1 回）: 端末の鍵を作ってキーリングへ、公開鍵を登録。持ち主の鍵を作り、非常用の鍵で包んで置き、非常用の鍵を表示する
+2. `artifact vault create <collection>`: コレクションの鍵を作り、この端末と持ち主の鍵に包んで置く。コレクションはプロジェクトと環境ごと（`medishare-prod`、`medishare-stg`）
+3. `vault put`: 値をファイルから読むか生成し、新しいデータ鍵で暗号化、データ鍵をコレクションの公開鍵へ包んで、次の版として置く。読む権限は要らない（公開鍵だけで入れられる）
+4. `vault use`: 端末の鍵で自分の grant を開き、コレクションの鍵でデータ鍵を開き、値を開く。流し先はファイル（600）か、`gcloud`・`gh`・`wrangler`・`circleci` の標準入力。人が端末で `--reveal` を付けたときだけ表示する。読み出しは `audit_events`（`vault.read`）に残る
+5. `vault grant <collection> <device>`: 相手の端末が `artifact vault key` で作った鍵の指紋（公開鍵の SHA-256 の 12 桁）を、`vault devices` の表示と見比べてから包む
+6. `vault revoke`: grant を消して `rotate`。外した端末が読めた値は変えるよう促す
+7. `vault recover --recovery-key`: 持ち主の鍵を開き、すべてのコレクションの持ち主向けの grant を開いて、この端末向けに包み直す。端末は自分自身への grant だけは権限なしで置ける（本物のコレクションの鍵が無ければ開けない grant しか作れないため）
+
+### API（`/api/v1/vault/*`、端末の署名）
+
+| メソッド | パス | 内容 |
+|---|---|---|
+| `PUT` | `/members/me` | この端末の暗号化用の公開鍵を登録する。鍵を替えると前の grant は消える |
+| `GET` | `/members` | メンバー（端末と持ち主）の一覧 |
+| `GET` / `PUT` | `/owner` | 持ち主の鍵と包み。鍵は 1 つだけで、包みは足せる |
+| `POST` / `GET` | `/collections`、`/collections/:name` | 作る（自分と持ち主の grant が必須）、一覧（この端末が読めるか付き）、詳細（自分の grant 付き） |
+| `POST` / `DELETE` | `/collections/:name/grants`、`…/grants/:member` | grant を足す（他人には自分の grant が要る。自分には要らない）、消す（持ち主は消せない。応答に rotate の材料） |
+| `GET` / `POST` | `/collections/:name/rotation`、`…/rotate` | rotate の材料（残るメンバーと生きている版）、鍵の入れ替え（生きている版を全部包み直さないと 409） |
+| `GET` | `/collections/:name/owner-grant` | 持ち主向けの grant（復旧で使う。持ち主の鍵が無ければ開けない） |
+| `GET` / `PUT` / `PATCH` / `DELETE` | `/collections/:name/secrets`、`…/secrets/:secret` | 一覧、新しい版（`version` は今の版 + 1。違えば 409）、台帳（説明・使っているもの）、秘密ごと削除 |
+| `GET` / `DELETE` | `…/secrets/:secret/versions/:version` | 開くための材料（暗号文・包んだデータ鍵・自分の grant・コレクションの公開鍵。`latest` 可）、版の破棄 |
+
+一覧・読み出し・台帳・破棄は、その時点のコレクションの鍵への grant を持つ端末だけ。`put` は端末であれば誰でも。端末を設定画面で失効すると `vault_members` も失効する（`revokeMembersOfDevice`）。
+
+### D1（0016_vault.sql）
+
+`vault_members`（端末か持ち主。公開鍵）、`vault_owner_key_wraps`（持ち主の秘密鍵の包み。`recovery`、将来 `passkey:<id>`）、`vault_collections`（名前、公開鍵、`key_version`）、`vault_grants`（コレクションの秘密鍵をメンバーごとに包んだもの、`key_version` ごと）、`vault_secrets`（名前、説明、`used_by`、`current_version`）、`vault_versions`（`wrapped_dek`、`ciphertext`、`destroyed_at`）。破棄した版は行を残して値を空にする。
+
+### 守れること、守れないこと
+
+| 起きること | 結果 |
+|---|---|
+| D1 のデータが漏れる | 守れる。暗号文と包んだ鍵、公開鍵しかない |
+| 端末を 1 台なくす | `revoke`（鍵の入れ替え）で以後は読めない。その端末が読めた値は変える |
+| 端末もパスキーも全部なくす | 非常用の鍵で `recover` |
+| Worker が乗っ取られ、偽の公開鍵を渡される | `grant` の前に指紋を両方の画面で見比べる |
+| 端末そのものが乗っ取られる | 守れない。その端末が読めるコレクションは読まれる |
+
+### まだないもの
+
+- ブラウザで開く・入れる（パスキーの PRF で持ち主の鍵を開く）。`vault_owner_key_wraps.wrapped_by` に `passkey:<credential id>` の形を用意してある
+- 人から値をもらう「受け入れるまで保留」のリンク
+- 署名の鍵（`key.pem`）のキーリングへの移行。今回は暗号化用の鍵だけキーリングに置く
+- `/settings` の一覧。いまは CLI と MCP の `vault_list` だけ
+
+### 配達（vault push）
+
+2026-11-19 に足した。秘密ごとに「どこへ配るか」を `種類://住所` で台帳に登録し、`artifact vault push` が遅れている配達先にだけ今の版を配って、何が届いたかを記録する。設計: https://artifacts.keyhole.work/a/cq4gqx5824re9v4c 。Secret Manager の置き換えではない。Cloud Run の起動は Secret Manager から読むままにし、金庫は正本と配達の元になる。
+
+| 種類 | 書き方 | 流し方 | 確かめ方・記録 |
+|---|---|---|---|
+| Secret Manager | `gcp://<project>/<secret id>` | `gcloud secrets versions add … --data-file=-`（`ARTIFACT_GCLOUD` で wrapper を指定できる） | 作られた版番号。`--no-verify` を付けなければ `versions access` で読み戻し、SHA-256 を比べて捨てる |
+| CircleCI の context | `circleci://<gh\|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>]` | v2 API の `PUT /context/{id}/environment-variable/{name}`。token は金庫の秘密から読む（無ければ `CIRCLECI_TOKEN`） | 読み戻せない。一覧の `updated_at` を記録 |
+| GitHub Actions の secret | `github://<owner>/<repo>/<NAME>[?environment=…]` | `gh secret set NAME`（標準入力） | 読み戻せない。`gh secret list` の `updatedAt` を記録 |
+| Cloudflare Worker | `wrangler://<worker>/<NAME>[?config=…&cwd=…]` | `wrangler secret put NAME`（標準入力）。Worker の新しいバージョンが出る | `wrangler secret list` に名前があるか |
+| 手元のファイル | `envfile:///絶対パス#KEY` | 600 のファイルの `KEY=` の行を書き換える | 読み戻して比べる。平文が残る唯一の口なので、登録に `--plaintext-ok` が要り、一覧に印が付く |
+
+- 値が端末の外へ出るのは配達先への入力（標準入力か TLS の本文）だけ。引数・ログ・MCP の結果には出ない。配達先の認証情報は Worker に置かず、gcloud・gh・wrangler はその端末のログインを使う
+- 配達先と配達の記録は D1（`vault_targets`・`vault_deliveries`、0017）に置き、どの端末からも同じ台帳が見える。配達先の住所は秘密ではないが、どこに何があるかは分かるので、grant のある端末にだけ返す
+- push は配達先ごとに「記録の版」と「今の版」を比べ、遅れているものだけ配る（`--force` で全部）。`--dry-run` は値を開かずに予定だけ出す。失敗は結果に残して次へ進み、`failed` として記録する。MCP の `vault_push` は既定で dry-run で、`apply: true` のときだけ配る
+- `artifact vault import <collection> <name> gcp://…` は Secret Manager の最新の版を読んで金庫の版にし、配達先を登録して「届いた」と記録する。CircleCI と GitHub は値を読み戻せないので取り込めない
+- push は Cloud Run を再デプロイしない。Secret Manager の新しい版は次のリビジョンから効く
+- API: `GET /collections/:name/status`、`GET|POST /…/secrets/:secret/targets`、`DELETE /…/targets/:id`、`POST /…/targets/:id/deliveries`。監査は `vault.target_add`・`vault.target_remove`・`vault.push`（配達先と版と結果。値は含まない）
+
 ## 料金
 
 2026-10-16 に Cloudflare の料金ページ（[Workers](https://developers.cloudflare.com/workers/platform/pricing/)、[R2](https://developers.cloudflare.com/r2/pricing/)）で確かめた値。

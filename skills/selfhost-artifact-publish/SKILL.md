@@ -95,6 +95,36 @@ When the user wants to confirm the recipient before anything is sent:
    never the values: do not write a secret into tool arguments or the conversation.
 4. `secret_delete({ id })` only when the user asks.
 
+## Using the vault
+
+The vault keeps the user's API keys and passwords encrypted; only this computer's key (and the
+owner's recovery key) can open them. Values never pass through you.
+
+- `vault_list({ collection? })` shows collections, then the secrets of one: names, what each is,
+  what uses it. Use `used_by` to find which secret a service needs.
+- To store a value: `vault_put({ collection, name, file_path })` from a local file the user wrote,
+  or `vault_put({ collection, name, generate: true })` for a new random value (then put it where
+  it is needed with `vault_use`). Never pass the value itself, and never ask the user to paste it
+  into the conversation: ask them to save it to a file and give you the path.
+- To use a value: `vault_use({ collection, name, into: { command: ["gcloud", "secrets", "versions",
+  "add", "resend-api-key", "--data-file=-"] } })` pipes it into `gcloud`, `gh`, `wrangler` or
+  `circleci`; `into: { file_path }` writes a 0600 file for a tool that needs one (delete it after).
+  The value is not returned to you; say what you did, not what it was.
+- `vault_grant({ collection, device })` lets another computer read. Before calling it, have the
+  user compare the fingerprint from `vault_devices()` with `artifact vault key` on that computer.
+- `vault_destroy` only when the user asks. `artifact vault init`, `revoke`, `rotate` and `recover`
+  are terminal commands for the user.
+- If a tool says this computer cannot read a collection, tell the user: a computer that can must
+  run `artifact vault grant <collection> <this device>`, or they use `artifact vault recover`
+  with the recovery key.
+- Delivery: `vault_target({ collection, name, add })` records where a value must go
+  (`gcp://<project>/<secret id>`, `circleci://gh/<org>/<context>/<VAR>?token=<collection>/<name>`,
+  `github://<owner>/<repo>/<NAME>`, `wrangler://<worker>/<NAME>`, `envfile:///path/.env#KEY`
+  with `plaintext_ok`). `vault_status({ collection })` shows which targets are stale.
+  `vault_push({ collection })` only shows the plan; call it with `apply: true` when the user asked
+  to deliver, and report what arrived where, never the values. After a Secret Manager delivery,
+  Cloud Run uses the new version from its next revision, so say that too.
+
 ## Errors
 
 The error text says what to do. If it says the user must run `artifact login`, tell them to run

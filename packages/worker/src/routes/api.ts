@@ -37,6 +37,7 @@ import { Hono, type Context } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../app-env.ts";
 import { requireDevice } from "../auth/device.ts";
+import { vault } from "./vault.ts";
 import {
   addVersion,
   createArtifact,
@@ -679,5 +680,8 @@ signed.delete("/secrets/:id", async (c) => {
   }
   return c.json({ deleted: true, status: finished ? "deleted" : secretStatus(row) });
 });
+
+// --- The vault (routes/vault.ts): wrapped keys and ciphertexts that only the members' keys open ---
+signed.route("/vault", vault);
 
 api.route("/", signed);

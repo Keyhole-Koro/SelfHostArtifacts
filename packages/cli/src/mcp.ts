@@ -3,6 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
 import { activity, comment, comments, formatActivity, formatComments, labels, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
+import { formatPush, formatStatus, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
+import { ALLOWED_COMMANDS, vaultCollections, vaultCreate, vaultDestroy, vaultDevices, vaultGrant, vaultPut, vaultSecrets, vaultUse } from "./vault.ts";
 import { VERSION } from "./version.ts";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -245,6 +247,220 @@ export function createServer(): McpServer {
         const r = await remove(url);
         return `Moved to the trash. It can be restored at ${r.restore}`;
       }),
+  );
+
+  // --- The vault: values are opened only on this computer and go to a file or a command, never into the conversation ---
+
+  server.registerTool(
+    "vault_list",
+    {
+      title: "List vault collections, or the secrets of one",
+      description:
+        "The vault keeps secrets (API keys, passwords) encrypted so that only this computer's key and the owner's key can open them. " +
+        "Without `collection`, lists the collections and whether this computer can read each. With it, lists that collection's " +
+        "secrets: names, descriptions, what uses them, and versions. Values are never returned.",
+      inputSchema: { collection: z.string().optional().describe("A collection name, e.g. medishare-prod") },
+      annotations: { readOnlyHint: true },
+    },
+    ({ collection }) =>
+      run(async () => {
+        if (collection) {
+          const r = await vaultSecrets(collection);
+          if (!r.secrets.length) return `${r.collection} has no secrets yet.`;
+          return r.secrets.map((x) => `${x.name} (v${x.current_version}, ${x.updated_at.slice(0, 10)})${x.description ? `: ${x.description}` : ""}${x.used_by ? ` — used by ${x.used_by}` : ""}`).join("\n");
+        }
+        const r = await vaultCollections();
+        if (!r.collections.length) return "No collections yet. vault_create makes one (the user runs `artifact vault init` first, once).";
+        return r.collections.map((x) => `${x.name}: ${x.secrets} secret(s), ${x.members} reader(s), ${x.readable ? "readable on this computer" : "NOT readable on this computer"}`).join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "vault_create",
+    {
+      title: "Create a vault collection",
+      description: "Make a collection (a group of secrets with the same readers, e.g. one per project and environment). This computer and the owner key can open it.",
+      inputSchema: { name: z.string().describe("Letters, digits, - _ . — e.g. medishare-stg") },
+    },
+    ({ name }) =>
+      run(async () => {
+        const r = await vaultCreate(name);
+        return `Created collection ${r.name}. Readers: this computer and the owner key. vault_grant adds another computer.`;
+      }),
+  );
+
+  server.registerTool(
+    "vault_put",
+    {
+      title: "Store a secret value in the vault",
+      description:
+        "Encrypt a value on this computer and store it as a new version of `name` in `collection`. The value comes from a local file " +
+        "(`file_path`) or is generated here (`generate`: random bytes, base64url). Never write a secret value into the arguments or the " +
+        "conversation. Say what uses it (`used_by`) so the ledger stays useful. Needs no read access to the collection.",
+      inputSchema: {
+        collection: z.string(),
+        name: z.string().describe("Letters, digits, - _ . — e.g. RESEND_API_KEY"),
+        file_path: z.string().optional().describe("Absolute path of a file whose whole content is the value (a trailing newline is dropped)"),
+        generate: z.boolean().optional().describe("Make a new random value here instead of reading a file"),
+        bytes: z.number().int().min(16).max(128).optional().describe("How many random bytes to generate (32 by default)"),
+        description: z.string().optional().describe("What it is, one line"),
+        used_by: z.string().optional().describe("What reads it, e.g. \"Cloud Run medishare-web (RESEND_API_KEY), CircleCI context medishare-prod\""),
+      },
+    },
+    ({ collection, name, file_path, generate, bytes, description, used_by }) =>
+      run(async () => {
+        if (!file_path && !generate) throw new ArtifactError("Pass file_path (a file holding the value) or generate: true. Never pass the value itself.", "bad_args");
+        const r = await vaultPut(collection, name, file_path ? { file: file_path } : { generate: bytes ?? 0 }, { ...(description !== undefined ? { description } : {}), ...(used_by !== undefined ? { usedBy: used_by } : {}) });
+        return `Stored ${r.collection}/${r.name} as version ${r.version} (${r.bytes} bytes${r.generated ? ", generated" : ""}).`;
+      }),
+  );
+
+  server.registerTool(
+    "vault_use",
+    {
+      title: "Use a secret value without seeing it",
+      description:
+        "Open a vault value on this computer and deliver it where it is needed: write it to a file (mode 0600) or pipe it into the " +
+        `standard input of ${ALLOWED_COMMANDS.join(", ")} (e.g. gcloud secrets versions add NAME --data-file=-, gh secret set NAME, wrangler secret put NAME). ` +
+        "The value is never returned to you. The read is recorded in the audit log.",
+      inputSchema: {
+        collection: z.string(),
+        name: z.string(),
+        version: z.number().int().min(1).optional().describe("A past version; the latest by default"),
+        into: z
+          .union([
+            z.object({ file_path: z.string().describe("Absolute path to write (created with mode 0600)") }),
+            z.object({ command: z.array(z.string()).min(1).describe(`Command and arguments; the value goes to its standard input. First word: ${ALLOWED_COMMANDS.join(", ")}`) }),
+          ])
+          .describe("Where the value goes"),
+      },
+    },
+    ({ collection, name, version, into }) =>
+      run(async () => {
+        const r = await vaultUse(collection, name, "file_path" in into ? { file: into.file_path } : { command: into.command }, version);
+        if ("file" in r.delivered) return `Wrote ${r.collection}/${r.name} v${r.version} (${r.bytes} bytes) to ${r.delivered.file} with mode 0600. Delete the file when it is no longer needed.`;
+        if ("command" in r.delivered) return `Piped ${r.collection}/${r.name} v${r.version} into ${r.delivered.command} (exit 0).${r.delivered.stdout.trim() ? `\n${r.delivered.stdout.trim()}` : ""}`;
+        return `Opened ${r.collection}/${r.name} v${r.version}.`;
+      }),
+  );
+
+  server.registerTool(
+    "vault_devices",
+    {
+      title: "Computers with a vault key",
+      description: "Lists the computers (devices) that have a vault key, with each key's 12-digit fingerprint, and the owner key. Use it to find the device to pass to vault_grant.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    () =>
+      run(async () => {
+        const r = await vaultDevices();
+        if (!r.length) return "No vault keys yet. The user runs `artifact vault init` once.";
+        return r.map((m) => `${m.id}: ${m.kind === "owner" ? "owner key" : (m.device_name ?? m.device_id ?? "device")}${m.revoked_at ? " (revoked)" : ""} — fingerprint ${m.fingerprint}`).join("\n");
+      }),
+  );
+
+  server.registerTool(
+    "vault_grant",
+    {
+      title: "Let another computer read a collection",
+      description:
+        "Wrap the collection key for another computer that already has a vault key (it ran `artifact vault key`). Before calling this, " +
+        "the user should compare the fingerprint shown by vault_devices with `artifact vault key` on that computer, so a key swapped on the server is noticed.",
+      inputSchema: { collection: z.string(), device: z.string().describe("The device's name or vault member id (from vault_devices)") },
+    },
+    ({ collection, device }) =>
+      run(async () => {
+        const r = await vaultGrant(collection, device);
+        return `${r.member.device_name ?? r.member.id} can now open ${r.collection}. Its key fingerprint is ${r.member.fingerprint}; \`artifact vault key\` on that computer must show the same digits.`;
+      }),
+  );
+
+  server.registerTool(
+    "vault_destroy",
+    {
+      title: "Destroy a secret value",
+      description: "Destroy one version's value for good, or delete a whole secret with all its versions. Only when the user asks for it.",
+      inputSchema: { collection: z.string(), name: z.string(), version: z.number().int().min(1).optional().describe("Destroy only this version; without it, the whole secret is deleted") },
+      annotations: { destructiveHint: true },
+    },
+    ({ collection, name, version }) =>
+      run(async () => {
+        const r = await vaultDestroy(collection, name, version);
+        return r.deleted ? `Deleted ${collection}/${name} and all its versions.` : r.destroyed ? `Destroyed version ${r.version} of ${collection}/${name}.` : `Version ${r.version} was already destroyed.`;
+      }),
+  );
+
+  server.registerTool(
+    "vault_status",
+    {
+      title: "Where each vault value has been delivered",
+      description:
+        "For each secret of a collection (or of every readable collection), its delivery targets and whether the current version arrived there: " +
+        "delivered, STALE (an older version is there), NOT DELIVERED, or FAILED. Use it before vault_push, and to answer \"is X up to date in CircleCI?\".",
+      inputSchema: { collection: z.string().optional() },
+      annotations: { readOnlyHint: true },
+    },
+    ({ collection }) =>
+      run(async () => {
+        if (collection) return formatStatus(await vaultStatus(collection));
+        const all = await vaultStatusAll();
+        return all.map((r) => `${r.collection}\n${formatStatus(r).split("\n").map((l) => `  ${l}`).join("\n")}`).join("\n\n") || "No readable collections.";
+      }),
+  );
+
+  server.registerTool(
+    "vault_target",
+    {
+      title: "Say where a vault value must be delivered",
+      description:
+        "Lists, adds or removes a secret's delivery targets. A target is `kind://address`: gcp://<project>/<secret id> (Secret Manager), " +
+        "circleci://<gh|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>] (the token is itself a vault secret), " +
+        "github://<owner>/<repo>/<NAME>[?environment=<env>], wrangler://<worker>/<NAME>[?config=…&cwd=…], envfile:///absolute/path/.env#KEY " +
+        "(a plaintext copy on this computer; needs plaintext_ok). Adding a target delivers nothing by itself: call vault_push.",
+      inputSchema: {
+        collection: z.string(),
+        name: z.string(),
+        add: z.string().optional().describe("A target address to add"),
+        remove: z.string().optional().describe("A target address or id to remove"),
+        plaintext_ok: z.boolean().optional().describe("Required to add an envfile target: the user accepted a plaintext copy"),
+      },
+    },
+    ({ collection, name, add, remove, plaintext_ok }) =>
+      run(async () => {
+        if (add) {
+          const t = await vaultTargetAdd(collection, name, add, { ...(plaintext_ok ? { plaintextOk: true } : {}) });
+          return `${collection}/${name} will be delivered to ${t.address}. vault_push delivers it.`;
+        }
+        if (remove) {
+          const r = await vaultTargetRemove(collection, name, remove);
+          return r.removed ? `Removed ${r.address} from ${collection}/${name}; its delivery records stay.` : `${r.address} was already removed.`;
+        }
+        const targets = await vaultTargets(collection, name);
+        return targets.map((t) => `${t.address}${t.delivered ? ` — v${t.delivered.version} delivered ${t.delivered.delivered_at}` : " — not delivered"}${t.plaintext_ok ? " [plaintext]" : ""}`).join("\n") || `${collection}/${name} has no targets.`;
+      }),
+  );
+
+  server.registerTool(
+    "vault_push",
+    {
+      title: "Deliver vault values to their targets",
+      description:
+        "Delivers each stale value of a collection (or of one secret) to its targets: a new Secret Manager version through gcloud, a CircleCI context " +
+        "variable, a GitHub Actions secret through gh, a Worker secret through wrangler, or a KEY in a 0600 env file. Values are opened on this " +
+        "computer and go only to the tool's standard input or an HTTPS body; nothing is returned to you. By default this only shows the plan; " +
+        "pass apply: true when the user asked to deliver. Secret Manager deliveries are read back and compared.",
+      inputSchema: {
+        collection: z.string(),
+        name: z.string().optional().describe("One secret; all of the collection by default"),
+        apply: z.boolean().optional().describe("Actually deliver. Without it, only the plan is shown"),
+        force: z.boolean().optional().describe("Deliver even where the current version is recorded as delivered"),
+        only: z.array(z.enum(["gcp", "circleci", "github", "wrangler", "envfile"])).optional().describe("Only these kinds of targets"),
+      },
+      annotations: { destructiveHint: true },
+    },
+    ({ collection, name, apply, force, only }) =>
+      run(async () => formatPush(await vaultPush(collection, { ...(name ? { name } : {}), dryRun: !apply, force: Boolean(force), ...(only ? { only } : {}) }))),
   );
 
   server.registerTool(

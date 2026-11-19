@@ -15,6 +15,7 @@ import { MAX_SOURCE_BYTES, SOURCE_PATH, editableFiles } from "../source.ts";
 import { BUILT_IN_TEMPLATES, TEMPLATE_LABEL, fromTemplatePage, markdownPages, type MarkdownPage } from "../templates.ts";
 import { activityHref, listActivity, listNotifications, markRead, pageTarget, projectTarget, record, setWatch, watching, type ActivityRow } from "../db/activity.ts";
 import { MAX_TEXT_CHARS, type VersionFile, labelSchema, labelsSchema, MAX_LABELS, pageText, pageLinks } from "@artifact/shared";
+import { revokeMembersOfDevice } from "../db/vault.ts";
 import { z } from "zod";
 import { blobKey } from "./api.ts";
 import { randomId, sha256Hex, utf8 } from "../lib/encoding.ts";
@@ -2928,6 +2929,8 @@ root.post("/settings/devices/:id/revoke", requireSameOriginForm(), async (c) => 
   const id = c.req.param("id");
   const device = await c.env.DB.prepare("select name from devices where id = ?").bind(id).first<{ name: string }>();
   await c.env.DB.prepare("update devices set revoked_at = ? where id = ?").bind(new Date().toISOString(), id).run();
+  // Its vault key can no longer open anything new; collections it could read should be rotated (`artifact vault rotate`).
+  await revokeMembersOfDevice(c.env.DB, id);
   await recordViewerAction(c, "device.revoke", "device", id, { name: device?.name ?? "unknown" });
   return c.redirect("/settings#devices", 303);
 });

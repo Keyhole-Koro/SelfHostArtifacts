@@ -13,6 +13,9 @@ export interface ProfileConfig {
   host: string;
   device_id?: string;
   device_name?: string;
+  /** The vault member id and encryption public key registered for this device (`artifact vault key`). */
+  vault_member_id?: string;
+  vault_public_key?: string;
 }
 
 export interface PublishedFile {
