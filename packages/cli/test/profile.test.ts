@@ -1,4 +1,5 @@
-import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, closeSync, constants, mkdtempSync, openSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,5 +62,20 @@ describe.skipIf(process.platform === "win32")("private files", () => {
     writePrivateFile(path, "TOKEN=new\n");
     expect(modesWhenWritten.length).toBeGreaterThan(0);
     expect(modesWhenWritten.map((mode) => mode?.toString(8))).toEqual(modesWhenWritten.map(() => "600"));
+  });
+
+  it("writes into a FIFO, which cannot be truncated (like --out /dev/stdout or >(cmd))", () => {
+    const fifo = join(work, "out.fifo");
+    execFileSync("mkfifo", [fifo]);
+    // A non-blocking reader is open first, so opening the writing end does not wait for one.
+    const reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+    try {
+      writePrivateFile(fifo, "TOKEN=x\n");
+      const buffer = Buffer.alloc(64);
+      const read = readSync(reader, buffer, 0, buffer.length, null);
+      expect(buffer.subarray(0, read).toString("utf8")).toBe("TOKEN=x\n");
+    } finally {
+      closeSync(reader);
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fchmodSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -94,7 +94,8 @@ export function writePrivateFile(path: string, contents: string): void {
   const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT, 0o600);
   try {
     fchmodSync(fd, 0o600);
-    ftruncateSync(fd, 0);
+    // A pipe, FIFO or terminal (--out /dev/stdout, >(cmd)) cannot be truncated (EINVAL) and has nothing to cut.
+    if (fstatSync(fd).isFile()) ftruncateSync(fd, 0);
     writeFileSync(fd, contents);
   } finally {
     closeSync(fd);
