@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -48,6 +48,16 @@ describe("env file lines", () => {
     expect(r.verified).toBe(true);
     expect(readFileSync(path, "utf8")).toBe("TOKEN=t0k3n\n");
     expect(() => deliverEnvfile({ kind: "envfile", path, key: "TOKEN" }, utf8("two\nlines"))).toThrow(ArtifactError);
+  });
+
+  it("does not write through a symbolic link put where the env file was", () => {
+    const other = join(work, "other-file");
+    writeFileSync(other, "keep\n", { mode: 0o644 });
+    const path = join(work, ".env");
+    symlinkSync(other, path);
+    expect(() => deliverEnvfile({ kind: "envfile", path, key: "TOKEN" }, utf8("t0k3n"))).toThrow(/symbolic link/);
+    expect(readFileSync(other, "utf8")).toBe("keep\n");
+    expect(statSync(other).mode & 0o777).toBe(0o644);
   });
 
   it("records nothing derived from the value, which the agent and the Worker see", () => {

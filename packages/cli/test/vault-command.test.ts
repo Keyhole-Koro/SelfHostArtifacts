@@ -1,9 +1,10 @@
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactError } from "../src/client.ts";
-import { ALLOWED_USES, checkCommand, containsValue, pipeValue, WITHHELD } from "../src/vault-command.ts";
+import { ALLOWED_USES, checkCommand, containsValue, pipeValue, shellQuote, WITHHELD } from "../src/vault-command.ts";
 
 afterEach(() => {
   delete process.env["ARTIFACT_GCLOUD"];
@@ -14,11 +15,11 @@ describe("checkCommand", () => {
     expect(checkCommand(["gcloud", "secrets", "versions", "add", "api-key", "--project=proj-123456", "--data-file", "-", "-q"]).args).toEqual([
       "secrets", "versions", "add", "api-key", "--data-file=-", "--project", "proj-123456", "--quiet",
     ]);
-    expect(checkCommand(["gh", "secret", "set", "API_KEY", "-R", "owner/repo", "-e", "prod env", "-a", "dependabot"]).args).toEqual([
-      "secret", "set", "API_KEY", "--repo", "owner/repo", "--env", "prod env", "--app", "dependabot",
+    expect(checkCommand(["gh", "secret", "set", "API_KEY", "-R", "owner/repo", "-e", "prod env"]).args).toEqual([
+      "secret", "set", "API_KEY", "--repo", "owner/repo", "--env", "prod env",
     ]);
-    expect(checkCommand(["gh", "secret", "set", "API_KEY", "--org", "my-org", "--visibility", "selected", "--repos", "a,b"]).display).toBe(
-      "gh secret set API_KEY --org my-org --visibility selected --repos a,b",
+    expect(checkCommand(["gh", "secret", "set", "API_KEY", "--env=prod env", "--repo=owner/repo"]).display).toBe(
+      "gh secret set API_KEY --env 'prod env' --repo owner/repo",
     );
     expect(checkCommand(["wrangler", "secret", "put", "API_KEY", "--config", "/home/me/app/wrangler.jsonc", "--env", "staging"]).args).toEqual([
       "secret", "put", "API_KEY", "--config", "/home/me/app/wrangler.jsonc", "--env", "staging",
@@ -28,10 +29,11 @@ describe("checkCommand", () => {
     ]);
   });
 
-  it("runs gcloud through ARTIFACT_GCLOUD, resolved, as vault push does", () => {
-    process.env["ARTIFACT_GCLOUD"] = "scripts/gcloud4";
+  it("runs gcloud itself, not the ARTIFACT_GCLOUD wrapper that vault push takes", () => {
+    // A wrapper is a program of its own, often kept where an agent edits files.
+    process.env["ARTIFACT_GCLOUD"] = "/home/me/key-management/scripts/gcloud4";
     const plan = checkCommand(["gcloud", "secrets", "versions", "add", "api-key", "--data-file=-"]);
-    expect(plan.bin).toBe(`${process.cwd()}/scripts/gcloud4`);
+    expect(plan.bin).toBe("gcloud");
     expect(plan.display).toBe("gcloud secrets versions add api-key --data-file=-");
   });
 
@@ -46,6 +48,11 @@ describe("checkCommand", () => {
       ["gcloud", "secrets", "versions", "add", "projects/other/secrets/x", "--data-file=-"], // a resource name, not an id
       ["wrangler", "secret", "put", "API_KEY", "--config", "wrangler.toml"], // relative: resolved where it runs
       ["wrangler", "secret", "put", "API_KEY", "--config", "/home/me/.ssh/id_ed25519"], // not a wrangler config
+      ["wrangler", "secret", "put", "API_KEY", "--config", "//server/share/wrangler.toml"], // a network share on Windows
+      ["gh", "secret", "set", "API_KEY", "--org", "my-org"], // an organization's secret reaches every repository it is shared with
+      ["gh", "secret", "set", "API_KEY", "--user"], // a Codespaces secret
+      ["gh", "secret", "set", "API_KEY", "--repo", "owner/repo", "--app", "agents"], // Copilot sessions
+      ["gh", "secret", "set", "API_KEY", "--repo", "owner/repo", "--visibility", "all"],
       ["wrangler", "secret", "put", "API_KEY", "--name", "w", "--envFile", "/tmp/x.env"], // yargs reads camelCase too
       ["circleci", "context", "store-secret", "--org-id", "6846e78b-2408-4dce-814f-04f444fde6ca", "github", "org", "ctx", "API_KEY"], // both forms
       ["gcloud", "secrets", "versions", "add", "api-key", "--data-file=-", "--account", `${"a.".repeat(5000)}@example.com`], // too long to check quickly
@@ -68,6 +75,18 @@ describe("checkCommand", () => {
     }
     for (const use of ALLOWED_USES) expect(message).toContain(use);
     expect(message).toContain("artifact vault use <collection> <name> --out <file>");
+  });
+});
+
+describe("shellQuote", () => {
+  it("quotes a word so that a shell reads it back as it was, running nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "artifact-quote-test-"));
+    const words = [`envfile:///tmp/a'$(touch ${dir}/ran)'/.env#KEY`, "prod env", "#not-a-comment", "=ls", "~root", "`touch x`", "", "plain-word_1.2"];
+    for (const word of words) {
+      const back = execFileSync("sh", ["-c", `printf '%s' ${shellQuote(word)}`], { encoding: "utf8" });
+      expect(back).toBe(word);
+    }
+    expect(existsSync(join(dir, "ran"))).toBe(false);
   });
 });
 

@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
 import { activity, comment, comments, formatActivity, formatComments, labels, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
-import { ALLOWED_USES } from "./vault-command.ts";
+import { ALLOWED_USES, shellQuote } from "./vault-command.ts";
 import { formatPush, formatStatus, isPlaintextTarget, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
 import { ALLOWED_COMMANDS, vaultCollections, vaultCreate, vaultDestroy, vaultDevices, vaultGrant, vaultPut, vaultSecrets, vaultUse } from "./vault.ts";
 import { VERSION } from "./version.ts";
@@ -351,7 +351,7 @@ export function createServer(): McpServer {
         if ("file_path" in into) {
           throw new ArtifactError(
             "vault_use does not write files for agents: a file is a plaintext copy that you, or anything you run, could read. Pipe the value " +
-              `into one of the allowed commands instead, or, if a file is really needed, ask the user to run \`artifact vault use ${collection} ${name} --out ${into.file_path}\` in a terminal.`,
+              `into one of the allowed commands instead, or, if a file is really needed, ask the user to run \`artifact vault use ${shellQuote(collection)} ${shellQuote(name)} --out ${shellQuote(into.file_path)}\` in a terminal.`,
             "file_refused",
           );
         }
@@ -450,7 +450,7 @@ export function createServer(): McpServer {
           if (isPlaintextTarget(add)) {
             throw new ArtifactError(
               `${add.trim()} would leave a plaintext copy on this computer that you could read, so only the user adds it: ask them to run ` +
-                `\`artifact vault target add ${collection} ${name} '${add.trim()}' --plaintext-ok\` in a terminal. vault_push keeps it up to date afterwards.`,
+                `\`artifact vault target add ${shellQuote(collection)} ${shellQuote(name)} ${shellQuote(add.trim())} --plaintext-ok\` in a terminal. vault_push keeps it up to date afterwards.`,
               "plaintext_refused",
             );
           }

@@ -109,7 +109,7 @@ owner's recovery key) can open them. Values never pass through you.
 - To use a value: `vault_use({ collection, name, into: { command: ["gcloud", "secrets", "versions",
   "add", "resend-api-key", "--data-file=-", "--project", "<project>"] } })` pipes it into the
   command's standard input. Only commands that store a secret are allowed: `gcloud secrets versions
-  add`, `gh secret set NAME --repo OWNER/REPO` (or `--org`/`--user`), `wrangler secret put NAME
+  add`, `gh secret set NAME --repo OWNER/REPO [--env ENV]`, `wrangler secret put NAME
   --name WORKER`, `circleci context store-secret`; the tool's description lists their flags, and a
   refused call says what is allowed. You get the tool's message, never the value. vault_use writes
   no files: if a tool needs the value in a file, ask the user to run `artifact vault use

@@ -11,12 +11,12 @@ import {
 } from "@artifact/shared";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { devNull } from "node:os";
 import { join, resolve } from "node:path";
 import { ArtifactError, session, signedJson, type Session } from "./client.ts";
 import { profileDir, writePrivateFile } from "./profile.ts";
-import { containsValue, WITHHELD } from "./vault-command.ts";
+import { containsValue, shellQuote, WITHHELD } from "./vault-command.ts";
 import { fromUtf8, utf8 } from "./vault-crypto.ts";
 import { openSecret, vaultCollections, vaultPut, type PutResult } from "./vault.ts";
 
@@ -105,8 +105,8 @@ function unconfirmedPlaintext(collection: string, name: string, address: string)
   if (Array.isArray(confirmed) && confirmed.includes(canonical)) return undefined;
   return (
     "not added on this computer, so nothing was written (it would leave a plaintext copy here). If you added it on another computer, " +
-    `confirm it here with \`artifact vault target add ${collection} ${name} '${canonical}' --plaintext-ok\`; if nobody did, remove it ` +
-    `with \`artifact vault target remove ${collection} ${name} '${canonical}'\``
+    `confirm it here with \`artifact vault target add ${shellQuote(collection)} ${shellQuote(name)} ${shellQuote(canonical)} --plaintext-ok\`; ` +
+    `if nobody did, remove it with \`artifact vault target remove ${shellQuote(collection)} ${shellQuote(name)} ${shellQuote(canonical)}\``
   );
 }
 
@@ -122,7 +122,7 @@ export async function vaultTargetRemove(collection: string, name: string, addres
   const target = targets.find((t) => t.id === wanted || t.address === canonical);
   if (!target) throw new ArtifactError(`"${addressOrId}" is not a target of ${collection}/${name}. \`artifact vault target list ${collection} ${name}\` shows them.`, "not_found");
   const r = await signedJson<{ removed: boolean }>(session(), "DELETE", `${secretPath(collection, name)}/targets/${target.id}`);
-  if (isPlaintextTarget(target.address)) notePlaintextTarget(collection, name, target.address, false);
+  if (isPlaintextTarget(target.address)) notePlaintextTarget(collection, name, formatVaultTarget(parseVaultTarget(target.address)), false);
   return { removed: r.removed, address: target.address };
 }
 
@@ -325,6 +325,14 @@ export function writeEnvLine(path: string, key: string, value: string): { create
 export function deliverEnvfile(spec: Extract<VaultTargetSpec, { kind: "envfile" }>, value: Uint8Array): Delivered {
   const text = fromUtf8(value);
   if (text.includes("\n")) throw new ArtifactError("An env file line cannot hold a value with line breaks; use --out <file> instead.", "bad_value");
+  // The person approved a plaintext copy in this file, not wherever a link put there later points.
+  let link = false;
+  try {
+    link = lstatSync(spec.path).isSymbolicLink();
+  } catch {
+    // not there yet
+  }
+  if (link) throw new ArtifactError(`${spec.path} is a symbolic link; an env file target is written only as a file of its own.`, "bad_target");
   const { created } = writeEnvLine(spec.path, spec.key, text);
   const back = readFileSync(spec.path, "utf8").split(/\r?\n/).some((l) => l === `${spec.key}=${text}` || l === `${spec.key}=${JSON.stringify(text)}`);
   // No remote ref: a file names nothing, and a hash of the value would let whoever sees the record

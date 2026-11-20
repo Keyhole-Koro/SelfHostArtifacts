@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { ArtifactError } from "./client.ts";
 
 /**
@@ -61,12 +61,11 @@ const LOCATION = /^[a-z][a-z0-9-]{1,62}$/;
 const ACCOUNT = /^[A-Za-z0-9._%+][A-Za-z0-9._%+-]*@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,199}$/;
 const OWNER_REPO = /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9_.][A-Za-z0-9_.-]{0,99}$/;
-const REPO_LIST = /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,99}(\/[A-Za-z0-9_.-]{1,100})?(,[A-Za-z0-9_.][A-Za-z0-9_.-]{0,99}(\/[A-Za-z0-9_.-]{1,100})?)*$/;
-const GH_ORG = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 const GH_ENVIRONMENT = /^[A-Za-z0-9_.][A-Za-z0-9_. -]{0,99}$/;
 const WORKER = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const WRANGLER_ENV = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
-const WRANGLER_CONFIG = /^(\/|[A-Za-z]:[\\/])([^\0]*[\\/])?wrangler\.(toml|json|jsonc)$/;
+// An absolute path on this computer: not //host/… or \\host\…, which Windows reads as a network share.
+const WRANGLER_CONFIG = /^(\/(?![\\/])|[A-Za-z]:[\\/])([^\0]*[\\/])?wrangler\.(toml|json|jsonc)$/;
 const SLUG = /^[A-Za-z0-9_.][A-Za-z0-9_.-]{0,99}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -89,21 +88,15 @@ const USES: readonly Use[] = [
     tool: "gh",
     words: ["secret", "set"],
     positionals: [[{ hint: "a secret name", pattern: VARIABLE }]],
+    // A repository's secrets, as vault push's github:// targets: not organization, user or Copilot
+    // secrets, whose readers reach further.
     flags: [
       { names: ["--repo", "-R"], value: OWNER_REPO, hint: "--repo OWNER/REPO" },
       { names: ["--env", "-e"], value: GH_ENVIRONMENT, hint: "--env ENVIRONMENT" },
-      { names: ["--org", "-o"], value: GH_ORG, hint: "--org ORG" },
-      { names: ["--user", "-u"], hint: "--user" },
-      { names: ["--app", "-a"], value: /^(actions|agents|codespaces|dependabot)$/, hint: "--app actions|agents|codespaces|dependabot" },
-      { names: ["--visibility", "-v"], value: /^(all|private|selected)$/, hint: "--visibility all|private|selected" },
-      { names: ["--repos", "-r"], value: REPO_LIST, hint: "--repos REPO,…" },
-      { names: ["--no-repos-selected"], hint: "--no-repos-selected" },
     ],
     check: (has) =>
-      [has("--repo"), has("--org"), has("--user")].filter(Boolean).length === 1
-        ? undefined
-        : "Say where the secret goes with exactly one of --repo OWNER/REPO, --org ORG or --user: the command runs outside your project, so gh cannot guess the repository.",
-    usage: "gh secret set NAME (--repo OWNER/REPO [--env ENVIRONMENT] | --org ORG [--visibility all|private|selected] [--repos REPO,…] | --user [--repos OWNER/REPO,…]) [--app actions|agents|codespaces|dependabot]",
+      has("--repo") ? undefined : "Name the repository with --repo OWNER/REPO: the command runs outside your project, so gh cannot guess it.",
+    usage: "gh secret set NAME --repo OWNER/REPO [--env ENVIRONMENT]",
   },
   {
     tool: "wrangler",
@@ -152,7 +145,7 @@ export const ALLOWED_USES: readonly string[] = USES.map((u) => u.usage);
 
 export interface CommandPlan {
   tool: Tool;
-  /** The program started: the tool's name, or $ARTIFACT_GCLOUD for gcloud (a wrapper the person chose). */
+  /** The program started: the tool's name, found on PATH. */
   bin: string;
   /** The arguments as checked, rebuilt from their parts. */
   args: string[];
@@ -160,7 +153,10 @@ export interface CommandPlan {
   display: string;
 }
 
-const quoted = (word: string) => (/^[A-Za-z0-9_./:=@%+,-]+$/.test(word) ? word : JSON.stringify(word));
+/** A word as a POSIX shell reads it back, so a command shown in a message is safe to paste. */
+export function shellQuote(word: string): string {
+  return /^[A-Za-z0-9_./@%+,-][A-Za-z0-9_./:=@%+,#-]*$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
+}
 
 function refuse(problem: string): never {
   throw new ArtifactError(
@@ -176,7 +172,7 @@ export function checkCommand(command: readonly string[]): CommandPlan {
   if (!tool || !(ALLOWED_COMMANDS as readonly string[]).includes(tool)) refuse(`A value cannot be piped into "${tool ?? ""}".`);
   if (command.length > 32 || command.some((word) => word.length > 1000)) refuse("The command is longer than any allowed use.");
   const use = USES.find((u) => u.tool === tool && u.words.every((w, i) => rest[i] === w));
-  const shown = command.map(quoted).join(" ");
+  const shown = command.map(shellQuote).join(" ");
   if (!use) refuse(`"${shown}" is not one of the uses a value can be piped into.`);
   const where = `${use.tool} ${use.words.join(" ")}`;
   const allowedFlags = use.flags.map((f) => f.hint).join(", ");
@@ -221,10 +217,9 @@ export function checkCommand(command: readonly string[]): CommandPlan {
     args.push(flag.names[0]!);
     if (value !== true) args.push(value);
   }
-  // A wrapper path in ARTIFACT_GCLOUD (as for vault push) is resolved here, since the command runs elsewhere.
-  const wrapper = use.tool === "gcloud" ? process.env["ARTIFACT_GCLOUD"] : undefined;
-  const bin = wrapper ? (/[\\/]/.test(wrapper) ? resolve(wrapper) : wrapper) : use.tool;
-  return { tool: use.tool, bin, args, display: [use.tool, ...args].map(quoted).join(" ") };
+  // Not $ARTIFACT_GCLOUD, which vault push takes: a wrapper is a program of its own, often kept where
+  // an agent edits files, and here the agent chooses when it runs.
+  return { tool: use.tool, bin: use.tool, args, display: [use.tool, ...args].map(shellQuote).join(" ") };
 }
 
 // ---- keeping the value out of what comes back ----

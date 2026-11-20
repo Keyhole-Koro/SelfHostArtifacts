@@ -550,12 +550,12 @@ alter table secrets add column mode text not null default 'request';  -- request
 | 使い方 | 足せるもの |
 |---|---|
 | `gcloud secrets versions add SECRET_ID --data-file=-` | `--project`、`--location`、`--account`、`--quiet` |
-| `gh secret set NAME` | `--repo OWNER/REPO`（ホストなし）・`--org`・`--user` のどれか 1 つ（必須）、`--env`、`--app`、`--visibility`、`--repos`、`--no-repos-selected` |
+| `gh secret set NAME` | `--repo OWNER/REPO`（ホストなし、必須）、`--env`。組織・ユーザー・Copilot の secret（`--org`・`--user`・`--app`）は読める範囲が広いので入れない |
 | `wrangler secret put NAME` | `--name` か `--config <絶対パス>/wrangler.{toml,json,jsonc}`（どちらか必須）、`--env` |
 | `circleci context store-secret` | `--org-id ID CONTEXT NAME` か `github\|bitbucket ORG CONTEXT NAME`、`--skip-update-check` |
 
 - 語ごとに確かめる（サブコマンド、位置引数、フラグ、フラグの値の形）。許可リストで、ほかは全部断る。値を表示するもの（`gh auth token`、`gcloud secrets versions access`、`--log-http`、`--debug`、`--no-store`）、ほかのファイルを読み込むもの（`--flags-file`、`--env-file`、`gh secret set -f`）、行き先を変えるもの（`--host`、`--token`、`--configuration`、`--repo HOST/…`、`--cwd`）が通らない。断るときは許される使い方を全部書いて返す
-- 実行するのは、確かめた部品から組み立て直したもの。シェルは通さない。`ARTIFACT_GCLOUD`（vault push と同じ wrapper）は使う
+- 実行するのは、確かめた部品から組み立て直したもの。シェルは通さない。`ARTIFACT_GCLOUD` の wrapper は使わない（それ自体が別のプログラムで、エージェントが書き換えうる場所に置かれがちなため。vault push は従来どおり使う）。メッセージに出すコマンドは、端末に貼っても何も実行されないようにシェル用に引用する
 - 作業ディレクトリは毎回作る空の一時ディレクトリ。エージェントが作業する場所のファイルで行き先を変えられないようにするため。wrangler 4 は作業ディレクトリの `.env` を自分の環境変数に読み、そこの `CLOUDFLARE_API_BASE_URL` に値とログインを送る。gh は git の remote からリポジトリを選ぶ（なので `--repo` などが必須）
 - 出力（標準出力・標準エラー）に値が入っていれば、その出力は丸ごと返さない。探す形は、そのままの値、前後の空白を除いたもの、JSON・URL のエスケープ、16 進、base64（3 通りのずれ、URL 用も）で、どれも続いた 16 文字があれば当たりにする（途中で切れた一部も見つける）。空白を抜いた出力（行で折った base64）と、二つの出力をつないだものも探す。64 KiB を超える出力も返さない。返すのは終了コードと、ツールの短いメッセージ（2000 文字まで）
 - MCP の `vault_use` はファイルを書かない。0600 でも、同じユーザーで動くエージェントは読める。ファイルが要るときは、人が端末で `artifact vault use … --out` を使う（エージェントはそれを頼む）
@@ -578,7 +578,7 @@ alter table secrets add column mode text not null default 'request';  -- request
 | CircleCI の context | `circleci://<gh\|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>]`。GitHub App でつないだ組織は slug が無いので `circleci://<組織の id>/<context>/<VARIABLE>` | v2 API の `PUT /context/{id}/environment-variable/{name}`。token は金庫の秘密から読む（無ければ `CIRCLECI_TOKEN`） | 読み戻せない。一覧の `updated_at` を記録 |
 | GitHub Actions の secret | `github://<owner>/<repo>/<NAME>[?environment=…]` | `gh secret set NAME`（標準入力） | 読み戻せない。`gh secret list` の `updatedAt` を記録 |
 | Cloudflare Worker | `wrangler://<worker>/<NAME>[?config=…&cwd=…]` | `wrangler secret put NAME`（標準入力）。Worker の新しいバージョンが出る。`--env-file` に空のファイルを渡し、作業ディレクトリの `.env` を読ませない（`CLOUDFLARE_API_BASE_URL` で行き先を変えられるため） | `wrangler secret list` に名前があるか |
-| 手元のファイル | `envfile:///絶対パス#KEY` | 600 のファイルの `KEY=` の行を書き換える | 読み戻して比べる（値のハッシュは記録しない）。平文が残る唯一の口なので、登録に `--plaintext-ok` が要り、一覧に印が付く。書くのは、その端末で人が `artifact vault target add … --plaintext-ok` で足したものだけ（プロファイルの `vault-plaintext-targets.json` に控える）。サーバーにしかないもの（別の端末で足した、または乗っ取られた Worker が足した）は書かずに `failed` にする。MCP の `vault_target` では足せない |
+| 手元のファイル | `envfile:///絶対パス#KEY` | 600 のファイルの `KEY=` の行を書き換える | 読み戻して比べる（値のハッシュは記録しない）。平文が残る唯一の口なので、登録に `--plaintext-ok` が要り、一覧に印が付く。書くのは、その端末で人が `artifact vault target add … --plaintext-ok` で足したものだけ（プロファイルの `vault-plaintext-targets.json` に控える）。シンボリックリンクには書かない。サーバーにしかないもの（別の端末で足した、または乗っ取られた Worker が足した）は書かずに `failed` にする。MCP の `vault_target` では足せない |
 
 - 値が端末の外へ出るのは配達先への入力（標準入力か TLS の本文）だけ。引数・ログ・MCP の結果には出ない。ツールのメッセージに値（の続いた 16 文字）が入っていれば、結果にも配達の記録にも載せない。メッセージを短くする前に確かめる。配達先の認証情報は Worker に置かず、gcloud・gh・wrangler はその端末のログインを使う
 - 配達先と配達の記録は D1（`vault_targets`・`vault_deliveries`、0017）に置き、どの端末からも同じ台帳が見える。配達先の住所は秘密ではないが、どこに何があるかは分かるので、grant のある端末にだけ返す

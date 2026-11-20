@@ -1,10 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../src/mcp.ts";
-import { vaultTargetAdd } from "../src/vault-push.ts";
+import { vaultTargetAdd, vaultTargetRemove } from "../src/vault-push.ts";
 import { COLLECTION, vaultFixture, type Fixture } from "./vault-fixture.ts";
 
 /**
@@ -71,7 +72,7 @@ describe("MCP vault_target and vault_push", () => {
   it("does not let an agent add an env file target", async () => {
     const r = await call("vault_target", { collection: COLLECTION, name: SECRET, add: `envfile://${join(f.work, "agent.env")}#API_KEY`, plaintext_ok: true });
     expect(r.isError).toBe(true);
-    expect(r.text).toContain("--plaintext-ok");
+    expect(r.text).toContain(`only the user adds it: ask them to run \`artifact vault target add ${COLLECTION} ${SECRET} envfile://${join(f.work, "agent.env")}#API_KEY --plaintext-ok\``);
     expect(f.requests.filter((x) => x.startsWith("POST ") && x.endsWith("/targets"))).toEqual([]);
   });
 
@@ -84,6 +85,28 @@ describe("MCP vault_target and vault_push", () => {
     expect(f.deliveries).toEqual([expect.objectContaining({ result: "failed" })]);
     // The value was not even opened.
     expect(f.requests.filter((x) => x.includes("/versions/"))).toEqual([]);
+  });
+
+  it("suggests a command that is safe to paste, whatever address the server sent", async () => {
+    // A Worker that was taken over chooses the address, and the person may paste the suggestion.
+    const address = `envfile://${f.work}/a'$(touch ${f.work}/ran)'/.env#API_KEY`;
+    f.serverTarget(SECRET, address);
+    const r = await call("vault_push", { collection: COLLECTION, apply: true });
+    const suggestion = /confirm it here with `([^`]+)`/.exec(r.text)?.[1];
+    expect(suggestion).toBeDefined();
+    const words = execFileSync("sh", ["-c", suggestion!.replace(/^artifact /, "printf '%s\\n' ")], { encoding: "utf8" });
+    expect(words.split("\n").filter(Boolean)).toEqual(["vault", "target", "add", COLLECTION, SECRET, address, "--plaintext-ok"]);
+    expect(existsSync(join(f.work, "ran"))).toBe(false);
+  });
+
+  it("forgets the confirmation when the target is removed, however the server spelled it", async () => {
+    const path = join(f.work, "app.env");
+    await vaultTargetAdd(COLLECTION, SECRET, `envfile://${path}#API_KEY`, { plaintextOk: true });
+    // The same address, spelled with an empty query; removed by its id.
+    f.serverTarget(SECRET, `envfile://${path}?#API_KEY`);
+    await vaultTargetRemove(COLLECTION, SECRET, "t2");
+    await call("vault_push", { collection: COLLECTION, apply: true });
+    expect(existsSync(path)).toBe(false);
   });
 
   it("keeps an env file the user added on this computer up to date", async () => {
