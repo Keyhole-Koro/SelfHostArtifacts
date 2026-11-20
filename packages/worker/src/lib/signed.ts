@@ -1,7 +1,7 @@
 import { base64url, fromBase64url, utf8 } from "./encoding.ts";
 
 /**
- * Small HMAC-signed payloads: the content token in /c/:token/ and the OAuth state cookie.
+ * Small HMAC-signed payloads: the content token in /c/:token/ and the passkey challenge cookie.
  * Format: base64url(json) "." base64url(hmac-sha256)
  */
 

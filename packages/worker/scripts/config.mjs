@@ -1,5 +1,6 @@
 // Renders wrangler.local.toml (the deployment's config) from wrangler.toml. Used by deploy.mjs
-// and, in GitHub Actions, by write-config.mjs.
+// and, in GitHub Actions, by write-config.mjs. deploy.mjs also hands wrangler the generated
+// Worker secrets through withSecretsFile().
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
