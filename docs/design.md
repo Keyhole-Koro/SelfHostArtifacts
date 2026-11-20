@@ -537,8 +537,9 @@ alter table secrets add column mode text not null default 'request';  -- request
 | 端末もパスキーも全部なくす | 非常用の鍵で `recover` |
 | Worker が乗っ取られ、偽の公開鍵を渡される | `grant` の前に指紋を両方の画面で見比べる |
 | 端末そのものが乗っ取られる | 守れない。その端末が読めるコレクションは読まれる |
-| エージェントが値を持ち出そうとする（MCP の道具だけで） | ほぼ守れる。流せるのは下の 4 つの使い方だけで、結果に値が入らない。ファイルは人が端末で作るものだけ。残るのは、行き先にその端末のログインで書ける他人の置き場（他人が IAM にこちらを足した GCP のプロジェクトなど）を選ばれること |
+| エージェントが値を持ち出そうとする（MCP の道具だけで） | ほぼ守れる。流せるのは下の 4 つの使い方だけで、結果に値が入らない。ファイルと envfile の配達先は人が端末で作るものだけ。残るのは、行き先にその端末のログインで書ける他人の置き場（他人が IAM にこちらを足した GCP のプロジェクトなど）を選ばれること |
 | エージェントが端末でコマンドを自由に実行でき、ファイルを書き換えられる | 守れない（端末の乗っ取りと同じ）。`--reveal` や `--out` を使える。ツールの設定ファイルや PATH を書き換えて行き先を変えられる。守りはエージェントの実行許可のほう |
+| Worker が乗っ取られ、配達先を足される | envfile は守れる（その端末で人が足したものだけ書く）。gcp・github・wrangler・circleci は守れない（住所に署名がない）。届くのはその端末のログインで書ける所だけ |
 
 ### 流せるコマンド（`vault use --run` と MCP の `vault_use`）
 
@@ -577,7 +578,7 @@ alter table secrets add column mode text not null default 'request';  -- request
 | CircleCI の context | `circleci://<gh\|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>]`。GitHub App でつないだ組織は slug が無いので `circleci://<組織の id>/<context>/<VARIABLE>` | v2 API の `PUT /context/{id}/environment-variable/{name}`。token は金庫の秘密から読む（無ければ `CIRCLECI_TOKEN`） | 読み戻せない。一覧の `updated_at` を記録 |
 | GitHub Actions の secret | `github://<owner>/<repo>/<NAME>[?environment=…]` | `gh secret set NAME`（標準入力） | 読み戻せない。`gh secret list` の `updatedAt` を記録 |
 | Cloudflare Worker | `wrangler://<worker>/<NAME>[?config=…&cwd=…]` | `wrangler secret put NAME`（標準入力）。Worker の新しいバージョンが出る | `wrangler secret list` に名前があるか |
-| 手元のファイル | `envfile:///絶対パス#KEY` | 600 のファイルの `KEY=` の行を書き換える | 読み戻して比べる。平文が残る唯一の口なので、登録に `--plaintext-ok` が要り、一覧に印が付く |
+| 手元のファイル | `envfile:///絶対パス#KEY` | 600 のファイルの `KEY=` の行を書き換える | 読み戻して比べる。平文が残る唯一の口なので、登録に `--plaintext-ok` が要り、一覧に印が付く。書くのは、その端末で人が `artifact vault target add … --plaintext-ok` で足したものだけ（プロファイルの `vault-plaintext-targets.json` に控える）。サーバーにしかないもの（別の端末で足した、または乗っ取られた Worker が足した）は書かずに `failed` にする。MCP の `vault_target` では足せない |
 
 - 値が端末の外へ出るのは配達先への入力（標準入力か TLS の本文）だけ。引数・ログ・MCP の結果には出ない。配達先の認証情報は Worker に置かず、gcloud・gh・wrangler はその端末のログインを使う
 - 配達先と配達の記録は D1（`vault_targets`・`vault_deliveries`、0017）に置き、どの端末からも同じ台帳が見える。配達先の住所は秘密ではないが、どこに何があるかは分かるので、grant のある端末にだけ返す

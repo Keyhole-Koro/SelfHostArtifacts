@@ -12,9 +12,9 @@ import {
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { ArtifactError, session, signedJson, type Session } from "./client.ts";
-import { writePrivateFile } from "./profile.ts";
+import { profileDir, writePrivateFile } from "./profile.ts";
 import { fromUtf8, utf8 } from "./vault-crypto.ts";
 import { openSecret, vaultCollections, vaultPut, type PutResult } from "./vault.ts";
 
@@ -45,7 +45,67 @@ export async function vaultTargetAdd(collection: string, name: string, address: 
   if (leavesPlaintext(spec) && !options.plaintextOk) {
     throw new ArtifactError(`${formatVaultTarget(spec)} leaves a plaintext copy on this computer. Add it with --plaintext-ok if that is intended.`, "plaintext_required");
   }
-  return signedJson<VaultTarget>(session(), "POST", `${secretPath(collection, name)}/targets`, { address: formatVaultTarget(spec), ...(options.plaintextOk ? { plaintext_ok: true } : {}) });
+  const target = await signedJson<VaultTarget>(session(), "POST", `${secretPath(collection, name)}/targets`, { address: formatVaultTarget(spec), ...(options.plaintextOk ? { plaintext_ok: true } : {}) });
+  if (leavesPlaintext(spec)) notePlaintextTarget(collection, name, formatVaultTarget(spec), true);
+  return target;
+}
+
+// ---- plaintext targets: written only where a person added them ----
+
+/**
+ * An envfile target writes the value in plaintext on this computer, where the agent and anything
+ * running as the user can read it. So this computer writes one only after a person added it here with
+ * `artifact vault target add … --plaintext-ok`, which notes it in the profile directory. Addresses on
+ * the server are not signed: one that comes only from there (added on another computer, or by a
+ * Worker that was taken over) writes nothing until confirmed here. The MCP tools never add one.
+ */
+const plaintextTargetsPath = () => join(profileDir(), "vault-plaintext-targets.json");
+
+function plaintextTargets(): Record<string, string[]> {
+  try {
+    const parsed = JSON.parse(readFileSync(plaintextTargetsPath(), "utf8")) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, string[]>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function notePlaintextTarget(collection: string, name: string, address: string, keep: boolean): void {
+  const all = plaintextTargets();
+  const key = `${collection.trim()}/${name.trim()}`;
+  const list = (Array.isArray(all[key]) ? all[key] : []).filter((a) => a !== address);
+  if (keep) list.push(address);
+  if (list.length) all[key] = list;
+  else delete all[key];
+  writePrivateFile(plaintextTargetsPath(), JSON.stringify(all, null, 2) + "\n");
+}
+
+/** True for an address that would leave a plaintext copy on this computer (envfile://). */
+export function isPlaintextTarget(address: string): boolean {
+  try {
+    return leavesPlaintext(parseVaultTarget(address));
+  } catch {
+    return false;
+  }
+}
+
+/** Why a plaintext target must not be written here yet, or nothing when it may be. */
+function unconfirmedPlaintext(collection: string, name: string, address: string): string | undefined {
+  let canonical: string;
+  try {
+    const spec = parseVaultTarget(address);
+    if (!leavesPlaintext(spec)) return undefined;
+    canonical = formatVaultTarget(spec);
+  } catch {
+    return undefined;
+  }
+  const confirmed = plaintextTargets()[`${collection}/${name}`];
+  if (Array.isArray(confirmed) && confirmed.includes(canonical)) return undefined;
+  return (
+    "not added on this computer, so nothing was written (it would leave a plaintext copy here). If you added it on another computer, " +
+    `confirm it here with \`artifact vault target add ${collection} ${name} '${canonical}' --plaintext-ok\`; if nobody did, remove it ` +
+    `with \`artifact vault target remove ${collection} ${name} '${canonical}'\``
+  );
 }
 
 export async function vaultTargetRemove(collection: string, name: string, addressOrId: string): Promise<{ removed: boolean; address: string }> {
@@ -60,6 +120,7 @@ export async function vaultTargetRemove(collection: string, name: string, addres
   const target = targets.find((t) => t.id === wanted || t.address === canonical);
   if (!target) throw new ArtifactError(`"${addressOrId}" is not a target of ${collection}/${name}. \`artifact vault target list ${collection} ${name}\` shows them.`, "not_found");
   const r = await signedJson<{ removed: boolean }>(session(), "DELETE", `${secretPath(collection, name)}/targets/${target.id}`);
+  if (isPlaintextTarget(target.address)) notePlaintextTarget(collection, name, target.address, false);
   return { removed: r.removed, address: target.address };
 }
 
@@ -324,11 +385,13 @@ export async function vaultPush(collection: string, options: PushOptions = {}): 
         items.push({ ...base, action: "skipped", detail: whySkipped(target, secret.current_version) });
         continue;
       }
+      const unconfirmed = unconfirmedPlaintext(status.collection, secret.name, target.address);
       if (options.dryRun) {
-        items.push({ ...base, action: "planned", detail: target.delivered ? `v${target.delivered.version} → v${secret.current_version}` : "never delivered" });
+        items.push({ ...base, action: "planned", detail: `${target.delivered ? `v${target.delivered.version} → v${secret.current_version}` : "never delivered"}${unconfirmed ? `; ${unconfirmed}` : ""}` });
         continue;
       }
       try {
+        if (unconfirmed) throw new ArtifactError(unconfirmed, "not_confirmed");
         opened ??= await openSecret(s, status.collection, secret.name);
         const spec = parseVaultTarget(target.address);
         const result = await deliver(s, spec, opened.value, verify);

@@ -218,7 +218,7 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `vault_use` | Open a value on this computer and pipe it into `gcloud secrets versions add`, `gh secret set`, `wrangler secret put` or `circleci context store-secret`, and nothing else; output that contains the value is withheld. It writes no files: people use `artifact vault use --out` |
 | `vault_create`, `vault_grant`, `vault_devices` | Make a collection; let another computer read it (after comparing key fingerprints); list computers with a vault key |
 | `vault_destroy` | Destroy one version's value, or delete a secret, when the user asks |
-| `vault_target`, `vault_status` | Where a value must go (`gcp://`, `circleci://`, `github://`, `wrangler://`, `envfile://`), and whether the current version arrived there |
+| `vault_target`, `vault_status` | Where a value must go (`gcp://`, `circleci://`, `github://`, `wrangler://`; an `envfile://` only from a terminal), and whether the current version arrived there |
 | `vault_push` | Deliver stale values to their targets (plan only, unless `apply: true`); each delivery is recorded |
 
 ### CLI

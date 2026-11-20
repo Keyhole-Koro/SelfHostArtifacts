@@ -4,7 +4,7 @@ import { z } from "zod";
 import { ArtifactError } from "./client.ts";
 import { activity, comment, comments, formatActivity, formatComments, labels, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
 import { ALLOWED_USES } from "./vault-command.ts";
-import { formatPush, formatStatus, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
+import { formatPush, formatStatus, isPlaintextTarget, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
 import { ALLOWED_COMMANDS, vaultCollections, vaultCreate, vaultDestroy, vaultDevices, vaultGrant, vaultPut, vaultSecrets, vaultUse } from "./vault.ts";
 import { VERSION } from "./version.ts";
 
@@ -434,20 +434,27 @@ export function createServer(): McpServer {
       description:
         "Lists, adds or removes a secret's delivery targets. A target is `kind://address`: gcp://<project>/<secret id> (Secret Manager), " +
         "circleci://<gh|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>] (the token is itself a vault secret), " +
-        "github://<owner>/<repo>/<NAME>[?environment=<env>], wrangler://<worker>/<NAME>[?config=…&cwd=…], envfile:///absolute/path/.env#KEY " +
-        "(a plaintext copy on this computer; needs plaintext_ok). Adding a target delivers nothing by itself: call vault_push.",
+        "github://<owner>/<repo>/<NAME>[?environment=<env>], wrangler://<worker>/<NAME>[?config=…&cwd=…]. An envfile:///absolute/path/.env#KEY " +
+        "target (a plaintext copy on this computer, which you could read) is added only by the user in a terminal. " +
+        "Adding a target delivers nothing by itself: call vault_push.",
       inputSchema: {
         collection: z.string(),
         name: z.string(),
         add: z.string().optional().describe("A target address to add"),
         remove: z.string().optional().describe("A target address or id to remove"),
-        plaintext_ok: z.boolean().optional().describe("Required to add an envfile target: the user accepted a plaintext copy"),
       },
     },
-    ({ collection, name, add, remove, plaintext_ok }) =>
+    ({ collection, name, add, remove }) =>
       run(async () => {
         if (add) {
-          const t = await vaultTargetAdd(collection, name, add, { ...(plaintext_ok ? { plaintextOk: true } : {}) });
+          if (isPlaintextTarget(add)) {
+            throw new ArtifactError(
+              `${add.trim()} would leave a plaintext copy on this computer that you could read, so only the user adds it: ask them to run ` +
+                `\`artifact vault target add ${collection} ${name} '${add.trim()}' --plaintext-ok\` in a terminal. vault_push keeps it up to date afterwards.`,
+              "plaintext_refused",
+            );
+          }
+          const t = await vaultTargetAdd(collection, name, add);
           return `${collection}/${name} will be delivered to ${t.address}. vault_push delivers it.`;
         }
         if (remove) {
@@ -467,7 +474,8 @@ export function createServer(): McpServer {
         "Delivers each stale value of a collection (or of one secret) to its targets: a new Secret Manager version through gcloud, a CircleCI context " +
         "variable, a GitHub Actions secret through gh, a Worker secret through wrangler, or a KEY in a 0600 env file. Values are opened on this " +
         "computer and go only to the tool's standard input or an HTTPS body; nothing is returned to you. By default this only shows the plan; " +
-        "pass apply: true when the user asked to deliver. Secret Manager deliveries are read back and compared.",
+        "pass apply: true when the user asked to deliver. Secret Manager deliveries are read back and compared. An env file is written only " +
+        "if the user added that target on this computer.",
       inputSchema: {
         collection: z.string(),
         name: z.string().optional().describe("One secret; all of the collection by default"),

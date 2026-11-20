@@ -1,9 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../src/mcp.ts";
+import { vaultTargetAdd } from "../src/vault-push.ts";
 import { COLLECTION, vaultFixture, type Fixture } from "./vault-fixture.ts";
 
 /**
@@ -62,6 +63,37 @@ describe("MCP vault_use", () => {
     expect(r.isError).toBe(false);
     expect(r.text).toContain(`Piped ${COLLECTION}/${SECRET} v1 into gh secret set ${SECRET} --repo owner/repo (exit 0).`);
     expect(r.text).toContain(`Set Actions secret ${SECRET} for owner/repo`);
+    expect(r.text).not.toContain(VALUE);
+  });
+});
+
+describe("MCP vault_target and vault_push", () => {
+  it("does not let an agent add an env file target", async () => {
+    const r = await call("vault_target", { collection: COLLECTION, name: SECRET, add: `envfile://${join(f.work, "agent.env")}#API_KEY`, plaintext_ok: true });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("--plaintext-ok");
+    expect(f.requests.filter((x) => x.startsWith("POST ") && x.endsWith("/targets"))).toEqual([]);
+  });
+
+  it("writes nothing for an env file target that only the server has (another computer, or a Worker taken over)", async () => {
+    const path = join(f.work, "planted.env");
+    f.serverTarget(SECRET, `envfile://${path}#API_KEY`);
+    const r = await call("vault_push", { collection: COLLECTION, apply: true });
+    expect(existsSync(path)).toBe(false);
+    expect(r.text).toContain("not added on this computer");
+    expect(f.deliveries).toEqual([expect.objectContaining({ result: "failed" })]);
+    // The value was not even opened.
+    expect(f.requests.filter((x) => x.includes("/versions/"))).toEqual([]);
+  });
+
+  it("keeps an env file the user added on this computer up to date", async () => {
+    const path = join(f.work, "app.env");
+    // What `artifact vault target add … --plaintext-ok` does in a terminal.
+    await vaultTargetAdd(COLLECTION, SECRET, `envfile://${path}#API_KEY`, { plaintextOk: true });
+    const r = await call("vault_push", { collection: COLLECTION, apply: true });
+    expect(r.isError).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(`API_KEY=${VALUE}\n`);
+    expect(r.text).toContain("1 delivered");
     expect(r.text).not.toContain(VALUE);
   });
 });
