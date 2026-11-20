@@ -105,4 +105,18 @@ describe("MCP vault_target and vault_push", () => {
     expect(r.text).not.toContain(VALUE);
     expect(JSON.stringify(f.deliveries)).not.toContain(VALUE);
   });
+
+  it("keeps even part of the value out when the message would be cut in the middle of it", async () => {
+    // The message keeps 300 characters of what the tool said; here the value starts at 280, so 20 of
+    // its 32 characters would be kept.
+    f.serverTarget(SECRET, "gcp://proj-123456/api-key");
+    f.fake("gcloud", `printf '%0280d' 0 >&2; cat >&2; exit 1`);
+    const r = await call("vault_push", { collection: COLLECTION, apply: true });
+    expect(r.text).toContain("0 delivered, 1 failed");
+    const sent = JSON.stringify(f.deliveries);
+    for (let i = 0; i + 16 <= VALUE.length; i++) {
+      expect(r.text).not.toContain(VALUE.slice(i, i + 16));
+      expect(sent).not.toContain(VALUE.slice(i, i + 16));
+    }
+  });
 });

@@ -1,6 +1,9 @@
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ArtifactError } from "../src/client.ts";
-import { ALLOWED_USES, checkCommand, containsValue } from "../src/vault-command.ts";
+import { ALLOWED_USES, checkCommand, containsValue, pipeValue, WITHHELD } from "../src/vault-command.ts";
 
 afterEach(() => {
   delete process.env["ARTIFACT_GCLOUD"];
@@ -94,9 +97,29 @@ describe("containsValue", () => {
     expect(containsValue("key: MIIEvQIBADANBgkqhkiG9w0BAQEFAASC", pem)).toBe(true);
   });
 
+  it("finds 16 characters of it in a row, also in an encoding broken into lines", () => {
+    const text = value.toString("utf8");
+    expect(containsValue(`ERROR: … ${text.slice(5, 21)}`, value)).toBe(true);
+    const wrapped = value.toString("base64").replace(/(.{10})/g, "$1\n");
+    expect(containsValue(wrapped, value)).toBe(true);
+  });
+
   it("does not see it in what tools normally say", () => {
     expect(containsValue("Created version [3] of the secret [resend-api-key].", value)).toBe(false);
     expect(containsValue("✓ Set Actions secret API_KEY for owner/repo", value)).toBe(false);
     expect(containsValue("", value)).toBe(false);
+  });
+});
+
+describe("pipeValue", () => {
+  it("withholds both outputs when the value is split between them", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "artifact-pipe-test-"));
+    const bin = join(dir, "split");
+    // Fifteen characters on each output: neither holds 16 in a row, the two together do.
+    writeFileSync(bin, `#!/bin/sh\nnode -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{process.stdout.write(s.slice(0,15));process.stderr.write(s.slice(15))})'\n`);
+    chmodSync(bin, 0o755);
+    const value = Buffer.from("fake-split-0123456789abcdefghi");
+    const r = await pipeValue({ tool: "gh", bin, args: [], display: "gh" }, value);
+    expect(r).toEqual({ exit_code: 0, stdout: WITHHELD, stderr: WITHHELD });
   });
 });

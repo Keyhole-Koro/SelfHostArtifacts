@@ -45,6 +45,8 @@ function encodings(value: string): string[] {
 }
 function expectNoValue(text: string) {
   for (const form of encodings(VALUE)) expect(text.toLowerCase()).not.toContain(form.toLowerCase());
+  // Nor a part of it long enough to matter.
+  for (let i = 0; i + 16 <= VALUE.length; i++) expect(text).not.toContain(VALUE.slice(i, i + 16));
 }
 
 describe("vault use: the documented uses still work", () => {
@@ -119,6 +121,9 @@ describe("vault use: the value never comes back in what the command printed", ()
     ["inside a longer base64 text", "{ printf 'x'; cat; } | base64 | tr -d '\\n'"],
     ["inside a longer base64 text, another offset", "{ printf 'xy'; cat; } | base64 | tr -d '\\n'"],
     ["in hex", "od -An -tx1 | tr -d ' \\n'"],
+    ["in base64 broken into lines", "base64 -w 20"],
+    ["in part (the first 20 characters)", "head -c 20"],
+    ["in part, on both outputs", `node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{process.stdout.write(s.slice(0,20));process.stderr.write(s.slice(20))})'`],
     ["URL-encoded", `node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>console.log("https://x.example/?v="+encodeURIComponent(s)))'`],
     ["in JSON", `node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>console.log(JSON.stringify({value:s})))'`],
   ];
@@ -129,8 +134,9 @@ describe("vault use: the value never comes back in what the command printed", ()
     const r = await vaultUse(COLLECTION, SECRET, { command: ["gh", "secret", "set", SECRET, "--repo", "owner/repo"] });
     const printed = readFileSync(encoded, "utf8").trim();
     expect(printed.length).toBeGreaterThan(0);
-    expect(JSON.stringify(r)).not.toContain(printed);
-    expectNoValue(JSON.stringify(r));
+    const shown = JSON.stringify(r);
+    for (const line of printed.split("\n")) if (line.length >= 8) expect(shown).not.toContain(line);
+    expectNoValue(shown);
   });
 
   it("keeps it out of the error when the command fails", async () => {

@@ -190,8 +190,17 @@ function run(bin: string, args: string[], options: { input?: Uint8Array; cwd?: s
 
 const trimmed = (text: string, max = 300) => text.trim().replace(/\s+/g, " ").slice(0, max);
 
-function failed(what: string, r: RunResult): never {
-  throw new ArtifactError(`${what} exited with ${r.code}: ${trimmed(r.stderr || r.stdout) || "(no output)"}`, "command_failed");
+/**
+ * What a tool printed, shortened for a message, or WITHHELD when any of it holds the value. It is
+ * checked before it is shortened: a cut can leave part of the value that no longer matches it whole.
+ */
+function said(text: string, value: Uint8Array | undefined, max = 300): string {
+  return value && containsValue(text, value) ? WITHHELD : trimmed(text, max);
+}
+
+function failed(what: string, r: RunResult, value?: Uint8Array): never {
+  const held = value && (containsValue(`${r.stdout}\n${r.stderr}`, value) || containsValue(`${r.stderr}\n${r.stdout}`, value));
+  throw new ArtifactError(`${what} exited with ${r.code}: ${held ? WITHHELD : trimmed(r.stderr || r.stdout) || "(no output)"}`, "command_failed");
 }
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -213,12 +222,12 @@ export function gcloudVersionOf(output: string): string | undefined {
 
 export async function deliverGcp(spec: Extract<VaultTargetSpec, { kind: "gcp" }>, value: Uint8Array, verify: boolean): Promise<Delivered> {
   const added = await run(gcloudBin(), ["secrets", "versions", "add", spec.secret, "--project", spec.project, "--data-file=-"], { input: value });
-  if (added.code !== 0) failed(`gcloud secrets versions add ${spec.secret}`, added);
+  if (added.code !== 0) failed(`gcloud secrets versions add ${spec.secret}`, added, value);
   const version = gcloudVersionOf(added.stdout + added.stderr);
-  if (!version) return { verified: false, note: `added, but gcloud did not say which version: ${trimmed(added.stdout + added.stderr, 120)}` };
+  if (!version) return { verified: false, note: `added, but gcloud did not say which version: ${said(`${added.stdout}\n${added.stderr}`, value, 120)}` };
   if (!verify) return { remoteRef: `version ${version}`, verified: false };
   const back = await run(gcloudBin(), ["secrets", "versions", "access", version, "--secret", spec.secret, "--project", spec.project]);
-  if (back.code !== 0) return { remoteRef: `version ${version}`, verified: false, note: `could not read version ${version} back: ${trimmed(back.stderr, 120)}` };
+  if (back.code !== 0) return { remoteRef: `version ${version}`, verified: false, note: `could not read version ${version} back: ${said(back.stderr, value, 120)}` };
   const same = sha256(utf8(back.stdout)) === sha256(value);
   return { remoteRef: `version ${version}`, verified: same, ...(same ? {} : { note: `version ${version} read back differs from what was sent` }) };
 }
@@ -227,7 +236,7 @@ export async function deliverGithub(spec: Extract<VaultTargetSpec, { kind: "gith
   const repo = `${spec.owner}/${spec.repo}`;
   const scope = spec.environment ? ["--env", spec.environment] : [];
   const set = await run("gh", ["secret", "set", spec.name, "--repo", repo, ...scope], { input: value });
-  if (set.code !== 0) failed(`gh secret set ${spec.name}`, set);
+  if (set.code !== 0) failed(`gh secret set ${spec.name}`, set, value);
   const list = await run("gh", ["secret", "list", "--repo", repo, ...scope, "--json", "name,updatedAt"]);
   if (list.code !== 0) return { verified: false, note: "set, but the list could not be read" };
   let updatedAt: string | undefined;
@@ -245,7 +254,7 @@ export async function deliverWrangler(spec: Extract<VaultTargetSpec, { kind: "wr
   // --env-file replaces that list, so nothing is read from the working directory.
   const where = [...(spec.config ? ["--config", spec.config] : ["--name", spec.worker]), "--env-file", devNull];
   const put = await run("wrangler", ["secret", "put", spec.name, ...where], { input: value, cwd: spec.cwd ? resolve(spec.cwd) : undefined });
-  if (put.code !== 0) failed(`wrangler secret put ${spec.name}`, put);
+  if (put.code !== 0) failed(`wrangler secret put ${spec.name}`, put, value);
   const list = await run("wrangler", ["secret", "list", ...where], { cwd: spec.cwd ? resolve(spec.cwd) : undefined });
   let present = false;
   try {

@@ -18,7 +18,8 @@ import { ArtifactError } from "./client.ts";
  * What runs is rebuilt from the checked parts, without a shell, in an empty private directory: files
  * where the agent works cannot steer it (wrangler reads `.env` from its working directory, and a
  * CLOUDFLARE_API_BASE_URL there would send the value and the login elsewhere; gh would pick the
- * repository from the git remote). Output that contains the value, as is or in a simple encoding, is
+ * repository from the git remote). Output that contains the value, or 16 characters of it, as is or in a
+ * simple encoding, is
  * withheld, so what comes back is the exit status and the tool's own short message.
  */
 
@@ -228,7 +229,7 @@ export function checkCommand(command: readonly string[]): CommandPlan {
 
 // ---- keeping the value out of what comes back ----
 
-/** The value as a tool might print it: as is, trimmed, line by line, JSON- or URL-escaped, in hex, in base64 at each byte offset. */
+/** The value as a tool might print it: as is, trimmed, JSON- or URL-escaped, in hex, in base64 at each byte offset. */
 function valueForms(value: Uint8Array): { form: string; anyCase: boolean }[] {
   const bytes = Buffer.from(value);
   const text = bytes.toString("utf8");
@@ -238,7 +239,6 @@ function valueForms(value: Uint8Array): { form: string; anyCase: boolean }[] {
   };
   add(text, 4);
   add(text.trim(), 4);
-  for (const line of text.split(/\r?\n/)) add(line.trim(), 12);
   const json = JSON.stringify(text).slice(1, -1);
   add(json, 8);
   add(json.replace(/\//g, "\\/"), 8);
@@ -256,10 +256,26 @@ function valueForms(value: Uint8Array): { form: string; anyCase: boolean }[] {
   return [...forms].map(([form, anyCase]) => ({ form, anyCase }));
 }
 
+/** Any 16 characters in a row of a form give the value away in part, as a cut-short message would. */
+const PIECE = 16;
+
+/**
+ * Whether `text` holds the value, or 16 characters in a row of it, in any of the forms above. The
+ * text is also searched with its white space taken out, for base64 or hex broken into lines.
+ */
 export function containsValue(text: string, value: Uint8Array): boolean {
   if (!text) return false;
-  const lower = text.toLowerCase();
-  return valueForms(value).some(({ form, anyCase }) => (anyCase ? lower : text).includes(form));
+  const texts = [text, text.replace(/\s+/g, "")];
+  const lowered = texts.map((t) => t.toLowerCase());
+  for (const { form, anyCase } of valueForms(value)) {
+    const haystacks = anyCase ? lowered : texts;
+    const count = form.length > PIECE ? form.length - PIECE + 1 : 1;
+    for (let i = 0; i < count; i++) {
+      const piece = form.length > PIECE ? form.slice(i, i + PIECE) : form;
+      if (haystacks.some((h) => h.includes(piece))) return true;
+    }
+  }
+  return false;
 }
 
 export const WITHHELD = "(not shown: it contained the value)";
@@ -276,10 +292,18 @@ export interface PipeResult {
   stderr: string;
 }
 
-function shownOutput(bytes: Buffer, over: boolean, value: Uint8Array): string {
-  if (over) return `(not shown: more than ${MAX_OUTPUT / 1024} KiB of output)`;
-  const text = bytes.toString("utf8");
-  return containsValue(text, value) ? WITHHELD : text.trim().slice(0, SHOWN_OUTPUT);
+/** A stream that holds the value is withheld; both are when it shows only in the two read together. */
+function shownOutputs(out: Buffer, err: Buffer, overOut: boolean, overErr: boolean, value: Uint8Array): { stdout: string; stderr: string } {
+  const o = out.toString("utf8");
+  const e = err.toString("utf8");
+  const inOut = containsValue(o, value);
+  const inErr = containsValue(e, value);
+  const together = !inOut && !inErr && (containsValue(`${o}\n${e}`, value) || containsValue(`${e}\n${o}`, value));
+  const tooLong = `(not shown: more than ${MAX_OUTPUT / 1024} KiB of output)`;
+  return {
+    stdout: inOut || together ? WITHHELD : overOut ? tooLong : o.trim().slice(0, SHOWN_OUTPUT),
+    stderr: inErr || together ? WITHHELD : overErr ? tooLong : e.trim().slice(0, SHOWN_OUTPUT),
+  };
 }
 
 /** Runs a checked command in an empty private directory, with the value on its standard input. */
@@ -307,7 +331,7 @@ export async function pipeValue(plan: CommandPlan, value: Uint8Array): Promise<P
       child.stdin.on("error", () => undefined);
       child.stdin.end(Buffer.from(value));
     });
-    return { exit_code: r.code, stdout: shownOutput(r.out, r.overOut, value), stderr: shownOutput(r.err, r.overErr, value) };
+    return { exit_code: r.code, ...shownOutputs(r.out, r.err, r.overOut, r.overErr, value) };
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
