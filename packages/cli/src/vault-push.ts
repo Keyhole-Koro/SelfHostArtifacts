@@ -12,9 +12,11 @@ import {
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { devNull } from "node:os";
 import { join, resolve } from "node:path";
 import { ArtifactError, session, signedJson, type Session } from "./client.ts";
 import { profileDir, writePrivateFile } from "./profile.ts";
+import { containsValue, WITHHELD } from "./vault-command.ts";
 import { fromUtf8, utf8 } from "./vault-crypto.ts";
 import { openSecret, vaultCollections, vaultPut, type PutResult } from "./vault.ts";
 
@@ -238,7 +240,10 @@ export async function deliverGithub(spec: Extract<VaultTargetSpec, { kind: "gith
 }
 
 export async function deliverWrangler(spec: Extract<VaultTargetSpec, { kind: "wrangler" }>, value: Uint8Array): Promise<Delivered> {
-  const where = spec.config ? ["--config", spec.config] : ["--name", spec.worker];
+  // wrangler loads .env and .env.local from where it runs into its own environment, and a
+  // CLOUDFLARE_API_BASE_URL there would send the value and the login to another host. An explicit
+  // --env-file replaces that list, so nothing is read from the working directory.
+  const where = [...(spec.config ? ["--config", spec.config] : ["--name", spec.worker]), "--env-file", devNull];
   const put = await run("wrangler", ["secret", "put", spec.name, ...where], { input: value, cwd: spec.cwd ? resolve(spec.cwd) : undefined });
   if (put.code !== 0) failed(`wrangler secret put ${spec.name}`, put);
   const list = await run("wrangler", ["secret", "list", ...where], { cwd: spec.cwd ? resolve(spec.cwd) : undefined });
@@ -313,7 +318,9 @@ export function deliverEnvfile(spec: Extract<VaultTargetSpec, { kind: "envfile" 
   if (text.includes("\n")) throw new ArtifactError("An env file line cannot hold a value with line breaks; use --out <file> instead.", "bad_value");
   const { created } = writeEnvLine(spec.path, spec.key, text);
   const back = readFileSync(spec.path, "utf8").split(/\r?\n/).some((l) => l === `${spec.key}=${text}` || l === `${spec.key}=${JSON.stringify(text)}`);
-  return { remoteRef: `sha256 ${sha256(value).slice(0, 12)}`, verified: back, note: created ? "file created" : undefined };
+  // No remote ref: a file names nothing, and a hash of the value would let whoever sees the record
+  // (the agent, the Worker) test guesses of a weak value.
+  return { verified: back, note: created ? "file created" : undefined };
 }
 
 async function deliver(s: Session, spec: VaultTargetSpec, value: Uint8Array, verify: boolean): Promise<Delivered> {
@@ -390,15 +397,19 @@ export async function vaultPush(collection: string, options: PushOptions = {}): 
         items.push({ ...base, action: "planned", detail: `${target.delivered ? `v${target.delivered.version} → v${secret.current_version}` : "never delivered"}${unconfirmed ? `; ${unconfirmed}` : ""}` });
         continue;
       }
+      // What a tool said goes back to the caller and into the server's record: never with the value in it.
+      const shown = (text: string | undefined) => (text && opened && containsValue(text, opened.value) ? WITHHELD : text);
       try {
         if (unconfirmed) throw new ArtifactError(unconfirmed, "not_confirmed");
         opened ??= await openSecret(s, status.collection, secret.name);
         const spec = parseVaultTarget(target.address);
         const result = await deliver(s, spec, opened.value, verify);
-        await recordDelivery(s, status.collection, secret.name, target.id, { version: opened.version, result: "delivered", remote_ref: result.remoteRef, verified: result.verified, note: result.note });
-        items.push({ ...base, version: opened.version, action: "delivered", detail: [result.remoteRef, result.verified ? "verified" : "", result.note].filter(Boolean).join(", ") || "delivered" });
+        const remoteRef = shown(result.remoteRef);
+        const note = shown(result.note);
+        await recordDelivery(s, status.collection, secret.name, target.id, { version: opened.version, result: "delivered", remote_ref: remoteRef, verified: result.verified, note });
+        items.push({ ...base, version: opened.version, action: "delivered", detail: [remoteRef, result.verified ? "verified" : "", note].filter(Boolean).join(", ") || "delivered" });
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
+        const message = shown(e instanceof Error ? e.message : String(e)) ?? "";
         await recordDelivery(s, status.collection, secret.name, target.id, { version: opened?.version ?? secret.current_version, result: "failed", note: message.slice(0, 500) }).catch(() => undefined);
         items.push({ ...base, action: "failed", detail: message });
       }

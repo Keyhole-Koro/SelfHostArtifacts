@@ -96,4 +96,13 @@ describe("MCP vault_target and vault_push", () => {
     expect(r.text).toContain("1 delivered");
     expect(r.text).not.toContain(VALUE);
   });
+
+  it("keeps the value out of a failed delivery's message, here and in the record sent to the server", async () => {
+    f.serverTarget(SECRET, "gcp://proj-123456/api-key");
+    f.fake("gcloud", "echo 'ERROR: rejected payload:' >&2; cat >&2; exit 1");
+    const r = await call("vault_push", { collection: COLLECTION, apply: true });
+    expect(r.text).toContain("0 delivered, 1 failed");
+    expect(r.text).not.toContain(VALUE);
+    expect(JSON.stringify(f.deliveries)).not.toContain(VALUE);
+  });
 });
