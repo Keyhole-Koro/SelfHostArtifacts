@@ -503,7 +503,7 @@ alter table secrets add column mode text not null default 'request';  -- request
 1. `artifact vault init`（持ち主が 1 回）: 端末の鍵を作ってキーリングへ、公開鍵を登録。持ち主の鍵を作り、非常用の鍵で包んで置き、非常用の鍵を表示する
 2. `artifact vault create <collection>`: コレクションの鍵を作り、この端末と持ち主の鍵に包んで置く。コレクションはプロジェクトと環境ごと（`medishare-prod`、`medishare-stg`）
 3. `vault put`: 値をファイルから読むか生成し、新しいデータ鍵で暗号化、データ鍵をコレクションの公開鍵へ包んで、次の版として置く。読む権限は要らない（公開鍵だけで入れられる）
-4. `vault use`: 端末の鍵で自分の grant を開き、コレクションの鍵でデータ鍵を開き、値を開く。流し先はファイル（600）か、`gcloud`・`gh`・`wrangler`・`circleci` の標準入力。人が端末で `--reveal` を付けたときだけ表示する。読み出しは `audit_events`（`vault.read`）に残る
+4. `vault use`: 端末の鍵で自分の grant を開き、コレクションの鍵でデータ鍵を開き、値を開く。流し先はファイル（600）か、下の「流せるコマンド」の標準入力。人が端末で `--reveal` を付けたときだけ表示する。MCP の `vault_use` はコマンドだけで、ファイルは書かない。読み出しは `audit_events`（`vault.read`）に残る
 5. `vault grant <collection> <device>`: 相手の端末が `artifact vault key` で作った鍵の指紋（公開鍵の SHA-256 の 12 桁）を、`vault devices` の表示と見比べてから包む
 6. `vault revoke`: grant を消して `rotate`。外した端末が読めた値は変えるよう促す
 7. `vault recover --recovery-key`: 持ち主の鍵を開き、すべてのコレクションの持ち主向けの grant を開いて、この端末向けに包み直す。端末は自分自身への grant だけは権限なしで置ける（本物のコレクションの鍵が無ければ開けない grant しか作れないため）
@@ -537,6 +537,28 @@ alter table secrets add column mode text not null default 'request';  -- request
 | 端末もパスキーも全部なくす | 非常用の鍵で `recover` |
 | Worker が乗っ取られ、偽の公開鍵を渡される | `grant` の前に指紋を両方の画面で見比べる |
 | 端末そのものが乗っ取られる | 守れない。その端末が読めるコレクションは読まれる |
+| エージェントが値を持ち出そうとする（MCP の道具だけで） | ほぼ守れる。流せるのは下の 4 つの使い方だけで、結果に値が入らない。ファイルは人が端末で作るものだけ。残るのは、行き先にその端末のログインで書ける他人の置き場（他人が IAM にこちらを足した GCP のプロジェクトなど）を選ばれること |
+| エージェントが端末でコマンドを自由に実行でき、ファイルを書き換えられる | 守れない（端末の乗っ取りと同じ）。`--reveal` や `--out` を使える。ツールの設定ファイルや PATH を書き換えて行き先を変えられる。守りはエージェントの実行許可のほう |
+
+### 流せるコマンド（`vault use --run` と MCP の `vault_use`）
+
+2026-11-21 に絞った。前はコマンドの名前（gcloud・gh・wrangler・circleci）だけを見ていて、引数は自由だった。`gh gist create --public -` で外へ出せ、コマンドの標準出力はそのままエージェントに返っていた。
+
+流せるのは、秘密を置き場へしまう次の 4 つの使い方だけ（`packages/cli/src/vault-command.ts`）。
+
+| 使い方 | 足せるもの |
+|---|---|
+| `gcloud secrets versions add SECRET_ID --data-file=-` | `--project`、`--location`、`--account`、`--quiet` |
+| `gh secret set NAME` | `--repo OWNER/REPO`（ホストなし）・`--org`・`--user` のどれか 1 つ（必須）、`--env`、`--app`、`--visibility`、`--repos`、`--no-repos-selected` |
+| `wrangler secret put NAME` | `--name` か `--config <絶対パス>/wrangler.{toml,json,jsonc}`（どちらか必須）、`--env` |
+| `circleci context store-secret` | `--org-id ID CONTEXT NAME` か `github\|bitbucket ORG CONTEXT NAME`、`--skip-update-check` |
+
+- 語ごとに確かめる（サブコマンド、位置引数、フラグ、フラグの値の形）。許可リストで、ほかは全部断る。値を表示するもの（`gh auth token`、`gcloud secrets versions access`、`--log-http`、`--debug`、`--no-store`）、ほかのファイルを読み込むもの（`--flags-file`、`--env-file`、`gh secret set -f`）、行き先を変えるもの（`--host`、`--token`、`--configuration`、`--repo HOST/…`、`--cwd`）が通らない。断るときは許される使い方を全部書いて返す
+- 実行するのは、確かめた部品から組み立て直したもの。シェルは通さない。`ARTIFACT_GCLOUD`（vault push と同じ wrapper）は使う
+- 作業ディレクトリは毎回作る空の一時ディレクトリ。エージェントが作業する場所のファイルで行き先を変えられないようにするため。wrangler 4 は作業ディレクトリの `.env` を自分の環境変数に読み、そこの `CLOUDFLARE_API_BASE_URL` に値とログインを送る。gh は git の remote からリポジトリを選ぶ（なので `--repo` などが必須）
+- 出力（標準出力・標準エラー）に値が入っていれば、その出力は丸ごと返さない。見るのは、そのままの値、前後の空白を除いたもの、12 文字以上の各行、JSON・URL のエスケープ、16 進、base64（3 通りのずれ、URL 用も）。64 KiB を超える出力も返さない。返すのは終了コードと、ツールの短いメッセージ（2000 文字まで）
+- MCP の `vault_use` はファイルを書かない。0600 でも、同じユーザーで動くエージェントは読める。ファイルが要るときは、人が端末で `artifact vault use … --out` を使う（エージェントはそれを頼む）
+- 残るもの: どのプロジェクト・リポジトリ・Worker に置くかはエージェントが選べる。その端末のログインで書ける所に限られるが、GCP は他人が自分のプロジェクトの IAM にこちらのアカウントを足せる（承諾が要らない）ので、そこへは置けてしまう
 
 ### まだないもの
 
