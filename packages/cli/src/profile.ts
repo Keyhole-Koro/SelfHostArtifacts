@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -85,10 +85,21 @@ export function forgetArtifact(id: string): void {
   writeJson(paths.state(), state);
 }
 
+/**
+ * Writes `contents` to a 0600 file. An existing file is made 0600 before anything goes in: the mode
+ * given to open applies only when it creates the file, and fchmod on someone else's file throws first.
+ */
 export function writePrivateFile(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  writeFileSync(path, contents, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT, 0o600);
+  try {
+    fchmodSync(fd, 0o600);
+    // A pipe, FIFO or terminal (--out /dev/stdout, >(cmd)) cannot be truncated (EINVAL) and has nothing to cut.
+    if (fstatSync(fd).isFile()) ftruncateSync(fd, 0);
+    writeFileSync(fd, contents);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function originFor(host: string): string {

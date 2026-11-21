@@ -3,7 +3,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { ArtifactError } from "./client.ts";
 import { activity, comment, comments, formatActivity, formatComments, labels, list, move, publish, read, remove, search, secretDelete, secretList, secretRequest, secretSend, secretShare, secretStatus, type SecretState } from "./operations.ts";
-import { formatPush, formatStatus, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
+import { ALLOWED_USES, shellQuote } from "./vault-command.ts";
+import { formatPush, formatStatus, isPlaintextTarget, vaultPush, vaultStatus, vaultStatusAll, vaultTargetAdd, vaultTargetRemove, vaultTargets } from "./vault-push.ts";
 import { ALLOWED_COMMANDS, vaultCollections, vaultCreate, vaultDestroy, vaultDevices, vaultGrant, vaultPut, vaultSecrets, vaultUse } from "./vault.ts";
 import { VERSION } from "./version.ts";
 
@@ -320,27 +321,44 @@ export function createServer(): McpServer {
     {
       title: "Use a secret value without seeing it",
       description:
-        "Open a vault value on this computer and deliver it where it is needed: write it to a file (mode 0600) or pipe it into the " +
-        `standard input of ${ALLOWED_COMMANDS.join(", ")} (e.g. gcloud secrets versions add NAME --data-file=-, gh secret set NAME, wrangler secret put NAME). ` +
-        "The value is never returned to you. The read is recorded in the audit log.",
+        "Open a vault value on this computer and pipe it into the standard input of a command that stores it where it is needed. " +
+        "Only these uses are allowed; each word and flag is checked and anything else is refused:\n" +
+        ALLOWED_USES.map((u) => `- ${u}`).join("\n") +
+        "\nThe command runs without a shell, outside your project in an empty directory, with the tool's own login on this computer. " +
+        "You get the exit status and the tool's short message, never the value: output that contains it is withheld. " +
+        "Writing a value to a file is not available to you (a file is a plaintext copy you could read); if a tool really needs a file, " +
+        "ask the user to run `artifact vault use <collection> <name> --out <path>` in a terminal. For a value that must reach the same " +
+        "place again, prefer vault_target and vault_push. The read is recorded in the audit log.",
       inputSchema: {
         collection: z.string(),
         name: z.string(),
         version: z.number().int().min(1).optional().describe("A past version; the latest by default"),
         into: z
           .union([
-            z.object({ file_path: z.string().describe("Absolute path to write (created with mode 0600)") }),
-            z.object({ command: z.array(z.string()).min(1).describe(`Command and arguments; the value goes to its standard input. First word: ${ALLOWED_COMMANDS.join(", ")}`) }),
+            z.object({
+              command: z
+                .array(z.string())
+                .min(1)
+                .describe(`One of the allowed uses as words, e.g. ["gcloud", "secrets", "versions", "add", "resend-api-key", "--data-file=-", "--project", "my-project"]. First word: ${ALLOWED_COMMANDS.join(", ")}. The value goes to its standard input, never into an argument`),
+            }),
+            z.object({ file_path: z.string().describe("Not available to agents: refused, with what to ask the user instead") }),
           ])
           .describe("Where the value goes"),
       },
     },
     ({ collection, name, version, into }) =>
       run(async () => {
-        const r = await vaultUse(collection, name, "file_path" in into ? { file: into.file_path } : { command: into.command }, version);
-        if ("file" in r.delivered) return `Wrote ${r.collection}/${r.name} v${r.version} (${r.bytes} bytes) to ${r.delivered.file} with mode 0600. Delete the file when it is no longer needed.`;
-        if ("command" in r.delivered) return `Piped ${r.collection}/${r.name} v${r.version} into ${r.delivered.command} (exit 0).${r.delivered.stdout.trim() ? `\n${r.delivered.stdout.trim()}` : ""}`;
-        return `Opened ${r.collection}/${r.name} v${r.version}.`;
+        if ("file_path" in into) {
+          throw new ArtifactError(
+            "vault_use does not write files for agents: a file is a plaintext copy that you, or anything you run, could read. Pipe the value " +
+              `into one of the allowed commands instead, or, if a file is really needed, ask the user to run \`artifact vault use ${shellQuote(collection)} ${shellQuote(name)} --out ${shellQuote(into.file_path)}\` in a terminal.`,
+            "file_refused",
+          );
+        }
+        const r = await vaultUse(collection, name, { command: into.command }, version);
+        if (!("command" in r.delivered)) return `Opened ${r.collection}/${r.name} v${r.version}.`;
+        const said = [r.delivered.stdout, r.delivered.stderr].filter(Boolean).join("\n");
+        return `Piped ${r.collection}/${r.name} v${r.version} into ${r.delivered.command} (exit 0).${said ? `\n${said}` : ""}`;
       }),
   );
 
@@ -416,20 +434,27 @@ export function createServer(): McpServer {
       description:
         "Lists, adds or removes a secret's delivery targets. A target is `kind://address`: gcp://<project>/<secret id> (Secret Manager), " +
         "circleci://<gh|bb>/<org>/<context>/<VARIABLE>[?token=<collection>/<name>] (the token is itself a vault secret), " +
-        "github://<owner>/<repo>/<NAME>[?environment=<env>], wrangler://<worker>/<NAME>[?config=…&cwd=…], envfile:///absolute/path/.env#KEY " +
-        "(a plaintext copy on this computer; needs plaintext_ok). Adding a target delivers nothing by itself: call vault_push.",
+        "github://<owner>/<repo>/<NAME>[?environment=<env>], wrangler://<worker>/<NAME>[?config=…&cwd=…]. An envfile:///absolute/path/.env#KEY " +
+        "target (a plaintext copy on this computer, which you could read) is added only by the user in a terminal. " +
+        "Adding a target delivers nothing by itself: call vault_push.",
       inputSchema: {
         collection: z.string(),
         name: z.string(),
         add: z.string().optional().describe("A target address to add"),
         remove: z.string().optional().describe("A target address or id to remove"),
-        plaintext_ok: z.boolean().optional().describe("Required to add an envfile target: the user accepted a plaintext copy"),
       },
     },
-    ({ collection, name, add, remove, plaintext_ok }) =>
+    ({ collection, name, add, remove }) =>
       run(async () => {
         if (add) {
-          const t = await vaultTargetAdd(collection, name, add, { ...(plaintext_ok ? { plaintextOk: true } : {}) });
+          if (isPlaintextTarget(add)) {
+            throw new ArtifactError(
+              `${add.trim()} would leave a plaintext copy on this computer that you could read, so only the user adds it: ask them to run ` +
+                `\`artifact vault target add ${shellQuote(collection)} ${shellQuote(name)} ${shellQuote(add.trim())} --plaintext-ok\` in a terminal. vault_push keeps it up to date afterwards.`,
+              "plaintext_refused",
+            );
+          }
+          const t = await vaultTargetAdd(collection, name, add);
           return `${collection}/${name} will be delivered to ${t.address}. vault_push delivers it.`;
         }
         if (remove) {
@@ -449,7 +474,8 @@ export function createServer(): McpServer {
         "Delivers each stale value of a collection (or of one secret) to its targets: a new Secret Manager version through gcloud, a CircleCI context " +
         "variable, a GitHub Actions secret through gh, a Worker secret through wrangler, or a KEY in a 0600 env file. Values are opened on this " +
         "computer and go only to the tool's standard input or an HTTPS body; nothing is returned to you. By default this only shows the plan; " +
-        "pass apply: true when the user asked to deliver. Secret Manager deliveries are read back and compared.",
+        "pass apply: true when the user asked to deliver. Secret Manager deliveries are read back and compared. An env file is written only " +
+        "if the user added that target on this computer.",
       inputSchema: {
         collection: z.string(),
         name: z.string().optional().describe("One secret; all of the collection by default"),

@@ -27,12 +27,10 @@ textarea { width: 100%; min-height: 72px; font: inherit; padding: var(--space-2)
 select { font: inherit; padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
 `;
 
-function decodeName(raw: string): string {
-  return decodeURIComponent(raw);
-}
-
+// c.req.param("name") is already percent-decoded. Decoding it again would fail on "50% off" and
+// open the project "a b" for one named "a%20b".
 projectPages.get("/:name", ...owner, async (c) => {
-  const name = decodeName(c.req.param("name"));
+  const name = c.req.param("name");
   const viewer = c.get("viewer");
   const [space, members, users, pages] = await Promise.all([
     getSpace(c.env.DB, name),
@@ -145,7 +143,7 @@ projectPages.get("/:name", ...owner, async (c) => {
 });
 
 projectPages.post("/:name", ...ownerForm, async (c) => {
-  const name = decodeName(c.req.param("name"));
+  const name = c.req.param("name");
   const form = await c.req.parseBody();
   const description = typeof form["description"] === "string" ? form["description"].trim().slice(0, 1000) : "";
   const access: SpaceAccess = form["access"] === "members" ? "members" : "everyone";
@@ -160,7 +158,7 @@ projectPages.post("/:name", ...ownerForm, async (c) => {
 });
 
 projectPages.post("/:name/members", ...ownerForm, async (c) => {
-  const name = decodeName(c.req.param("name"));
+  const name = c.req.param("name");
   const form = await c.req.parseBody();
   const userId = typeof form["user"] === "string" ? form["user"] : "";
   const role: SpaceRole = form["role"] === "editor" ? "editor" : "viewer";
@@ -177,7 +175,7 @@ projectPages.post("/:name/members", ...ownerForm, async (c) => {
 });
 
 projectPages.post("/:name/members/remove", ...ownerForm, async (c) => {
-  const name = decodeName(c.req.param("name"));
+  const name = c.req.param("name");
   const form = await c.req.parseBody();
   const userId = typeof form["user"] === "string" ? form["user"] : "";
   await removeMember(c.env.DB, name, userId);

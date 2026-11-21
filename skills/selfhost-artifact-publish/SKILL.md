@@ -107,9 +107,13 @@ owner's recovery key) can open them. Values never pass through you.
   it is needed with `vault_use`). Never pass the value itself, and never ask the user to paste it
   into the conversation: ask them to save it to a file and give you the path.
 - To use a value: `vault_use({ collection, name, into: { command: ["gcloud", "secrets", "versions",
-  "add", "resend-api-key", "--data-file=-"] } })` pipes it into `gcloud`, `gh`, `wrangler` or
-  `circleci`; `into: { file_path }` writes a 0600 file for a tool that needs one (delete it after).
-  The value is not returned to you; say what you did, not what it was.
+  "add", "resend-api-key", "--data-file=-", "--project", "<project>"] } })` pipes it into the
+  command's standard input. Only commands that store a secret are allowed: `gcloud secrets versions
+  add`, `gh secret set NAME --repo OWNER/REPO [--env ENV]`, `wrangler secret put NAME
+  --name WORKER`, `circleci context store-secret`; the tool's description lists their flags, and a
+  refused call says what is allowed. You get the tool's message, never the value. vault_use writes
+  no files: if a tool needs the value in a file, ask the user to run `artifact vault use
+  <collection> <name> --out <path>` in a terminal. Say what you did, not what it was.
 - `vault_grant({ collection, device })` lets another computer read. Before calling it, have the
   user compare the fingerprint from `vault_devices()` with `artifact vault key` on that computer.
 - `vault_destroy` only when the user asks. `artifact vault init`, `revoke`, `rotate` and `recover`
@@ -119,8 +123,10 @@ owner's recovery key) can open them. Values never pass through you.
   with the recovery key.
 - Delivery: `vault_target({ collection, name, add })` records where a value must go
   (`gcp://<project>/<secret id>`, `circleci://<organization id>/<context>/<VAR>?token=<collection>/<name>`,
-  `github://<owner>/<repo>/<NAME>`, `wrangler://<worker>/<NAME>`, `envfile:///path/.env#KEY`
-  with `plaintext_ok`). `vault_status({ collection })` shows which targets are stale.
+  `github://<owner>/<repo>/<NAME>`, `wrangler://<worker>/<NAME>`). An `envfile:///path/.env#KEY`
+  target leaves a plaintext copy, so only the user adds one, in a terminal:
+  `artifact vault target add <collection> <name> 'envfile:///path/.env#KEY' --plaintext-ok`.
+  `vault_status({ collection })` shows which targets are stale.
   `vault_push({ collection })` only shows the plan; call it with `apply: true` when the user asked
   to deliver, and report what arrived where, never the values. After a Secret Manager delivery,
   Cloud Run uses the new version from its next revision, so say that too.

@@ -215,10 +215,10 @@ calls `publish` and gives you the link. Ask for a change and it republishes to t
 | `secret_delete` | End a secret request and delete its ciphertext |
 | `vault_list` | The vault's collections, or the secrets of one (names and the ledger, never values) |
 | `vault_put` | Encrypt a value from a local file (or one generated on the spot) and store it as a new version |
-| `vault_use` | Open a value on this computer and write it to a 0600 file, or pipe it into `gcloud`, `gh`, `wrangler` or `circleci` |
+| `vault_use` | Open a value on this computer and pipe it into `gcloud secrets versions add`, `gh secret set`, `wrangler secret put` or `circleci context store-secret`, and nothing else; output that contains the value is withheld. It writes no files: people use `artifact vault use --out` |
 | `vault_create`, `vault_grant`, `vault_devices` | Make a collection; let another computer read it (after comparing key fingerprints); list computers with a vault key |
 | `vault_destroy` | Destroy one version's value, or delete a secret, when the user asks |
-| `vault_target`, `vault_status` | Where a value must go (`gcp://`, `circleci://`, `github://`, `wrangler://`, `envfile://`), and whether the current version arrived there |
+| `vault_target`, `vault_status` | Where a value must go (`gcp://`, `circleci://`, `github://`, `wrangler://`; an `envfile://` only from a terminal), and whether the current version arrived there |
 | `vault_push` | Deliver stale values to their targets (plan only, unless `apply: true`); each delivery is recorded |
 
 ### CLI
@@ -249,6 +249,8 @@ artifact vault create medishare-prod      # a collection: one per project and en
 artifact vault put medishare-prod RESEND_API_KEY --from ./resend.key --used-by "Cloud Run medishare-web"
 artifact vault put medishare-prod SESSION_SECRET --generate   # a new random value, never shown
 artifact vault use medishare-prod RESEND_API_KEY --run -- gcloud secrets versions add resend-api-key --data-file=-
+                                          # --run takes only commands that store a secret: gcloud secrets versions add,
+                                          # gh secret set, wrangler secret put, circleci context store-secret
 artifact vault use medishare-prod RESEND_API_KEY --out /tmp/resend.key   # a 0600 file
 artifact vault grant medishare-prod my-laptop   # after comparing `artifact vault key` fingerprints
 artifact vault revoke medishare-prod old-laptop # take it away and replace the collection key

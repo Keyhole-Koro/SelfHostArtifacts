@@ -1,10 +1,11 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArtifactError } from "../src/client.ts";
 import { utf8 } from "../src/vault-crypto.ts";
-import { deliverEnvfile, deliverGcp, deliverGithub, gcloudVersionOf, targetState, writeEnvLine } from "../src/vault-push.ts";
+import { deliverEnvfile, deliverGcp, deliverGithub, deliverWrangler, gcloudVersionOf, targetState, writeEnvLine } from "../src/vault-push.ts";
 import type { VaultTarget } from "@artifact/shared";
 
 let work: string;
@@ -45,9 +46,26 @@ describe("env file lines", () => {
     const path = join(work, ".env");
     const r = deliverEnvfile({ kind: "envfile", path, key: "TOKEN" }, utf8("t0k3n"));
     expect(r.verified).toBe(true);
-    expect(r.remoteRef).toMatch(/^sha256 [0-9a-f]{12}$/);
     expect(readFileSync(path, "utf8")).toBe("TOKEN=t0k3n\n");
     expect(() => deliverEnvfile({ kind: "envfile", path, key: "TOKEN" }, utf8("two\nlines"))).toThrow(ArtifactError);
+  });
+
+  it("does not write through a symbolic link put where the env file was", () => {
+    const other = join(work, "other-file");
+    writeFileSync(other, "keep\n", { mode: 0o644 });
+    const path = join(work, ".env");
+    symlinkSync(other, path);
+    expect(() => deliverEnvfile({ kind: "envfile", path, key: "TOKEN" }, utf8("t0k3n"))).toThrow(/symbolic link/);
+    expect(readFileSync(other, "utf8")).toBe("keep\n");
+    expect(statSync(other).mode & 0o777).toBe(0o644);
+  });
+
+  it("records nothing derived from the value, which the agent and the Worker see", () => {
+    const r = deliverEnvfile({ kind: "envfile", path: join(work, ".env"), key: "TOKEN" }, utf8("t0k3n"));
+    // A hash prefix would let them test guesses of a weak value offline.
+    const hash = createHash("sha256").update("t0k3n").digest("hex");
+    expect(r.remoteRef).toBeUndefined();
+    expect(JSON.stringify(r)).not.toContain(hash.slice(0, 8));
   });
 });
 
@@ -95,6 +113,33 @@ exit 2`);
     const r = await deliverGithub({ kind: "github", owner: "o", repo: "r", name: "MY_SECRET" }, utf8("value"));
     expect(r).toEqual({ remoteRef: "updated 2026-11-19T12:00:00Z", verified: false });
     expect(readFileSync(store, "utf8")).toBe("value");
+  });
+});
+
+describe("Worker secrets through wrangler", () => {
+  it("does not let a .env where wrangler runs send the value and the login to another API host", async () => {
+    // wrangler 4 loads .env (unless --env-file names other files) into its environment, and
+    // CLOUDFLARE_API_BASE_URL there decides where requests go. This fake does the same.
+    const project = join(work, "project");
+    mkdirSync(project);
+    writeFileSync(join(project, ".env"), "CLOUDFLARE_API_BASE_URL=https://api.evil.example/client/v4\n");
+    const bin = join(work, "bin");
+    fake(
+      "wrangler",
+      `base=https://api.cloudflare.com/client/v4
+envfile=.env
+prev=
+for a in "$@"; do [ "$prev" = "--env-file" ] && envfile=$a; prev=$a; done
+case "$envfile" in /*) ;; *) envfile="./$envfile";; esac
+if [ -f "$envfile" ]; then . "$envfile"; base=\${CLOUDFLARE_API_BASE_URL:-$base}; fi
+if [ "$1 $2" = "secret put" ]; then echo "$base" > "${work}/wrangler.base"; cat > /dev/null; echo "Uploaded secret $3"; exit 0; fi
+if [ "$1 $2" = "secret list" ]; then echo '[{"name":"API_KEY"}]'; exit 0; fi
+exit 2`,
+    );
+    process.env["PATH"] = `${bin}:${originalPath}`;
+    const r = await deliverWrangler({ kind: "wrangler", worker: "artifacts", name: "API_KEY", cwd: project }, utf8("value"));
+    expect(readFileSync(join(work, "wrangler.base"), "utf8").trim()).toBe("https://api.cloudflare.com/client/v4");
+    expect(r.verified).toBe(true);
   });
 });
 

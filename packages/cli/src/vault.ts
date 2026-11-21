@@ -13,7 +13,6 @@ import {
   type VaultVersionInfo,
   type VaultVersionResponse,
 } from "@artifact/shared";
-import { spawn } from "node:child_process";
 import { randomBytes, type webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -21,6 +20,7 @@ import { ArtifactError, session, signedJson, type Session } from "./client.ts";
 import { loadVaultKeyJson, saveVaultKeyJson, type KeyStore } from "./keystore.ts";
 import { loadConfig, saveConfig, writePrivateFile } from "./profile.ts";
 import { fingerprint } from "./secret.ts";
+import { checkCommand, pipeValue } from "./vault-command.ts";
 import {
   fromUtf8,
   generateKeyPair,
@@ -313,8 +313,8 @@ export async function openSecret(s: Session, collection: string, secret: string,
 /** Where a value goes. Only a person at a terminal gets `reveal`. */
 export type ValueSink = { file: string } | { command: string[] } | { reveal: true };
 
-/** Commands a value may be piped into. The value goes to their standard input, never to an argument. */
-export const ALLOWED_COMMANDS = ["gcloud", "gh", "wrangler", "circleci"] as const;
+/** Commands a value may be piped into, and only for the uses listed in vault-command.ts. The value goes to their standard input, never to an argument. */
+export { ALLOWED_COMMANDS } from "./vault-command.ts";
 
 export interface UseResult {
   collection: string;
@@ -327,15 +327,11 @@ export interface UseResult {
 
 /** Opens a version (the latest unless given) with this device's key and delivers it without showing it. */
 export async function vaultUse(collectionName: string, secretName: string, sink: ValueSink, version?: number): Promise<UseResult> {
+  // Checked before anything is opened; what runs is rebuilt from the checked parts.
+  const plan = "command" in sink ? checkCommand(sink.command) : undefined;
   const s = session();
   const cname = checkName("collection", collectionName);
   const sname = checkName("secret", secretName);
-  if ("command" in sink) {
-    const bin = sink.command[0];
-    if (!bin || !(ALLOWED_COMMANDS as readonly string[]).includes(bin)) {
-      throw new ArtifactError(`A value can be piped only into ${ALLOWED_COMMANDS.join(", ")} (got "${bin ?? ""}"). Write it to a 0600 file instead, or extend the allow list.`, "bad_command");
-    }
-  }
   const opened = await openSecret(s, cname, sname, version);
   const value = opened.value;
   const base = { collection: cname, name: sname, version: opened.version, bytes: value.length };
@@ -344,27 +340,13 @@ export async function vaultUse(collectionName: string, secretName: string, sink:
     writePrivateFile(path, fromUtf8(value));
     return { ...base, delivered: { file: path } };
   }
-  if ("command" in sink) {
-    const result = await pipeInto(sink.command, value);
-    if (result.exit_code !== 0) throw new ArtifactError(`${sink.command.join(" ")} exited with ${result.exit_code}: ${result.stderr.trim().slice(0, 500)}`, "command_failed", { ...result });
-    return { ...base, delivered: { command: sink.command.join(" "), ...result } };
+  if (plan) {
+    // Its output comes back with anything that contains the value withheld.
+    const result = await pipeValue(plan, value);
+    if (result.exit_code !== 0) throw new ArtifactError(`${plan.display} exited with ${result.exit_code}: ${(result.stderr || result.stdout).slice(0, 500) || "(no output)"}`, "command_failed", { ...result });
+    return { ...base, delivered: { command: plan.display, ...result } };
   }
   return { ...base, delivered: { value: fromUtf8(value) } };
-}
-
-function pipeInto(command: string[], value: Uint8Array): Promise<{ exit_code: number; stdout: string; stderr: string }> {
-  return new Promise((resolvePromise, reject) => {
-    const [bin, ...args] = command as [string, ...string[]];
-    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    child.on("error", (e) => reject(new ArtifactError(`Could not run ${bin}: ${e.message}`, "command_failed")));
-    child.on("close", (code) => resolvePromise({ exit_code: code ?? -1, stdout: stdout.slice(0, 4000), stderr: stderr.slice(0, 4000) }));
-    child.stdin.on("error", () => undefined);
-    child.stdin.end(Buffer.from(value));
-  });
 }
 
 export async function vaultLedger(collectionName: string, secretName: string, patch: { description?: string | null; usedBy?: string | null }): Promise<VaultSecretSummary> {

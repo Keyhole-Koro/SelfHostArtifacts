@@ -11,10 +11,12 @@ import {
 } from "@artifact/shared";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { devNull } from "node:os";
+import { join, resolve } from "node:path";
 import { ArtifactError, session, signedJson, type Session } from "./client.ts";
-import { writePrivateFile } from "./profile.ts";
+import { profileDir, writePrivateFile } from "./profile.ts";
+import { containsValue, shellQuote, WITHHELD } from "./vault-command.ts";
 import { fromUtf8, utf8 } from "./vault-crypto.ts";
 import { openSecret, vaultCollections, vaultPut, type PutResult } from "./vault.ts";
 
@@ -45,7 +47,67 @@ export async function vaultTargetAdd(collection: string, name: string, address: 
   if (leavesPlaintext(spec) && !options.plaintextOk) {
     throw new ArtifactError(`${formatVaultTarget(spec)} leaves a plaintext copy on this computer. Add it with --plaintext-ok if that is intended.`, "plaintext_required");
   }
-  return signedJson<VaultTarget>(session(), "POST", `${secretPath(collection, name)}/targets`, { address: formatVaultTarget(spec), ...(options.plaintextOk ? { plaintext_ok: true } : {}) });
+  const target = await signedJson<VaultTarget>(session(), "POST", `${secretPath(collection, name)}/targets`, { address: formatVaultTarget(spec), ...(options.plaintextOk ? { plaintext_ok: true } : {}) });
+  if (leavesPlaintext(spec)) notePlaintextTarget(collection, name, formatVaultTarget(spec), true);
+  return target;
+}
+
+// ---- plaintext targets: written only where a person added them ----
+
+/**
+ * An envfile target writes the value in plaintext on this computer, where the agent and anything
+ * running as the user can read it. So this computer writes one only after a person added it here with
+ * `artifact vault target add … --plaintext-ok`, which notes it in the profile directory. Addresses on
+ * the server are not signed: one that comes only from there (added on another computer, or by a
+ * Worker that was taken over) writes nothing until confirmed here. The MCP tools never add one.
+ */
+const plaintextTargetsPath = () => join(profileDir(), "vault-plaintext-targets.json");
+
+function plaintextTargets(): Record<string, string[]> {
+  try {
+    const parsed = JSON.parse(readFileSync(plaintextTargetsPath(), "utf8")) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, string[]>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function notePlaintextTarget(collection: string, name: string, address: string, keep: boolean): void {
+  const all = plaintextTargets();
+  const key = `${collection.trim()}/${name.trim()}`;
+  const list = (Array.isArray(all[key]) ? all[key] : []).filter((a) => a !== address);
+  if (keep) list.push(address);
+  if (list.length) all[key] = list;
+  else delete all[key];
+  writePrivateFile(plaintextTargetsPath(), JSON.stringify(all, null, 2) + "\n");
+}
+
+/** True for an address that would leave a plaintext copy on this computer (envfile://). */
+export function isPlaintextTarget(address: string): boolean {
+  try {
+    return leavesPlaintext(parseVaultTarget(address));
+  } catch {
+    return false;
+  }
+}
+
+/** Why a plaintext target must not be written here yet, or nothing when it may be. */
+function unconfirmedPlaintext(collection: string, name: string, address: string): string | undefined {
+  let canonical: string;
+  try {
+    const spec = parseVaultTarget(address);
+    if (!leavesPlaintext(spec)) return undefined;
+    canonical = formatVaultTarget(spec);
+  } catch {
+    return undefined;
+  }
+  const confirmed = plaintextTargets()[`${collection}/${name}`];
+  if (Array.isArray(confirmed) && confirmed.includes(canonical)) return undefined;
+  return (
+    "not added on this computer, so nothing was written (it would leave a plaintext copy here). If you added it on another computer, " +
+    `confirm it here with \`artifact vault target add ${shellQuote(collection)} ${shellQuote(name)} ${shellQuote(canonical)} --plaintext-ok\`; ` +
+    `if nobody did, remove it with \`artifact vault target remove ${shellQuote(collection)} ${shellQuote(name)} ${shellQuote(canonical)}\``
+  );
 }
 
 export async function vaultTargetRemove(collection: string, name: string, addressOrId: string): Promise<{ removed: boolean; address: string }> {
@@ -60,6 +122,7 @@ export async function vaultTargetRemove(collection: string, name: string, addres
   const target = targets.find((t) => t.id === wanted || t.address === canonical);
   if (!target) throw new ArtifactError(`"${addressOrId}" is not a target of ${collection}/${name}. \`artifact vault target list ${collection} ${name}\` shows them.`, "not_found");
   const r = await signedJson<{ removed: boolean }>(session(), "DELETE", `${secretPath(collection, name)}/targets/${target.id}`);
+  if (isPlaintextTarget(target.address)) notePlaintextTarget(collection, name, formatVaultTarget(parseVaultTarget(target.address)), false);
   return { removed: r.removed, address: target.address };
 }
 
@@ -127,8 +190,17 @@ function run(bin: string, args: string[], options: { input?: Uint8Array; cwd?: s
 
 const trimmed = (text: string, max = 300) => text.trim().replace(/\s+/g, " ").slice(0, max);
 
-function failed(what: string, r: RunResult): never {
-  throw new ArtifactError(`${what} exited with ${r.code}: ${trimmed(r.stderr || r.stdout) || "(no output)"}`, "command_failed");
+/**
+ * What a tool printed, shortened for a message, or WITHHELD when any of it holds the value. It is
+ * checked before it is shortened: a cut can leave part of the value that no longer matches it whole.
+ */
+function said(text: string, value: Uint8Array | undefined, max = 300): string {
+  return value && containsValue(text, value) ? WITHHELD : trimmed(text, max);
+}
+
+function failed(what: string, r: RunResult, value?: Uint8Array): never {
+  const held = value && (containsValue(`${r.stdout}\n${r.stderr}`, value) || containsValue(`${r.stderr}\n${r.stdout}`, value));
+  throw new ArtifactError(`${what} exited with ${r.code}: ${held ? WITHHELD : trimmed(r.stderr || r.stdout) || "(no output)"}`, "command_failed");
 }
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -150,12 +222,12 @@ export function gcloudVersionOf(output: string): string | undefined {
 
 export async function deliverGcp(spec: Extract<VaultTargetSpec, { kind: "gcp" }>, value: Uint8Array, verify: boolean): Promise<Delivered> {
   const added = await run(gcloudBin(), ["secrets", "versions", "add", spec.secret, "--project", spec.project, "--data-file=-"], { input: value });
-  if (added.code !== 0) failed(`gcloud secrets versions add ${spec.secret}`, added);
+  if (added.code !== 0) failed(`gcloud secrets versions add ${spec.secret}`, added, value);
   const version = gcloudVersionOf(added.stdout + added.stderr);
-  if (!version) return { verified: false, note: `added, but gcloud did not say which version: ${trimmed(added.stdout + added.stderr, 120)}` };
+  if (!version) return { verified: false, note: `added, but gcloud did not say which version: ${said(`${added.stdout}\n${added.stderr}`, value, 120)}` };
   if (!verify) return { remoteRef: `version ${version}`, verified: false };
   const back = await run(gcloudBin(), ["secrets", "versions", "access", version, "--secret", spec.secret, "--project", spec.project]);
-  if (back.code !== 0) return { remoteRef: `version ${version}`, verified: false, note: `could not read version ${version} back: ${trimmed(back.stderr, 120)}` };
+  if (back.code !== 0) return { remoteRef: `version ${version}`, verified: false, note: `could not read version ${version} back: ${said(back.stderr, value, 120)}` };
   const same = sha256(utf8(back.stdout)) === sha256(value);
   return { remoteRef: `version ${version}`, verified: same, ...(same ? {} : { note: `version ${version} read back differs from what was sent` }) };
 }
@@ -164,7 +236,7 @@ export async function deliverGithub(spec: Extract<VaultTargetSpec, { kind: "gith
   const repo = `${spec.owner}/${spec.repo}`;
   const scope = spec.environment ? ["--env", spec.environment] : [];
   const set = await run("gh", ["secret", "set", spec.name, "--repo", repo, ...scope], { input: value });
-  if (set.code !== 0) failed(`gh secret set ${spec.name}`, set);
+  if (set.code !== 0) failed(`gh secret set ${spec.name}`, set, value);
   const list = await run("gh", ["secret", "list", "--repo", repo, ...scope, "--json", "name,updatedAt"]);
   if (list.code !== 0) return { verified: false, note: "set, but the list could not be read" };
   let updatedAt: string | undefined;
@@ -177,9 +249,12 @@ export async function deliverGithub(spec: Extract<VaultTargetSpec, { kind: "gith
 }
 
 export async function deliverWrangler(spec: Extract<VaultTargetSpec, { kind: "wrangler" }>, value: Uint8Array): Promise<Delivered> {
-  const where = spec.config ? ["--config", spec.config] : ["--name", spec.worker];
+  // wrangler loads .env and .env.local from where it runs into its own environment, and a
+  // CLOUDFLARE_API_BASE_URL there would send the value and the login to another host. An explicit
+  // --env-file replaces that list, so nothing is read from the working directory.
+  const where = [...(spec.config ? ["--config", spec.config] : ["--name", spec.worker]), "--env-file", devNull];
   const put = await run("wrangler", ["secret", "put", spec.name, ...where], { input: value, cwd: spec.cwd ? resolve(spec.cwd) : undefined });
-  if (put.code !== 0) failed(`wrangler secret put ${spec.name}`, put);
+  if (put.code !== 0) failed(`wrangler secret put ${spec.name}`, put, value);
   const list = await run("wrangler", ["secret", "list", ...where], { cwd: spec.cwd ? resolve(spec.cwd) : undefined });
   let present = false;
   try {
@@ -250,9 +325,19 @@ export function writeEnvLine(path: string, key: string, value: string): { create
 export function deliverEnvfile(spec: Extract<VaultTargetSpec, { kind: "envfile" }>, value: Uint8Array): Delivered {
   const text = fromUtf8(value);
   if (text.includes("\n")) throw new ArtifactError("An env file line cannot hold a value with line breaks; use --out <file> instead.", "bad_value");
+  // The person approved a plaintext copy in this file, not wherever a link put there later points.
+  let link = false;
+  try {
+    link = lstatSync(spec.path).isSymbolicLink();
+  } catch {
+    // not there yet
+  }
+  if (link) throw new ArtifactError(`${spec.path} is a symbolic link; an env file target is written only as a file of its own.`, "bad_target");
   const { created } = writeEnvLine(spec.path, spec.key, text);
   const back = readFileSync(spec.path, "utf8").split(/\r?\n/).some((l) => l === `${spec.key}=${text}` || l === `${spec.key}=${JSON.stringify(text)}`);
-  return { remoteRef: `sha256 ${sha256(value).slice(0, 12)}`, verified: back, note: created ? "file created" : undefined };
+  // No remote ref: a file names nothing, and a hash of the value would let whoever sees the record
+  // (the agent, the Worker) test guesses of a weak value.
+  return { verified: back, note: created ? "file created" : undefined };
 }
 
 async function deliver(s: Session, spec: VaultTargetSpec, value: Uint8Array, verify: boolean): Promise<Delivered> {
@@ -324,18 +409,24 @@ export async function vaultPush(collection: string, options: PushOptions = {}): 
         items.push({ ...base, action: "skipped", detail: whySkipped(target, secret.current_version) });
         continue;
       }
+      const unconfirmed = unconfirmedPlaintext(status.collection, secret.name, target.address);
       if (options.dryRun) {
-        items.push({ ...base, action: "planned", detail: target.delivered ? `v${target.delivered.version} → v${secret.current_version}` : "never delivered" });
+        items.push({ ...base, action: "planned", detail: `${target.delivered ? `v${target.delivered.version} → v${secret.current_version}` : "never delivered"}${unconfirmed ? `; ${unconfirmed}` : ""}` });
         continue;
       }
+      // What a tool said goes back to the caller and into the server's record: never with the value in it.
+      const shown = (text: string | undefined) => (text && opened && containsValue(text, opened.value) ? WITHHELD : text);
       try {
+        if (unconfirmed) throw new ArtifactError(unconfirmed, "not_confirmed");
         opened ??= await openSecret(s, status.collection, secret.name);
         const spec = parseVaultTarget(target.address);
         const result = await deliver(s, spec, opened.value, verify);
-        await recordDelivery(s, status.collection, secret.name, target.id, { version: opened.version, result: "delivered", remote_ref: result.remoteRef, verified: result.verified, note: result.note });
-        items.push({ ...base, version: opened.version, action: "delivered", detail: [result.remoteRef, result.verified ? "verified" : "", result.note].filter(Boolean).join(", ") || "delivered" });
+        const remoteRef = shown(result.remoteRef);
+        const note = shown(result.note);
+        await recordDelivery(s, status.collection, secret.name, target.id, { version: opened.version, result: "delivered", remote_ref: remoteRef, verified: result.verified, note });
+        items.push({ ...base, version: opened.version, action: "delivered", detail: [remoteRef, result.verified ? "verified" : "", note].filter(Boolean).join(", ") || "delivered" });
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
+        const message = shown(e instanceof Error ? e.message : String(e)) ?? "";
         await recordDelivery(s, status.collection, secret.name, target.id, { version: opened?.version ?? secret.current_version, result: "failed", note: message.slice(0, 500) }).catch(() => undefined);
         items.push({ ...base, action: "failed", detail: message });
       }

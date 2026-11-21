@@ -31,6 +31,13 @@ describe("manifestSchema", () => {
       expect(manifestSchema.safeParse({ title: "T", entry: "i.html", files: { "i.html": ref }, allow_connect: [bad] }).success).toBe(false);
     }
   });
+
+  it("refuses an oversized list by its length alone, without an issue for each item", () => {
+    // zod before 4.6.6 also checked every item and kept an issue for each (GHSA-mrhx-c7xc-m3w5).
+    const r = manifestSchema.safeParse({ title: "T", entry: "i.html", files: { "i.html": ref }, links: Array.from({ length: 100_000 }, () => "x") });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues.map((i) => [i.code, i.path.join(".")])).toEqual([["too_big", "links"]]);
+  });
 });
 
 describe("signature header", () => {

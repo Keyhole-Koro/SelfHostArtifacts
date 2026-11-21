@@ -1,11 +1,31 @@
 // Renders wrangler.local.toml (the deployment's config) from wrangler.toml. Used by deploy.mjs
-// and, in GitHub Actions, by write-config.mjs.
-import { readFileSync } from "node:fs";
+// and, in GitHub Actions, by write-config.mjs. deploy.mjs also hands wrangler the generated
+// Worker secrets through withSecretsFile().
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export const LOCAL = "wrangler.local.toml";
 /** The Vectorize index for search by meaning: bge-m3 vectors, compared by cosine. */
 export const VECTOR_INDEX = "artifacts-pages";
 export const VECTOR_DIMENSIONS = 1024;
+
+/**
+ * Calls `use` (synchronously) with the path of a JSON file holding `secrets`, for
+ * `wrangler secret bulk`, and removes it afterwards, also when `use` throws. The file is created
+ * exclusively (0600) in a new directory that only we can open (0700), so nothing planted under a
+ * predictable name in a shared temp directory can receive the values.
+ */
+export function withSecretsFile(secrets, use) {
+  const dir = mkdtempSync(join(tmpdir(), "artifact-secrets-"));
+  try {
+    const file = join(dir, "secrets.json");
+    writeFileSync(file, JSON.stringify(secrets), { mode: 0o600, flag: "wx" });
+    return use(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 function check(name, value, pattern) {
   if (!pattern.test(value)) throw new Error(`${name} looks wrong: "${value}"`);
