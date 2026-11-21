@@ -37,7 +37,7 @@ describe("changing an HTML page's source in the browser", () => {
     expect(raw.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(await raw.text()).toBe(HTML);
     expect((await SELF.fetch(`${ORIGIN}${root}!artifact/raw/logo.png`)).status).toBe(404);
-    expect(await (await browserGet(`/a/${id}`, owner.cookie)).text()).toContain("Edit source");
+    expect(await (await browserGet(`/a/${id}`, owner.cookie)).text()).toContain("Edit HTML");
   });
 
   it("saves the changed files as a new version, with the text and links read again", async () => {

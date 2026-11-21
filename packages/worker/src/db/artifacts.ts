@@ -75,11 +75,66 @@ export async function listProjects(db: D1Database): Promise<ProjectCount[]> {
   return results;
 }
 
+/** A project with its page count and its last change. */
+export interface ProjectStats {
+  project: string | null;
+  count: number;
+  updated_at: string;
+}
+
+/** Every project (null: the pages without one) with how many pages it has and when one last changed. */
+export async function listProjectStats(db: D1Database): Promise<ProjectStats[]> {
+  const { results } = await db
+    .prepare(`select project, count(*) as count, max(updated_at) as updated_at from artifacts where deleted_at is null group by project`)
+    .all<ProjectStats>();
+  return results;
+}
+
 /**
- * Moves a page, with the pages under it, to another project (null: none), at that project's top.
+ * A project's front page: the label that marks it. The first top-level page of a project with
+ * this label is where the project starts; new pages go under it unless told otherwise.
+ */
+export const HOME_LABEL = "home";
+
+export interface HomePage {
+  id: string;
+  title: string;
+  project: string;
+}
+
+/** The front page of each project that has one (see HOME_LABEL), skipping the pages in `hidden`. */
+export async function homePages(db: D1Database, hidden: Set<string> = new Set()): Promise<Map<string, HomePage>> {
+  const { results } = await db
+    .prepare(
+      `select a.id, a.title, a.project from artifacts a join labels l on l.artifact_id = a.id and l.label = ?
+       where a.deleted_at is null and a.project is not null and a.parent is null order by a.project, a.position, a.created_at`,
+    )
+    .bind(HOME_LABEL)
+    .all<HomePage>();
+  const out = new Map<string, HomePage>();
+  for (const r of results) if (!hidden.has(r.id) && !out.has(r.project)) out.set(r.project, r);
+  return out;
+}
+
+/** One project's front page, if it has one. */
+export async function homeOf(db: D1Database, project: string | null | undefined): Promise<HomePage | undefined> {
+  if (!project) return undefined;
+  const row = await db
+    .prepare(
+      `select a.id, a.title, a.project from artifacts a join labels l on l.artifact_id = a.id and l.label = ?
+       where a.deleted_at is null and a.project = ? and a.parent is null order by a.position, a.created_at limit 1`,
+    )
+    .bind(HOME_LABEL, project)
+    .first<HomePage>();
+  return row ?? undefined;
+}
+
+/**
+ * Moves a page, with the pages under it, to another project (null: none). It goes under that
+ * project's front page, or to its top when it has none or `top` is set.
  * False when there is no such page.
  */
-export async function setProject(db: D1Database, id: string, project: string | null): Promise<boolean> {
+export async function setProject(db: D1Database, id: string, project: string | null, opts: { top?: boolean } = {}): Promise<boolean> {
   const page = await getArtifact(db, id);
   if (!page) return false;
   if (page.project === project) return true;
@@ -89,7 +144,8 @@ export async function setProject(db: D1Database, id: string, project: string | n
     ...(project ? [ensureSpace(db, project)] : []),
     db.prepare(`update artifacts set project = ? where id in (${marks})`).bind(project, ...moving),
   ]);
-  await setParent(db, id, null);
+  const home = opts.top ? undefined : await homeOf(db, project);
+  await setParent(db, id, home && home.id !== id ? home.id : null);
   return true;
 }
 
@@ -126,6 +182,30 @@ export async function listVersions(db: D1Database, id: string): Promise<VersionR
     .all<RawVersionRow>();
   return results.map(parseVersion);
 }
+
+/** Who saved each version of a page: the device, and the person it belongs to. Newest first. */
+export interface VersionAuthor {
+  version: number;
+  created_at: string;
+  device_id: string | null;
+  device_name: string | null;
+  owner_name: string | null;
+}
+
+export async function versionAuthors(db: D1Database, id: string): Promise<VersionAuthor[]> {
+  const { results } = await db
+    .prepare(
+      `select v.version, v.created_at, v.created_by as device_id, d.name as device_name, u.name as owner_name
+       from versions v left join devices d on d.id = v.created_by left join users u on u.id = d.user_id
+       where v.artifact_id = ? order by v.version desc`,
+    )
+    .bind(id)
+    .all<VersionAuthor>();
+  return results;
+}
+
+/** Devices that stand for a person editing in the browser (see browserDevice in routes/pages.tsx). */
+export const BROWSER_DEVICE_PREFIX = "web-";
 
 export interface NewVersion {
   title: string;
@@ -234,13 +314,14 @@ export interface TreeRow {
   current_version: number;
   updated_at: string;
   restriction?: "edit" | "view" | null;
+  description?: string | null;
 }
 
 /** Every page in a project (null: the pages without one), for building its tree. */
 export async function listProjectPages(db: D1Database, project: string | null): Promise<TreeRow[]> {
   const { results } = await db
     .prepare(
-      `select id, title, parent, position, current_version, updated_at, restriction from artifacts
+      `select id, title, parent, position, current_version, updated_at, restriction, description from artifacts
        where deleted_at is null and project is ? order by position, title`,
     )
     .bind(project)

@@ -33,7 +33,8 @@ CLI: `artifact publish <file.html|folder> [--title …] [--description …] [--l
   user names a project, or you work outside the repository it is about).
 - Related pages can form a tree, like chapters under a handbook. Pass `parent` (the URL of the
   page to put it under) to publish a page as a child of another; it goes into that page's
-  project. `move` changes the parent or the order later.
+  project. Without `parent`, a new page goes under its project's front page (the top page
+  labeled `home`) when there is one. `move` changes the parent or the order later.
 - `labels` group pages across projects: "decision" for a decision record, "draft" for unfinished
   work, or a word the user uses. Reuse the labels already in use (`list` shows them); `labels`
   adds and removes them later, and `search` with `label:<name>` finds a label's pages.

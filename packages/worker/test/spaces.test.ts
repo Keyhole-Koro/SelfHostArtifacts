@@ -66,7 +66,7 @@ describe("the page tree in a project", () => {
     expect(list).toContain('class="tree"');
     expect(list.indexOf("Handbook")).toBeLessThan(list.indexOf("Chapter one"));
     const page = await (await browserGet(`/a/${child.body.id}`, cookie)).text();
-    expect(page).toContain(`<a href="/a/${top.body.id}">Handbook</a>`);
+    expect(page).toContain(`<a href="/a/${top.body.id}" title="Handbook">Handbook</a>`);
     expect(page).toContain('id="side"');
     expect(page).toContain('aria-current="page"');
   });

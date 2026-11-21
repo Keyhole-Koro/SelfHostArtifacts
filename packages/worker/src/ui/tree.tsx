@@ -1,5 +1,5 @@
 import type { Child } from "hono/jsx";
-import { childrenOf, type TreeRow } from "../db/artifacts.ts";
+import { HOME_LABEL, childrenOf, type TreeRow } from "../db/artifacts.ts";
 import { Time } from "./layout.tsx";
 
 /** The pages of a project as a tree: in the list (with versions and times) and beside a page. */
@@ -23,15 +23,24 @@ a.chip:hover { color: var(--accent); background: var(--accent-soft); text-decora
 .chip.current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .tree .node .chip { flex: none; }
 .tree .lock { color: var(--text-2); flex: none; display: inline-flex; }
+.tree .node .desc { display: block; flex-basis: 100%; color: var(--text-2); font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: calc(14px + var(--space-2)); }
+.tree .node.wrap { flex-wrap: wrap; row-gap: 0; }
+.tree .threads { flex: none; color: var(--text-2); font-size: var(--text-xs); display: inline-flex; align-items: center; gap: 2px; }
+@media (max-width: 560px) { .tree .meta, .tree .node .chip { display: none; } }
 `;
 
-/** A page's labels, each leading to the pages with that label. */
-export function LabelChips(props: { labels?: string[] }) {
-  if (!props.labels?.length) return null;
+/**
+ * A page's labels, each leading to the pages with that label (in the same project when one is
+ * given). The label that marks a project's front page is left out: being the front says it.
+ */
+export function LabelChips(props: { labels?: string[]; project?: string | null }) {
+  const labels = props.labels?.filter((l) => l !== HOME_LABEL);
+  if (!labels?.length) return null;
+  const within = props.project ? `&project=${encodeURIComponent(props.project)}` : "";
   return (
     <>
-      {props.labels.map((l) => (
-        <a class="chip" href={`/?label=${encodeURIComponent(l)}`} title={`Pages labeled ${l}`}>
+      {labels.map((l) => (
+        <a class="chip" href={`/?label=${encodeURIComponent(l)}${within}`} title={`Pages labeled ${l}`}>
           {l}
         </a>
       ))}
@@ -43,16 +52,27 @@ export function LabelChips(props: { labels?: string[] }) {
  * `open`: the pages whose children show (the rest fold); undefined opens all. `meta` adds the
  * version and the time of the last change to each page.
  */
-export function PageTree(props: { rows: TreeRow[]; current?: string; open?: Set<string>; meta?: boolean; id?: string; labels?: Map<string, string[]> }) {
+export function PageTree(props: {
+  rows: TreeRow[];
+  current?: string;
+  open?: Set<string>;
+  meta?: boolean;
+  id?: string;
+  labels?: Map<string, string[]>;
+  threads?: Map<string, number>;
+  project?: string | null;
+}) {
   const kids = childrenOf(props.rows);
   const node = (r: TreeRow): Child => {
     const under = kids.get(r.id) ?? [];
+    const threads = props.threads?.get(r.id) ?? 0;
+    const desc = props.meta && r.description ? r.description : "";
     const row = (
-      <span class={`node${r.id === props.current ? " current" : ""}`} data-text={r.title.toLowerCase()}>
+      <span class={`node${r.id === props.current ? " current" : ""}${desc ? " wrap" : ""}`} data-text={`${r.title} ${r.description ?? ""}`.toLowerCase()}>
         <span class="twist" aria-hidden="true">
           {under.length ? "▶" : ""}
         </span>
-        <a href={`/a/${r.id}`} aria-current={r.id === props.current ? "page" : undefined}>
+        <a href={`/a/${r.id}`} aria-current={r.id === props.current ? "page" : undefined} title={r.title}>
           {r.title}
         </a>
         {r.restriction && (
@@ -60,12 +80,19 @@ export function PageTree(props: { rows: TreeRow[]; current?: string; open?: Set<
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
           </span>
         )}
-        <LabelChips labels={props.labels?.get(r.id)} />
-        {props.meta && (
-          <span class="meta">
-            v{r.current_version} · <Time iso={r.updated_at} />
+        {threads > 0 && (
+          <span class="threads" title={`${threads} open comment ${threads === 1 ? "thread" : "threads"}`}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+            {threads}
           </span>
         )}
+        <LabelChips labels={props.labels?.get(r.id)} project={props.project} />
+        {props.meta && (
+          <span class="meta">
+            <Time iso={r.updated_at} />
+          </span>
+        )}
+        {desc && <span class="desc">{desc}</span>}
       </span>
     );
     if (!under.length) return <li>{row}</li>;

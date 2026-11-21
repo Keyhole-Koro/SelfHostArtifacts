@@ -13,7 +13,7 @@ import { BEAT_SECONDS, beat, editing, leave } from "../db/presence.ts";
 import { hasConflictMarks, merge3 } from "../merge.ts";
 import { MAX_SOURCE_BYTES, SOURCE_PATH, editableFiles } from "../source.ts";
 import { BUILT_IN_TEMPLATES, TEMPLATE_LABEL, fromTemplatePage, markdownPages, type MarkdownPage } from "../templates.ts";
-import { activityHref, listActivity, listNotifications, markRead, pageTarget, projectTarget, record, setWatch, watching, type ActivityRow } from "../db/activity.ts";
+import { activityHref, listActivity, listNotifications, markRead, markSeen, pageTarget, projectTarget, record, setWatch, watching, type ActivityRow } from "../db/activity.ts";
 import { MAX_TEXT_CHARS, type VersionFile, labelSchema, labelsSchema, MAX_LABELS, pageText, pageLinks } from "@artifact/shared";
 import { revokeMembersOfDevice } from "../db/vault.ts";
 import { z } from "zod";
@@ -42,8 +42,16 @@ import {
   clearShare,
   setProject,
   setShare,
+  HOME_LABEL,
+  homeOf,
+  homePages,
+  listProjectStats,
+  versionAuthors,
+  BROWSER_DEVICE_PREFIX,
   type ArtifactRow,
   type TreeRow,
+  type ProjectStats,
+  type VersionAuthor,
   type VersionRow,
 } from "../db/artifacts.ts";
 import { projectSchema } from "@artifact/shared";
@@ -69,6 +77,8 @@ import { accessFor, canEditPage, canSeePage, listAccess, pageAudience, restricti
 import { MARK_END, MARK_START, linkedFrom, linksTo, type LinkedPage } from "../db/search.ts";
 import { INDEX_BATCH, hybridSearch, indexLater, indexPending, pendingPages, semanticOn } from "../db/semantic.ts";
 import { semanticEnv } from "../env.ts";
+import { COMMENTS, PANELS, VIEWER, WHO } from "../words/viewer.tsx";
+import { LIST } from "../words/list.tsx";
 
 export const pages = new Hono<AppEnv>();
 
@@ -116,175 +126,260 @@ function recordViewerAction(
 // --- List ---
 
 const PROJECT_STYLES = `
-.label-strip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); margin: calc(-1 * var(--space-2)) 0 var(--space-4); }
+.label-strip { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); margin: 0 0 var(--space-4); }
 .label-strip .muted { margin-right: var(--space-1); }
 .rows .chip { vertical-align: 1px; }
-.projects { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0 0 var(--space-4); }
-.projects a { display: inline-flex; align-items: baseline; gap: var(--space-1); padding: 4px var(--space-3); border: 1px solid var(--border); border-radius: 999px; color: var(--text); text-decoration: none; font-size: var(--text-sm); background: var(--surface); }
-.projects a:hover { background: var(--surface-2); }
-.projects a.current { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.projects span { color: var(--text-2); font-variant-numeric: tabular-nums; }
-.projects a.current span { color: inherit; }
+.up { display: inline-block; font-size: var(--text-sm); color: var(--text-2); margin-bottom: var(--space-2); }
+.up:hover { color: var(--text); }
+.spaces { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--space-3); margin: 0 0 var(--space-6); }
+.space { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); text-decoration: none; min-height: 112px; }
+.space:hover { border-color: var(--accent); text-decoration: none; }
+.space h2 { font-size: var(--text-md); font-weight: 650; overflow-wrap: anywhere; }
+.space p { margin: 0; color: var(--text-2); font-size: var(--text-sm); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.space .meta { margin-top: auto; color: var(--text-2); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.space.loose { background: transparent; border-style: dashed; }
+.section-title { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); margin: 0 0 var(--space-3); }
+.section-title h2 { font-size: var(--text-md); }
+.section-title a { font-size: var(--text-sm); }
+.more-link { display: inline-block; margin-top: var(--space-4); font-size: var(--text-sm); }
+.head-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; margin: 0 0 var(--space-4); }
+.head-actions form { margin: 0; }
+.head-actions .grow { flex: 1; }
+.new-page { margin: 0 0 var(--space-4); }
+.new-page > summary { display: inline-flex; list-style: none; cursor: pointer; }
+.new-page > summary::-webkit-details-marker { display: none; }
+.new-page[open] > summary { margin-bottom: var(--space-3); }
+.new-page form { display: grid; gap: var(--space-2); grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; padding: var(--space-4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.new-page select { font: inherit; font-size: var(--text-sm); padding: 7px var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); width: 100%; }
+.new-page label { margin: 0; }
+@media (max-width: 640px) { .new-page form { grid-template-columns: 1fr; } }
+.read-only { margin: 0 0 var(--space-4); color: var(--text-2); font-size: var(--text-sm); }
 `;
 
-/** `/` lists every page; `/?project=<name>` one project; `/?project=` the pages without one. */
+/** `/?project=<name>` one project's pages; `/?project=` the pages without one. */
 function projectHref(project: string | null): string {
   return `/?project=${encodeURIComponent(project ?? "")}`;
 }
 
+/**
+ * `/` is the list of projects (each leading to its front page) with what changed lately;
+ * `/?all=1` every page, newest first; `/?label=x` the pages with a label (in a project with
+ * `&project=`); `/?project=x` one project's pages as a tree; `/?project=` those without one.
+ */
 pages.get("/", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
+  const t = LIST;
   const query = c.req.query("project");
   const selected = query === undefined ? undefined : query.trim() || null;
   const wanted = labelSchema.safeParse(c.req.query("label") ?? "");
   const label = wanted.success ? wanted.data : undefined;
+  const all = c.req.query("all") === "1";
   const access = await accessFor(c.env.DB, viewer);
   const hidden = access.hiddenProjects;
   const blocked = typeof selected === "string" && hidden.has(selected);
-  const [all, allProjects, open, inUse] = await Promise.all([
-    blocked ? [] : listArtifacts(c.env.DB, 200, selected, label),
-    listProjects(c.env.DB),
-    openThreadCounts(c.env.DB),
-    labelCounts(c.env.DB, access, selected),
-  ]);
-  const artifacts = all.filter((a) => access.sees(a));
+  const [stats, homes] = await Promise.all([listProjectStats(c.env.DB), homePages(c.env.DB, access.hiddenPages)]);
   // Pages hidden by a restriction are not counted either.
-  const projects = allProjects
-    .filter((p) => !p.project || !hidden.has(p.project))
-    .map((p) => ({ ...p, count: p.count - (access.hiddenPerProject.get(p.project) ?? 0) }))
-    .filter((p) => p.count > 0);
-  // One project is shown as the tree of its pages, with what the space says about itself.
-  const [allTree, space] =
-    typeof selected === "string" && !blocked && !label ? await Promise.all([listProjectPages(c.env.DB, selected), getSpace(c.env.DB, selected)]) : [undefined, null];
-  const tree = allTree?.filter((r) => !access.hiddenPages.has(r.id));
-  const labels = await labelsOf(c.env.DB, tree ? tree.map((r) => r.id) : artifacts.map((a) => a.id));
-  const canWrite = tree !== undefined && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, selected as string));
-  const templates = canWrite ? (await markdownPages(c.env.DB, selected as string, TEMPLATE_LABEL)).filter((r) => !access.hiddenPages.has(r.id)) : [];
-  const [projectWatched, recentAll] = tree
-    ? await Promise.all([watching(c.env.DB, viewer.userId, [projectTarget(selected as string)]), listActivity(c.env.DB, { project: selected as string, limit: 30 })])
-    : [new Set<string>(), []];
-  const recent = recentAll.filter((a) => access.sees({ id: a.artifact_id, project: a.page_project })).slice(0, 10);
+  const projects = visibleProjects(stats, access);
   const total = projects.reduce((n, p) => n + p.count, 0);
-  const showProjects = projects.some((p) => p.project !== null);
-  const scope = selected === undefined ? "" : selected === null ? " without a project" : ` in ${selected}`;
-  return c.html(
-    <Page title={typeof selected === "string" ? `${selected} · Artifacts` : "Artifacts"} viewer={viewer}>
-      <style>{raw(PROJECT_STYLES + TREE_STYLES + ACTIVITY_STYLES)}</style>
-      <div class="page-head">
-        <div>
-          <h1>{typeof selected === "string" ? selected : "Artifacts"}</h1>
-          <p class="lead">
-            {tree ? (space?.description ?? `${tree.length} ${tree.length === 1 ? "page" : "pages"}`) : (
-              <>
-                {artifacts.length} {artifacts.length === 1 ? "page" : "pages"}
-                {label && ` labeled ${label}`}
-                {scope}, newest first
-              </>
-            )}
-            {tree && viewer.role === "root" && (
-              <>
-                {" · "}
-                <a href={`/projects/${encodeURIComponent(selected as string)}`}>
-                  {space?.access === "members" ? "Members only" : "Everyone"} · Settings
-                </a>
-              </>
-            )}
-          </p>
+  const front = (p: string | null) => (p && homes.get(p) ? `/a/${homes.get(p)!.id}` : projectHref(p));
+
+  // The start: one card per project, then the latest changes.
+  if (selected === undefined && !label && !all) {
+    const [latest, inUse, open] = await Promise.all([listArtifacts(c.env.DB, 40), labelCounts(c.env.DB, access), openThreadCounts(c.env.DB)]);
+    const recent = latest.filter((a) => access.sees(a)).slice(0, 12);
+    const named = projects.filter((p) => p.project !== null).sort((a, b) => a.project!.localeCompare(b.project!));
+    const loose = projects.find((p) => p.project === null);
+    const spaces = await listSpaceDescriptions(c.env.DB);
+    return c.html(
+      <Page title="Artifacts" viewer={viewer}>
+        <style>{raw(PROJECT_STYLES + TREE_STYLES)}</style>
+        <div class="page-head">
+          <div>
+            <h1>{t.site}</h1>
+            <p class="lead">{t.directoryLead(named.length, total)}</p>
+          </div>
         </div>
-        {artifacts.length > 0 && <input id="filter" class="search" type="search" placeholder="Filter this list" aria-label="Filter this list by title and description" />}
-      </div>
-      {showProjects && (
-        <nav class="projects" aria-label="Projects">
-          <a href="/" class={selected === undefined ? "current" : undefined}>
-            All <span>{total}</span>
-          </a>
-          {projects.map((p) => (
-            <a href={projectHref(p.project)} class={selected === p.project ? "current" : undefined}>
-              {p.project ?? "No project"} <span>{p.count}</span>
-            </a>
-          ))}
-        </nav>
-      )}
-      {inUse.length > 0 && (
-        <nav class="label-strip" aria-label="Labels">
-          <span class="muted small">Labels</span>
-          {inUse.slice(0, 30).map((l) => (
-            <a
-              class={`chip${l.label === label ? " current" : ""}`}
-              href={l.label === label ? (selected === undefined ? "/" : projectHref(selected)) : `/?label=${encodeURIComponent(l.label)}${typeof selected === "string" ? `&project=${encodeURIComponent(selected)}` : ""}`}
-              title={l.label === label ? "Show every page again" : `Pages labeled ${l.label}`}
-            >
-              {l.label} {l.count}
-              {l.label === label && " ×"}
-            </a>
-          ))}
-        </nav>
-      )}
-      {artifacts.length === 0 && selected !== undefined ? (
-        <div class="card">
-          <p class="muted small" style="margin:0">
-            No page here. <a href="/">Show all pages</a>
-          </p>
-        </div>
-      ) : artifacts.length === 0 ? (
-        <div class="card">
-          <h2>Nothing published yet</h2>
-          <p class="muted small" style="margin:var(--space-2) 0 0">
-            Ask an agent for a page, for example “turn this CSV into a dashboard page”. It publishes with the <code>artifact</code> tool and
-            the page appears here.
-          </p>
-        </div>
-      ) : tree ? (
-        <>
-          {viewer.sessionKind === "full" && (
-            <form method="post" action="/watch" style="margin:0 0 var(--space-3)">
-              <CsrfField token={viewer.csrf} />
-              <input type="hidden" name="project" value={selected as string} />
-              <input type="hidden" name="on" value={projectWatched.size ? "0" : "1"} />
-              <button type="submit" title="Hear about every new page, change and comment in this project">
-                {projectWatched.size ? "★ Watching this project" : "☆ Watch this project"}
-              </button>
-            </form>
-          )}
-          {canWrite && (
-            <form method="post" action="/new" class="field-row" style="margin-bottom:var(--space-4)">
-              <CsrfField token={viewer.csrf} />
-              <input type="hidden" name="project" value={selected as string} />
-              <input name="title" type="text" required maxlength={200} placeholder="Title of a new page" aria-label="Title of a new page" />
-              <TemplateChoice pages={templates} />
-              <button type="submit" class="primary">
-                Write a page
-              </button>
-            </form>
-          )}
+        {total === 0 ? (
           <div class="card">
-            <PageTree rows={tree} meta id="artifacts" labels={labels} />
-            <p class="empty muted small" id="no-match" hidden>
-              No page matches your search.
+            <h2>{t.nothingYet}</h2>
+            <p class="muted small" style="margin:var(--space-2) 0 0">
+              {t.nothingBody(<code>artifact</code>)}
             </p>
           </div>
-          {recent.length > 0 && (
-            <section class="section">
-              <div class="section-head">
-                <h2>Recent activity</h2>
-                <a href="/activity" class="small">
-                  All activity
+        ) : (
+          <>
+            <nav class="spaces" aria-label={t.projects}>
+              {named.map((p) => (
+                <a class="space" href={front(p.project)}>
+                  <h2>{p.project}</h2>
+                  {spaces.get(p.project!) && <p>{spaces.get(p.project!)}</p>}
+                  <span class="meta">
+                    {t.pages(p.count)} · {t.updated(<Time iso={p.updated_at} />)}
+                  </span>
                 </a>
+              ))}
+              {loose && (
+                <a class="space loose" href={projectHref(null)}>
+                  <h2>{t.noProject}</h2>
+                  <p>{t.noProjectNote}</p>
+                  <span class="meta">
+                    {t.pages(loose.count)} · {t.updated(<Time iso={loose.updated_at} />)}
+                  </span>
+                </a>
+              )}
+            </nav>
+            <section>
+              <div class="section-title">
+                <h2>{t.recent}</h2>
+                <a href="/activity">{t.allActivity}</a>
               </div>
-              <ul class="feed">
-                {recent.map((a) => (
-                  <li>
-                    <ActivityLine a={a} />
-                    <span class="when">
-                      <Time iso={a.at} />
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <PageRows rows={recent} showProject open={open} />
+              <a class="more-link" href="/?all=1">
+                {t.allPages(total)}
+              </a>
             </section>
-          )}
-          <script nonce={c.get("nonce")}>
-            {raw(`
+            <LabelStrip labels={inUse} />
+          </>
+        )}
+      </Page>,
+    );
+  }
+
+  // One project as a tree (no label chosen), with what its space says about itself.
+  if (selected !== undefined && !label) {
+    const [allTree, space, open, inUse] = await Promise.all([
+      blocked ? Promise.resolve([] as TreeRow[]) : listProjectPages(c.env.DB, selected),
+      typeof selected === "string" ? getSpace(c.env.DB, selected) : Promise.resolve(null),
+      openThreadCounts(c.env.DB),
+      labelCounts(c.env.DB, access, selected),
+    ]);
+    const tree = allTree.filter((r) => !access.hiddenPages.has(r.id));
+    const labels = await labelsOf(c.env.DB, tree.map((r) => r.id));
+    const home = typeof selected === "string" ? homes.get(selected) : undefined;
+    const canWrite = typeof selected === "string" && viewer.sessionKind === "full" && (await canEditProject(c.env.DB, viewer, selected));
+    const templates = canWrite ? (await markdownPages(c.env.DB, selected, TEMPLATE_LABEL)).filter((r) => !access.hiddenPages.has(r.id)) : [];
+    const [projectWatched, recentAll] =
+      typeof selected === "string"
+        ? await Promise.all([watching(c.env.DB, viewer.userId, [projectTarget(selected)]), listActivity(c.env.DB, { project: selected, limit: 30 })])
+        : [new Set<string>(), [] as ActivityRow[]];
+    const recent = recentAll.filter((a) => access.sees({ id: a.artifact_id, project: a.page_project })).slice(0, 8);
+    const name = selected ?? t.noProject;
+    const wantParent = c.req.query("parent");
+    return c.html(
+      <Page title={`${name} · Artifacts`} viewer={viewer}>
+        <style>{raw(PROJECT_STYLES + TREE_STYLES + ACTIVITY_STYLES)}</style>
+        <a class="up" href="/">
+          {t.backToProjects}
+        </a>
+        <div class="page-head">
+          <div>
+            <h1>{home ? t.projectPages(name) : name}</h1>
+            <p class="lead">
+              {space?.description ? `${space.description} · ` : ""}
+              {t.pages(tree.length)}
+              {home && (
+                <>
+                  {" · "}
+                  <a href={`/a/${home.id}`}>{t.front(name)}</a>
+                </>
+              )}
+              {typeof selected === "string" && viewer.role === "root" && (
+                <>
+                  {" · "}
+                  <a href={`/projects/${encodeURIComponent(selected)}`}>
+                    {space?.access === "members" ? t.members : t.everyone} · {t.settings}
+                  </a>
+                </>
+              )}
+            </p>
+          </div>
+        </div>
+        {tree.length === 0 ? (
+          <div class="card">
+            <p class="muted small" style="margin:0">
+              {t.noPageHere} <a href="/">{t.showAll}</a>
+            </p>
+          </div>
+        ) : (
+          <>
+            <div class="head-actions">
+              {typeof selected === "string" && viewer.sessionKind === "full" && (
+                <form method="post" action="/watch">
+                  <CsrfField token={viewer.csrf} />
+                  <input type="hidden" name="project" value={selected} />
+                  <input type="hidden" name="on" value={projectWatched.size ? "0" : "1"} />
+                  <button type="submit" class={projectWatched.size ? "quiet" : undefined} title={projectWatched.size ? t.stopTitle : t.watchTitle}>
+                    {projectWatched.size ? t.watching : t.watch}
+                  </button>
+                </form>
+              )}
+              <span class="grow" />
+              <input id="filter" class="search" type="search" placeholder={t.filter} aria-label={t.filter} />
+            </div>
+            {canWrite ? (
+              <details class="new-page" id="new" open={wantParent !== undefined}>
+                <summary class="button primary">{t.newPage}</summary>
+                <form method="post" action="/new">
+                  <CsrfField token={viewer.csrf} />
+                  <input type="hidden" name="project" value={selected as string} />
+                  <div>
+                    <label for="new-title">{t.newTitle}</label>
+                    <input id="new-title" name="title" type="text" required maxlength={200} />
+                  </div>
+                  <div>
+                    <label for="new-parent">{t.under}</label>
+                    <select id="new-parent" name="parent">
+                      <option value="-" selected={!home && !wantParent}>
+                        {t.top(name)}
+                      </option>
+                      {parentChoices(tree, "").map((o) => (
+                        <option value={o.id} selected={wantParent ? o.id === wantParent : o.id === home?.id}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label for="new-template">{PANELS.template}</label>
+                    <TemplateChoice pages={templates} />
+                  </div>
+                  <button type="submit" class="primary">
+                    {t.startWriting}
+                  </button>
+                </form>
+              </details>
+            ) : (
+              typeof selected === "string" && viewer.sessionKind === "full" && <p class="read-only">{t.readOnly}</p>
+            )}
+            <LabelStrip labels={inUse} project={selected} />
+            <div class="card">
+              <PageTree rows={tree} meta id="artifacts" labels={labels} threads={open} project={selected} />
+              <p class="empty muted small" id="no-match" hidden>
+                {t.noMatch}
+              </p>
+            </div>
+            {recent.length > 0 && typeof selected === "string" && (
+              <section class="section">
+                <div class="section-head">
+                  <h2>{t.recentActivity}</h2>
+                  <a href={`/activity?project=${encodeURIComponent(selected)}`} class="small">
+                    {t.allActivity}
+                  </a>
+                </div>
+                <ul class="feed">
+                  {recent.map((a) => (
+                    <li>
+                      <ActivityLine a={a} />
+                      <span class="when">
+                        <Time iso={a.at} />
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            <script nonce={c.get("nonce")}>
+              {raw(`
 const input = document.getElementById("filter");
 const items = [...document.querySelectorAll("#artifacts li")].reverse();
 const none = document.getElementById("no-match");
@@ -301,46 +396,53 @@ input.addEventListener("input", () => {
   }
   none.hidden = shown > 0;
 });`)}
-          </script>
-        </>
+            </script>
+          </>
+        )}
+      </Page>,
+    );
+  }
+
+  // Every page, or the pages with a label: a flat list, newest first.
+  const [found, inUse, open] = await Promise.all([blocked ? Promise.resolve([]) : listArtifacts(c.env.DB, 200, selected, label), labelCounts(c.env.DB, access, selected), openThreadCounts(c.env.DB)]);
+  const rows = found.filter((a) => access.sees(a));
+  const clear = selected === undefined ? "/?all=1" : projectHref(selected);
+  return c.html(
+    <Page title={label ? `${t.labelTitle(label)} · Artifacts` : `${t.allTitle} · Artifacts`} viewer={viewer}>
+      <style>{raw(PROJECT_STYLES + TREE_STYLES)}</style>
+      <a class="up" href={selected === undefined ? "/" : projectHref(selected)}>
+        {selected === undefined ? t.backToProjects : `← ${selected ?? t.noProject}`}
+      </a>
+      <div class="page-head">
+        <div>
+          <h1>{label ? t.labelTitle(label) : t.allTitle}</h1>
+          <p class="lead">
+            {label ? t.labelLead(rows.length, selected) : t.allLead(rows.length)}
+            {label && (
+              <>
+                {" · "}
+                <a href={clear} title={t.clearLabelTitle}>
+                  {t.clearLabel}
+                </a>
+              </>
+            )}
+          </p>
+        </div>
+        {rows.length > 0 && <input id="filter" class="search" type="search" placeholder={t.filter} aria-label={t.filter} />}
+      </div>
+      <LabelStrip labels={inUse} project={selected} current={label} />
+      {rows.length === 0 ? (
+        <div class="card">
+          <p class="muted small" style="margin:0">
+            {t.noPageHere} <a href="/?all=1">{t.showAll}</a>
+          </p>
+        </div>
       ) : (
         <>
-          <ul class="rows links" id="artifacts">
-            {artifacts.map((a) => (
-              <li data-text={`${a.title} ${a.description ?? ""} ${a.project ?? ""}`.toLowerCase()}>
-                <div class="main">
-                  <a class="title" href={`/a/${a.id}`}>
-                    {a.title}
-                  </a>{" "}
-                  {selected === undefined && a.project && <span class="badge">{a.project}</span>}{" "}
-                  {a.allow_connect.length > 0 && (
-                    <span class="badge warn" title={`May connect to ${a.allow_connect.join(", ")}`}>
-                      external
-                    </span>
-                  )}{" "}
-                  {shareActive(a) && (
-                    <span class="badge accent" title={`Anyone with the link can view it until ${formatTime(a.share_expires_at)}`}>
-                      public
-                    </span>
-                  )}{" "}
-                  {(open.get(a.id) ?? 0) > 0 && (
-                    <span class="badge" title="Open comment threads">
-                      {open.get(a.id)} {open.get(a.id) === 1 ? "comment" : "comments"}
-                    </span>
-                  )}{" "}
-                  <LabelChips labels={labels.get(a.id)} />
-                  {a.description && <div class="desc">{a.description}</div>}
-                </div>
-                <div class="side">
-                  <span>v{a.current_version}</span>
-                  <Time iso={a.updated_at} />
-                </div>
-              </li>
-            ))}
-            <li class="empty" id="no-match" hidden>
-              No page matches your search.
-            </li>
-          </ul>
+          <PageRows rows={rows} showProject={selected === undefined} id="artifacts" open={open} />
+          <p class="empty muted small" id="no-match" hidden>
+            {t.noMatch}
+          </p>
           <script nonce={c.get("nonce")}>
             {raw(`
 const input = document.getElementById("filter");
@@ -359,80 +461,194 @@ input.addEventListener("input", () => {
   );
 });
 
+/** The projects a person can see a page of, with those pages counted (hidden ones are not). */
+function visibleProjects(stats: ProjectStats[], access: Access): ProjectStats[] {
+  return stats
+    .filter((p) => !p.project || !access.hiddenProjects.has(p.project))
+    .map((p) => ({ ...p, count: p.count - (access.hiddenPerProject.get(p.project) ?? 0) }))
+    .filter((p) => p.count > 0);
+}
+
+/** What each project says about itself (its space's description), by name. */
+async function listSpaceDescriptions(db: D1Database): Promise<Map<string, string>> {
+  const { results } = await db.prepare("select name, description from spaces where description is not null and description != ''").all<{ name: string; description: string }>();
+  return new Map(results.map((r) => [r.name, r.description]));
+}
+
+/** The labels in use, each a link to its pages (in the project, when one is given). */
+function LabelStrip(props: { labels: { label: string; count: number }[]; project?: string | null; current?: string }) {
+  const t = LIST;
+  const shown = props.labels.filter((l) => l.label !== HOME_LABEL).sort((a, b) => a.label.localeCompare(b.label));
+  if (shown.length === 0) return null;
+  const within = props.project === undefined ? "" : `&project=${encodeURIComponent(props.project ?? "")}`;
+  return (
+    <nav class="label-strip" aria-label={t.labels}>
+      <span class="muted small">{t.labels}</span>
+      {shown.slice(0, 40).map((l) => (
+        <a class={`chip${l.label === props.current ? " current" : ""}`} href={`/?label=${encodeURIComponent(l.label)}${within}`} title={t.labeled(l.label)}>
+          {l.label} {l.count}
+        </a>
+      ))}
+    </nav>
+  );
+}
+
+/** Pages as rows: title, badges, labels, description and when they last changed. */
+function PageRows(props: { rows: (ArtifactRow & { allow_connect: string[] })[]; showProject?: boolean; id?: string; open?: Map<string, number> }) {
+  const t = LIST;
+  return (
+    <ul class="rows links" id={props.id}>
+      {props.rows.map((a) => (
+        <li data-text={`${a.title} ${a.description ?? ""} ${a.project ?? ""}`.toLowerCase()}>
+          <div class="main">
+            <a class="title" href={`/a/${a.id}`}>
+              {a.title}
+            </a>{" "}
+            {props.showProject && a.project && <span class="badge">{a.project}</span>}{" "}
+            {a.allow_connect.length > 0 && (
+              <span class="badge warn" title={t.externalTitle(a.allow_connect.join(", "))}>
+                {t.external}
+              </span>
+            )}{" "}
+            {shareActive(a) && (
+              <span class="badge accent" title={t.publicTitle(formatTime(a.share_expires_at!))}>
+                {t.publicBadge}
+              </span>
+            )}{" "}
+            {(props.open?.get(a.id) ?? 0) > 0 && (
+              <span class="badge" title={t.openTitle}>
+                {t.threads(props.open!.get(a.id)!)}
+              </span>
+            )}
+            {a.description && <div class="desc">{a.description}</div>}
+          </div>
+          <div class="side">
+            <Time iso={a.updated_at} />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // --- Viewer ---
 
 const VIEWER_STYLES = `
 html, body { height: 100%; margin: 0; }
 body { display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 400 var(--text-sm)/1.4 var(--font-sans); }
 a { color: inherit; text-decoration: none; }
-.bar { height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-3); border-bottom: 1px solid var(--border); background: var(--bg); }
-.back { display: flex; align-items: center; gap: var(--space-1); color: var(--text-2); padding: 4px var(--space-2); border-radius: var(--radius-sm); }
-.back:hover { background: var(--surface-2); color: var(--text); }
-.divider { width: 1px; height: 18px; background: var(--border); }
-.title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.meta { color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.old { color: var(--warning); }
-.badge { font-size: var(--text-xs); font-weight: 600; padding: 1px var(--space-2); border-radius: 999px; background: color-mix(in srgb, var(--warning) 14%, var(--surface)); color: var(--warning); white-space: nowrap; }
-.spacer { flex: 1; }
-.tool { display: flex; align-items: center; gap: var(--space-1); color: var(--text-2); padding: 4px var(--space-2); border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; }
+.bar { height: 48px; flex-shrink: 0; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); border-bottom: 1px solid var(--border); background: var(--bg); overflow: hidden; }
+.divider { width: 1px; height: 20px; background: var(--border); flex: none; }
+.crumbs { display: flex; align-items: baseline; gap: var(--space-1); min-width: 6em; flex: 0 1 auto; overflow: hidden; white-space: nowrap; }
+.crumbs a { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; max-width: 14em; flex: 0 1 auto; min-width: 2em; }
+.crumbs a:hover { color: var(--text); text-decoration: underline; }
+.crumbs .sep { color: var(--text-3); flex: none; }
+.crumbs .title { font-weight: 650; color: var(--text); overflow: hidden; text-overflow: ellipsis; min-width: 3em; flex: 0 1 auto; }
+.meta { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; font-variant-numeric: tabular-nums; }
+.badge { font-size: var(--text-xs); font-weight: 600; padding: 1px var(--space-2); border-radius: 999px; background: color-mix(in srgb, var(--warning) 14%, var(--surface)); color: var(--warning); white-space: nowrap; flex: none; }
+.badge.public { background: var(--accent-soft); color: var(--accent); }
+.spacer { flex: 1 1 0; min-width: var(--space-2); }
+.tools { display: flex; align-items: center; gap: var(--space-1); flex: none; }
+.tool { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--text-2); padding: 5px var(--space-2); border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; border: 0; background: none; font: inherit; }
 .tool:hover { background: var(--surface-2); color: var(--text); }
+.tool.icon { padding: 5px 8px; font-size: var(--text-md); line-height: 1; }
+.tool.primary { background: var(--accent); color: var(--accent-text); font-weight: 600; padding: 5px var(--space-3); }
+.tool.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--text)); color: var(--accent-text); }
+.tool.on { color: var(--accent); }
+.tool svg { flex: none; }
+.count { font-size: var(--text-xs); font-weight: 600; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); text-align: center; line-height: 16px; }
+.bell { position: relative; } .bell-count { position: absolute; top: 0; right: 0; min-width: 15px; padding: 0 3px; border-radius: 999px; background: var(--negative); color: #fff; font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; }
 details { position: relative; }
 summary { list-style: none; }
 summary::-webkit-details-marker { display: none; }
-.panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 2; min-width: 240px; max-height: 60vh; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 4px 16px rgb(0 0 0 / 0.12); padding: var(--space-1); }
-.panel a { display: flex; justify-content: space-between; gap: var(--space-4); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); color: var(--text); font-variant-numeric: tabular-nums; }
-.panel a:hover { background: var(--surface-2); }
-.panel a.current { font-weight: 600; background: var(--accent-soft); color: var(--accent); }
-.panel span { color: var(--text-2); }
+.panel { position: fixed; right: var(--space-3); top: 52px; z-index: 5; width: min(380px, calc(100vw - 24px)); max-height: calc(100vh - 64px); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 6px 24px rgb(0 0 0 / 0.14); padding: var(--space-1); }
+.panel p { margin: 0; color: var(--text-2); }
+.panel h3 { margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-2); font-weight: 600; }
+.hist .panel { width: min(460px, calc(100vw - 24px)); }
+.hist .row { display: grid; grid-template-columns: auto 1fr auto; gap: var(--space-1) var(--space-3); align-items: baseline; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); }
+.hist .row:hover { background: var(--surface-2); }
+.hist .row.current { background: var(--accent-soft); }
+.hist .row .v { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.hist .row .who { color: var(--text-2); overflow-wrap: anywhere; }
+.hist-icon { display: none; }
+.hist .row .diff { color: var(--accent); font-size: var(--text-xs); }
+.hist .compare { display: block; border-top: 1px solid var(--border); margin-top: var(--space-1); padding: var(--space-2) var(--space-3); color: var(--accent); }
+.more-panel > details { border-bottom: 1px solid var(--border); }
+.more-panel > details > summary { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); cursor: pointer; color: var(--text); font-weight: 500; border-radius: var(--radius-sm); }
+.more-panel > details > summary:hover { background: var(--surface-2); }
+.more-panel > details > summary::after { content: "▸"; margin-left: auto; color: var(--text-3); }
+.more-panel > details[open] > summary::after { content: "▾"; }
+.more-panel .sect { display: grid; gap: var(--space-2); padding: var(--space-1) var(--space-3) var(--space-3); }
+.more-panel .item { display: flex; width: 100%; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); color: var(--text); background: none; border: 0; font: inherit; text-align: left; cursor: pointer; }
+.more-panel .item:hover { background: var(--surface-2); }
+.sect form { margin: 0; }
+.sect .row { display: flex; gap: var(--space-2); align-items: center; }
+.sect input[type=text], .sect select { flex: 1; min-width: 0; font: inherit; padding: 5px var(--space-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
+.sect button { font: inherit; padding: 4px var(--space-3); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; white-space: nowrap; }
+.sect button:hover { background: var(--surface-2); }
+.sect button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.sect button.danger { color: var(--negative); }
+.sect .choice { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); color: var(--text-2); }
+.sect .choice label { display: inline-flex; gap: var(--space-1); align-items: center; cursor: pointer; }
+.sect .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.sect .modes { display: grid; gap: var(--space-2); }
+.sect .mode { display: flex; gap: var(--space-2); align-items: flex-start; cursor: pointer; }
+.sect .mode input[type=radio] { flex: none; width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--accent); }
+.sect .people { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
+.sect .people li { display: flex; align-items: center; gap: var(--space-2); }
+.sect .people li > span:first-child { flex: 1; color: var(--text); }
+.sect .people button { border: 0; background: none; padding: 0 4px; color: var(--text-2); }
+.sect .chips-edit { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.sect .chips-edit li { display: flex; align-items: center; gap: 2px; }
+.sect .chips-edit button { border: 0; background: none; color: var(--text-2); padding: 0 2px; }
+.sect .suggest { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; color: var(--text-2); font-size: var(--text-xs); }
+.sect .suggest button { border: 0; padding: 0 var(--space-2); border-radius: 999px; background: var(--surface-2); color: var(--text-2); font-size: var(--text-xs); line-height: 1.6; }
+.sect .suggest button:hover { background: var(--accent-soft); color: var(--accent); }
+.sect .link { display: flex; gap: var(--space-2); }
+.muted { color: var(--text-2); }
+.small { font-size: var(--text-xs); }
+.old-strip { flex: none; padding: var(--space-2) var(--space-4); background: color-mix(in srgb, var(--warning) 12%, var(--surface)); color: var(--warning); border-bottom: 1px solid var(--border); }
+.old-strip a { color: var(--accent); text-decoration: underline; }
 iframe { flex: 1; width: 100%; min-width: 0; border: 0; background: #fff; }
-.main { flex: 1; display: flex; min-height: 0; }
-.side { display: none; width: 268px; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--border); background: var(--surface); padding: var(--space-2); }
+.main { flex: 1; display: flex; min-height: 0; position: relative; }
+.frame-col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.side { display: none; width: 280px; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--border); background: var(--surface); padding: var(--space-3) var(--space-2) var(--space-6); }
 body.with-side .side { display: block; }
-.side h2 { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-2); margin: var(--space-2) var(--space-2) var(--space-2); }
-.side h2 a:hover { color: var(--text); text-decoration: underline; }
-.crumbs { display: flex; align-items: baseline; gap: var(--space-1); min-width: 0; overflow: hidden; }
-.crumbs a { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
-.crumbs a:hover { color: var(--text); text-decoration: underline; }
-.crumbs .sep { color: var(--text-2); }
-.move { width: min(380px, calc(100vw - 24px)); }
-.move select { flex: 1; min-width: 0; font: inherit; padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
-.links { width: min(340px, calc(100vw - 24px)); }
-.chips { display: flex; gap: var(--space-1); min-width: 0; overflow: hidden; }
-.label-panel { width: min(300px, calc(100vw - 24px)); }
-.label-panel ul { list-style: none; margin: 0 0 var(--space-3); padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-1); }
-.label-panel li { display: flex; align-items: center; gap: 2px; }
-.label-panel a.chip { display: inline-block; padding: 0 var(--space-2); line-height: 1.6; margin: 0; }
-.label-panel h3 { margin-top: 0; }
-.access-panel { width: min(340px, calc(100vw - 24px)); }
-.access-panel h3 { margin: 0; font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
-.access-panel .modes { display: grid; gap: var(--space-2); }
-.access-panel .mode { display: flex; gap: var(--space-2); align-items: flex-start; cursor: pointer; }
-.access-panel .mode input[type=radio] { flex: none; width: 16px; height: 16px; margin: 3px 0 0; padding: 0; border: 0; accent-color: var(--accent); }
-.access-panel .modes button { justify-self: start; }
-.access-panel .people { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-1); }
-.access-panel .people li { display: flex; align-items: center; gap: var(--space-2); }
-.access-panel .people li > span:first-child { flex: 1; color: var(--text); }
-.access-panel .people button { border: 0; background: none; padding: 0 4px; color: var(--text-2); }
-.access-panel select { font: inherit; font-size: var(--text-xs); padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); min-width: 0; }
-.access-panel .link select[name=user] { flex: 1; }
-.label-panel li form { margin: 0; }
-.label-panel li button { border: 0; background: none; color: var(--text-2); cursor: pointer; padding: 0 2px; font: inherit; }
-.label-panel li button:hover { color: var(--danger, var(--warning)); }
-@media (max-width: 900px) { .chips { display: none; } }
-.bell { position: relative; } .bell-count { position: absolute; top: 0; right: 0; min-width: 15px; padding: 0 3px; border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); font-size: 10px; font-weight: 700; line-height: 15px; text-align: center; }
+.side .site { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 0 var(--space-2); }
+.side .site > a { color: var(--text-2); font-size: var(--text-xs); }
+.side .site > a:first-child { font-weight: 650; color: var(--text); font-size: var(--text-sm); }
+.side .site > a:hover { text-decoration: underline; }
+.side form { margin: var(--space-2) var(--space-1) var(--space-3); }
+.side input[type=search] { width: 100%; box-sizing: border-box; font: inherit; padding: 5px var(--space-3); border: 1px solid var(--border); border-radius: 999px; background: var(--bg); color: var(--text); }
+.side .proj { display: flex; align-items: center; gap: var(--space-1); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); }
+.side .proj.current { background: var(--accent-soft); }
+.side .proj > a { font-weight: 650; font-size: var(--text-md); color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side .proj.current > a { color: var(--accent); }
+.side .proj > a:hover { text-decoration: underline; }
+.side .switch > summary { cursor: pointer; color: var(--text-2); padding: 2px 6px; border-radius: var(--radius-sm); }
+.side .switch > summary:hover { background: var(--surface-2); color: var(--text); }
+.side .switch .panel { position: absolute; left: auto; right: 0; top: calc(100% + 4px); width: 240px; }
+.side .switch .panel a { display: block; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); color: var(--text); }
+.side .switch .panel a:hover { background: var(--surface-2); }
+.side .switch .panel a.current { color: var(--accent); font-weight: 600; }
+.side .links { display: flex; flex-wrap: wrap; gap: 0 var(--space-3); padding: 2px var(--space-2) var(--space-3); font-size: var(--text-xs); }
+.side .links a { color: var(--text-2); }
+.side .links a:hover { color: var(--text); text-decoration: underline; }
+.side .tree .node a { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .mention-list { list-style: none; margin: 0; padding: var(--space-1); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: 0 4px 12px rgb(0 0 0 / 0.15); min-width: 180px; }
 .mention-list li { padding: 4px var(--space-2); border-radius: var(--radius-sm); cursor: pointer; }
 .mention-list li.on, .mention-list li:hover { background: var(--accent-soft); color: var(--accent); }
 .c-body .mention { color: var(--accent); font-weight: 600; }
-.main { position: relative; }
-.count { font-size: var(--text-xs); font-weight: 600; min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); text-align: center; }
 .comments { display: none; width: 340px; flex-shrink: 0; overflow: auto; border-left: 1px solid var(--border); background: var(--surface); padding: var(--space-3); }
 body.with-comments .comments { display: block; }
-.comments h2 { font-size: var(--text-sm); margin: 0 0 var(--space-3); }
+.comments h2 { font-size: var(--text-sm); margin: 0 0 var(--space-1); }
+.comments .hint { margin: 0 0 var(--space-3); color: var(--text-2); font-size: var(--text-xs); }
 .comments textarea { width: 100%; box-sizing: border-box; min-height: 64px; font: inherit; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text); resize: vertical; }
 .comments button { font: inherit; padding: 3px var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; }
-.comments button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text, #fff); }
-.comments blockquote { margin: 0 0 var(--space-2); padding: 2px var(--space-2); border-left: 3px solid #e0b000; color: var(--text-2); cursor: pointer; white-space: pre-wrap; }
+.comments button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.comments button.quiet { border-color: transparent; background: none; color: var(--text-2); padding: 3px var(--space-1); }
+.comments button.quiet:hover { color: var(--negative); }
+.comments blockquote { margin: 0 0 var(--space-2); padding: 2px var(--space-2); border-left: 3px solid var(--warning); color: var(--text-2); cursor: pointer; white-space: pre-wrap; }
 .c-new { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
 .c-new button { justify-self: end; }
 .thread { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-3); background: var(--bg); }
@@ -440,75 +656,99 @@ body.with-comments .comments { display: block; }
 .thread.settled { opacity: 0.75; }
 .c-head { color: var(--text-2); font-size: var(--text-xs); display: flex; gap: var(--space-1); align-items: baseline; flex-wrap: wrap; }
 .c-head strong { color: var(--text); }
-.c-del { margin-left: auto; } .c-del button { border: 0; background: none; color: var(--text-2); padding: 0; font-size: var(--text-xs); }
 .c-body { white-space: pre-wrap; word-break: break-word; margin: 2px 0 var(--space-2); }
 .reply { border-top: 1px solid var(--border); padding-top: var(--space-2); }
 .c-actions { display: flex; gap: var(--space-2); align-items: flex-start; flex-wrap: wrap; }
 .c-actions details { flex: 1; } .c-actions summary { cursor: pointer; color: var(--accent); }
 .c-actions details form { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+.c-actions form { margin: 0; }
 .settled-list summary { cursor: pointer; color: var(--text-2); margin-bottom: var(--space-2); }
-.sel-btn { position: absolute; right: 16px; top: 12px; z-index: 2; font: inherit; font-weight: 600; padding: 6px var(--space-3); border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); box-shadow: 0 2px 10px rgb(0 0 0 / 0.2); cursor: pointer; }
+.sel-btn { position: absolute; right: 16px; top: 12px; z-index: 2; font: inherit; font-weight: 600; padding: 6px var(--space-3); border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: var(--accent-text); box-shadow: 0 2px 10px rgb(0 0 0 / 0.2); cursor: pointer; }
 body.with-comments .sel-btn { right: 356px; }
-.links h3 { margin: var(--space-2) var(--space-3) var(--space-1); font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
-.panel a.compare { border-top: 1px solid var(--border); border-radius: 0; margin-top: var(--space-1); color: var(--accent); }
-.move h3 { margin: var(--space-2) 0 0; font-size: var(--text-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.04em; }
-.short { display: none; }
-.share { width: min(360px, calc(100vw - 24px)); padding: var(--space-3); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
-.share .new-page { flex-wrap: wrap; }
-.share .new-page input[name=title] { flex: 1 1 100%; }
-.share p { margin: 0; color: var(--text-2); }
-.share .link { display: flex; gap: var(--space-2); }
-.share input { flex: 1; min-width: 0; font: inherit; font-size: var(--text-xs); padding: 4px var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
-.share .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.share form { margin: 0; }
-.share button { font: inherit; padding: 4px var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); cursor: pointer; }
-.share button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text, #fff); }
-.share button.danger { color: var(--negative, #c0362c); }
-.badge.public { background: var(--accent-soft); color: var(--accent); }
+.phone-only { display: none; }
+@media (max-width: 1100px) { .meta { display: none; } }
+@media (max-width: 760px) { .chips, .bar .badge:not(.keep) { display: none; } }
 @media (max-width: 640px) {
-  .meta, .label, .divider, .crumbs a, .crumbs .sep { display: none; }
-  body.with-side .side { position: fixed; top: 44px; bottom: 0; left: 0; z-index: 3; width: min(300px, 85vw); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); }
-  body.with-comments .comments { position: fixed; top: 44px; bottom: 0; right: 0; z-index: 3; width: min(340px, 90vw); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); }
+  .bar { padding: 0 var(--space-2); gap: 2px; }
+  .label, .crumbs a, .crumbs .sep, .watch-bar, .divider { display: none; }
+  .tool { padding: 5px 7px; }
+  .phone-only { display: block; }
+  .hist-icon { display: inline-flex; }
+  body.with-side .side { position: fixed; top: 48px; bottom: 0; left: 0; z-index: 4; width: min(300px, 85vw); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); }
+  body.with-comments .comments { position: fixed; top: 48px; bottom: 0; right: 0; z-index: 4; width: min(340px, 92vw); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); }
   body.with-comments .sel-btn { right: 16px; }
-  .panel.share { position: fixed; top: 50px; left: 12px; right: 12px; width: auto; }
-  .short { display: inline; }
+  .panel { left: 8px; right: 8px; width: auto; }
 }
 `;
+
+/** Who saved a version, in words: the person, or whose agent on which computer. */
+function authorLabel(a: Pick<VersionAuthor, "device_id" | "device_name" | "owner_name"> | undefined): string {
+  const t = WHO;
+  if (!a) return t.someone;
+  if (a.device_id?.startsWith(BROWSER_DEVICE_PREFIX)) return a.owner_name ?? (a.device_name ?? t.someone).replace(/ \(browser\)$/, "");
+  if (a.device_name && a.owner_name) return t.agent(a.owner_name, a.device_name);
+  return a.device_name ?? t.someone;
+}
+
+/** Who did something in a feed or a comment: the person, or whose agent. */
+function actorLabel(r: { actor_name: string; actor_device: string | null; agent_of: string | null }): string {
+  return r.actor_device && r.agent_of ? WHO.agent(r.agent_of, r.actor_name) : r.actor_name;
+}
+
+const SPEECH = (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+);
+const PENCIL = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+);
 
 async function viewerPage(c: Context<AppEnv>, id: string, requested: number | undefined) {
   const artifact = await getArtifact(c.env.DB, id);
   const viewer = c.get("viewer");
+  const t = VIEWER;
   // A page in a space the viewer is not let into is answered like a page that does not exist.
   if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.notFound();
   const versionNumber = requested ?? artifact.current_version;
   const version = await getVersion(c.env.DB, id, versionNumber);
   if (!version) return c.notFound();
-  const versions = await listVersions(c.env.DB, id);
   const access = await accessFor(c.env.DB, viewer);
-  const tree = artifact.project ? (await listProjectPages(c.env.DB, artifact.project)).filter((r) => !access.hiddenPages.has(r.id)) : undefined;
-  const trail = tree ? ancestorsOf(tree, id) : [];
+  const tree = (await listProjectPages(c.env.DB, artifact.project)).filter((r) => !access.hiddenPages.has(r.id));
+  const trail = ancestorsOf(tree, id);
   const editor = viewer.role !== "root" && viewer.sessionKind === "full" && (await canEditPage(c.env.DB, viewer, artifact));
   const visible = (rows: LinkedPage[]) => rows.filter((r) => access.sees(r));
-  const [from, to, comments] = await Promise.all([linkedFrom(c.env.DB, id).then(visible), linksTo(c.env.DB, id).then(visible), listComments(c.env.DB, id)]);
+  const [from, to, comments, authors, homes, stats] = await Promise.all([
+    linkedFrom(c.env.DB, id).then(visible),
+    linksTo(c.env.DB, id).then(visible),
+    listComments(c.env.DB, id),
+    versionAuthors(c.env.DB, id),
+    homePages(c.env.DB, access.hiddenPages),
+    listProjectStats(c.env.DB),
+  ]);
   const threads = threadsOf(comments);
-  const [watched, projectPeople, labelMap, restrictions, audience] = await Promise.all([
-    watching(c.env.DB, viewer.userId, [pageTarget(id)]),
+  const [watched, projectPeople, labelMap, restrictions, audience, space] = await Promise.all([
+    watching(c.env.DB, viewer.userId, [pageTarget(id), ...(artifact.project ? [projectTarget(artifact.project)] : [])]),
     peopleWhoCanSee(c.env.DB, artifact.project),
     labelsOf(c.env.DB, [id]),
     restrictionsOn(c.env.DB, id),
     pageAudience(c.env.DB, id),
+    artifact.project ? getSpace(c.env.DB, artifact.project) : Promise.resolve(null),
   ]);
   const labels = labelMap.get(id) ?? [];
   // Only the people who may see this page can be named in its comments.
   const people = projectPeople.filter(audience).map((p) => ({ id: p.id, name: p.name }));
-  const mayRestrict = (viewer.role === "root" || editor) && viewer.sessionKind === "full";
-  const accessRows = mayRestrict ? await listAccess(c.env.DB, id) : [];
-  const openThreads = threads.filter((t) => !t.first.resolved_at);
   const full = viewer.sessionKind === "full";
-  const settles = (t: Thread) => full && (viewer.role === "root" || editor || t.first.author_user === viewer.userId);
-  const deletes = (x: CommentRow) => full && (viewer.role === "root" || x.author_user === viewer.userId);
-  const projects = viewer.role === "root" ? await listProjects(c.env.DB) : [];
-  const templates = tree && (viewer.role === "root" || editor) ? (await markdownPages(c.env.DB, artifact.project, TEMPLATE_LABEL)).filter((r) => !access.hiddenPages.has(r.id)) : [];
+  const owner = viewer.role === "root";
+  const canEdit = (owner || editor) && full;
+  const mayRestrict = canEdit;
+  const accessRows = mayRestrict ? await listAccess(c.env.DB, id) : [];
+  const openThreads = threads.filter((x) => !x.first.resolved_at);
+  const settles = (x: Thread) => full && (owner || editor || x.first.author_user === viewer.userId);
+  const deletes = (x: CommentRow) => full && (owner || x.author_user === viewer.userId);
+  const projects = visibleProjects(stats, access)
+    .flatMap((p) => (p.project ? [p.project] : []))
+    .sort((a, b) => a.localeCompare(b));
+  const templates = canEdit ? (await markdownPages(c.env.DB, artifact.project, TEMPLATE_LABEL)).filter((r) => !access.hiddenPages.has(r.id)) : [];
+  const labelChoices = canEdit ? (await labelCounts(c.env.DB, access, artifact.project)).map((l) => l.label).filter((l) => !labels.includes(l) && l !== HOME_LABEL) : [];
   const shareUrl = shareActive(artifact)
     ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
     : undefined;
@@ -519,157 +759,288 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const nonce = c.get("nonce");
   const isLatest = versionNumber === artifact.current_version;
   const markdown = version.entry.endsWith(".md");
+  const home = artifact.project ? homes.get(artifact.project) : undefined;
+  // Reading a page answers the notifications about its changes; opening its comments, those too.
+  const showComments = c.req.query("comments") === "1";
+  const unread = Math.max(0, viewer.unread - (await markSeen(c.env.DB, viewer.userId, id, { comments: showComments })));
+  const pageWatched = watched.has(pageTarget(id));
+  const projectWatched = artifact.project ? watched.has(projectTarget(artifact.project)) : false;
+  const shown = authors.find((a) => a.version === versionNumber);
+  const author = authorLabel(shown);
+  // The tree beside the page leaves out the project's front page: the project's name stands for it.
+  const sideRows = home ? tree.filter((r) => r.id !== home.id) : tree;
+  const crumbs = trail.filter((r) => r.id !== home?.id);
+  const folded = crumbs.length > 2 ? crumbs.slice(-2) : crumbs;
+  const front = artifact.project ? (home ? `/a/${home.id}` : projectHref(artifact.project)) : projectHref(null);
+  const open = (q: string) => c.req.query(q) === "1";
+  const moreOpen = open("labels") || open("access") || open("share") || open("move") || open("new");
+  const restricted = restrictions.length > 0;
+  const bypass = restricted || space?.access === "members";
   return c.html(
-    <html lang="en">
+    <html>
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{artifact.title}</title>
         <style>{raw(TOKENS + VIEWER_STYLES + TREE_STYLES)}</style>
+        <script src="/assets/ui.js" defer></script>
       </head>
       <body>
-        {tree && (
-          <script nonce={nonce}>
-            {raw(`(() => { let on = null; try { on = localStorage.getItem("artifact.side"); } catch {}
+        <script nonce={nonce}>
+          {raw(`(() => { let on = null; try { on = localStorage.getItem("artifact.side"); } catch {}
   if (on === null ? window.innerWidth >= 900 : on === "1") document.body.classList.add("with-side"); })();`)}
-          </script>
-        )}
+        </script>
         <div class="bar">
-          {tree && (
-            <button type="button" id="side-toggle" class="tool" aria-controls="side" title="Pages in this project" style="border:0;background:none;font:inherit">
-              ☰
-            </button>
-          )}
-          <a href={artifact.project ? projectHref(artifact.project) : "/"} class="back" aria-label={artifact.project ? `Pages in ${artifact.project}` : "All artifacts"}>
-            ← <span class="label">{artifact.project ?? "Artifacts"}</span>
-          </a>
-          <span class="divider" aria-hidden="true" />
-          <nav class="crumbs" aria-label="Where this page is">
-            {trail.map((t) => (
+          <button type="button" id="side-toggle" class="tool icon" aria-controls="side" aria-label={t.sideToggle} title={t.sideToggle}>
+            ☰
+          </button>
+          <nav class="crumbs" aria-label={t.whereThisIs}>
+            {artifact.project && artifact.id !== home?.id && (
               <>
-                <a href={`/a/${t.id}`}>{t.title}</a>
+                <a href={front} title={artifact.project}>
+                  {artifact.project}
+                </a>
+                <span class="sep" aria-hidden="true">
+                  ›
+                </span>
+              </>
+            )}
+            {crumbs.length > folded.length && (
+              <>
+                <a href={`/a/${crumbs[crumbs.length - folded.length - 1]!.id}`} title={crumbs.slice(0, crumbs.length - folded.length).map((r) => r.title).join(" › ")}>
+                  …
+                </a>
+                <span class="sep" aria-hidden="true">
+                  ›
+                </span>
+              </>
+            )}
+            {folded.map((r) => (
+              <>
+                <a href={`/a/${r.id}`} title={r.title}>
+                  {r.title}
+                </a>
                 <span class="sep" aria-hidden="true">
                   ›
                 </span>
               </>
             ))}
-            <span class="title">{artifact.title}</span>
+            <span class="title" title={artifact.title}>
+              {artifact.title}
+            </span>
           </nav>
-          <span class="meta">
-            {isLatest ? `v${versionNumber}` : <span class="old">v{versionNumber} (latest is v{artifact.current_version})</span>} ·{" "}
-            <Time iso={version.created_at} />
-          </span>
-          <a id="newer" class="badge public" href={`/a/${id}`} hidden title="A newer version was saved after you opened this page" />
-          <span id="editing" class="badge public" hidden />
+          {isLatest && <span class="meta">{versionNumber === 1 ? t.created(<Time iso={version.created_at} />, author) : t.updated(<Time iso={version.created_at} />, author)}</span>}
+          <a id="newer" class="badge public keep" href={`/a/${id}`} hidden title={t.newerTitle} />
+          <span id="editing" class="badge public keep" hidden />
           {version.allow_connect.length > 0 && (
-            <span class="badge" title={`May connect to ${version.allow_connect.join(", ")}`}>
-              external
+            <span class="badge" title={t.externalTitle(version.allow_connect.join(", "))}>
+              {t.external}
             </span>
           )}
-          {shareUrl && <span class="badge public">public</span>}
-          {restrictions.length > 0 && !mayRestrict && (
-            <span class="badge public" title={restrictions.some((r) => r.restriction === "view") ? "Only some people can view this page" : "Only some people can edit this page"}>
-              restricted
+          {shareUrl && (
+            <span class="badge public" title={t.publicTitle}>
+              {t.publicBadge}
+            </span>
+          )}
+          {restricted && !mayRestrict && (
+            <span class="badge public" title={restrictions.some((r) => r.restriction === "view") ? t.restrictedView : t.restrictedEdit}>
+              {t.restricted}
             </span>
           )}
           {labels.length > 0 && (
             <span class="chips">
-              <LabelChips labels={labels} />
+              <LabelChips labels={labels} project={artifact.project} />
             </span>
           )}
           <span class="spacer" />
-          {(viewer.role === "root" || editor) && viewer.sessionKind === "full" && (
-            <LabelPanel id={id} labels={labels} csrf={viewer.csrf} open={c.req.query("labels") === "1"} />
-          )}
-          {mayRestrict && (
-            <AccessPanel
-              id={id}
-              csrf={viewer.csrf}
-              restrictions={restrictions}
-              rows={accessRows}
-              people={projectPeople.filter((p) => p.role !== "root")}
-              me={viewer.userId}
-              open={c.req.query("access") === "1"}
-            />
-          )}
-          {(viewer.role === "root" || editor) && (
-            <MovePanel
-              id={id}
-              project={artifact.project}
-              projects={viewer.role === "root" ? projects.flatMap((p) => (p.project ? [p.project] : [])) : undefined}
-              csrf={viewer.csrf}
-              tree={tree}
-              parent={artifact.parent}
-              templates={templates}
-            />
-          )}
-          {viewer.role === "root" && (
-            <SharePanel id={id} artifact={artifact} shareUrl={shareUrl} csrf={viewer.csrf} open={c.req.query("share") === "1"} />
-          )}
-          {isLatest && (viewer.role === "root" || editor) && viewer.sessionKind === "full" && (
-            <a href={`/a/${id}/edit`} class="tool" title={markdown ? "Edit this page" : "Change this page's HTML, with a preview"}>
-              ✎ <span class="label">{markdown ? "Edit" : "Edit source"}</span>
-            </a>
-          )}
-          {viewer.sessionKind === "full" && (
-            <form method="post" action="/watch" style="margin:0">
-              <CsrfField token={viewer.csrf} />
-              <input type="hidden" name="page" value={id} />
-              <input type="hidden" name="on" value={watched.size ? "0" : "1"} />
-              <button type="submit" class="tool" title={watched.size ? "Stop hearing about this page" : "Hear about changes and comments on this page"} style="border:0;background:none;font:inherit">
-                <span class="label">{watched.size ? "Watching" : "Watch"}</span>
-                <span class="short">{watched.size ? "★" : "☆"}</span>
-              </button>
-            </form>
-          )}
-          <Bell unread={viewer.unread} class="tool bell" />
-          <button type="button" id="comments-toggle" class="tool" aria-controls="comments" title="Comments" style="border:0;background:none;font:inherit">
-            <span class="label">Comments</span>
-            <span class="short">✉</span>
-            {openThreads.length > 0 && <span class="count">{openThreads.length}</span>}
-          </button>
-          {(from.length > 0 || to.length > 0) && <LinksPanel from={from} to={to} />}
-          <details>
-            <summary class="tool">
-              <span class="label">Versions</span>
-              <span class="short">v{versionNumber}</span> ▾
-            </summary>
-            <div class="panel">
-              {versions.map((v) => (
-                <a href={v.version === artifact.current_version ? `/a/${id}` : `/a/${id}/v/${v.version}`} class={v.version === versionNumber ? "current" : ""}>
-                  v{v.version}
-                  {v.version === artifact.current_version && " · latest"}
-                  <span>
-                    <Time iso={v.created_at} />
-                  </span>
-                </a>
-              ))}
-              {versions.length > 1 && (
-                <a href={`/a/${id}/diff?from=${versions[1]!.version}&to=${versions[0]!.version}`} class="compare">
-                  Compare versions…
-                </a>
+          <div class="tools">
+            {isLatest && canEdit && markdown && (
+              <a href={`/a/${id}/edit`} class="tool primary" title={t.editTitle}>
+                {PENCIL} <span class="label">{t.edit}</span>
+              </a>
+            )}
+            <button type="button" id="comments-toggle" class="tool" aria-controls="comments" title={t.comments}>
+              {SPEECH} <span class="label">{t.comments}</span>
+              {openThreads.length > 0 && (
+                <span class="count" title={t.openThreads(openThreads.length)}>
+                  {openThreads.length}
+                </span>
               )}
-            </div>
-          </details>
-          <a id="open" href={openHref} target="_blank" rel="noopener noreferrer" class="tool" title="Open in a new tab">
-            ↗ <span class="label">Open</span>
-          </a>
+            </button>
+            {full && <WatchControl id={id} project={artifact.project} page={pageWatched} projectWide={projectWatched} csrf={viewer.csrf} class="watch-bar" />}
+            <details class="hist" data-menu>
+              <summary class="tool" title={t.history}>
+                <span class="label">{t.history}</span>
+                <span class="hist-icon" aria-hidden="true">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+                </span>{" "}
+                ▾
+              </summary>
+              <div class="panel">
+                {authors.map((v) => (
+                  <div class={`row${v.version === versionNumber ? " current" : ""}`}>
+                    <a class="v" href={v.version === artifact.current_version ? `/a/${id}` : `/a/${id}/v/${v.version}`}>
+                      v{v.version}
+                      {v.version === artifact.current_version && ` · ${t.latest}`}
+                    </a>
+                    <span class="who">
+                      {authorLabel(v)} · <Time iso={v.created_at} />
+                    </span>
+                    {v.version > 1 ? (
+                      <a class="diff" href={`/a/${id}/diff?from=${v.version - 1}&to=${v.version}`}>
+                        {t.changes}
+                      </a>
+                    ) : (
+                      <span />
+                    )}
+                  </div>
+                ))}
+                {authors.length > 1 && (
+                  <a href={`/a/${id}/diff?from=${authors[1]!.version}&to=${authors[0]!.version}`} class="compare">
+                    {t.compare}
+                  </a>
+                )}
+              </div>
+            </details>
+            <details class="more" data-menu open={moreOpen}>
+              <summary class="tool icon" aria-label={t.more} title={t.more}>
+                ⋯
+              </summary>
+              <div class="panel more-panel">
+                {full && (
+                  <div class="phone-only">
+                    <WatchControl id={id} project={artifact.project} page={pageWatched} projectWide={projectWatched} csrf={viewer.csrf} class="item" />
+                  </div>
+                )}
+                {isLatest && canEdit && (
+                  <details data-section open={open("new")}>
+                    <summary>{t.newPage}</summary>
+                    <div class="sect">
+                      <NewPageForm id={id} parent={artifact.parent} project={artifact.project} isHome={artifact.id === home?.id} templates={templates} csrf={viewer.csrf} />
+                    </div>
+                  </details>
+                )}
+                {canEdit && (
+                  <details data-section open={open("labels")}>
+                    <summary>{t.labels}</summary>
+                    <div class="sect">
+                      <LabelSection id={id} labels={labels} choices={labelChoices} csrf={viewer.csrf} />
+                    </div>
+                  </details>
+                )}
+                {canEdit && (
+                  <details data-section open={open("move")}>
+                    <summary>{t.move}</summary>
+                    <div class="sect">
+                      <MoveSection id={id} project={artifact.project} projects={owner ? projects : undefined} csrf={viewer.csrf} tree={tree} parent={artifact.parent} />
+                    </div>
+                  </details>
+                )}
+                {mayRestrict && (
+                  <details data-section open={open("access")}>
+                    <summary>
+                      {t.who}
+                      {restricted && <span class="badge public">{t.restricted}</span>}
+                    </summary>
+                    <div class="sect">
+                      <AccessSection
+                        id={id}
+                        csrf={viewer.csrf}
+                        restrictions={restrictions}
+                        rows={accessRows}
+                        people={projectPeople.filter((p) => p.role !== "root")}
+                        me={viewer.userId}
+                       
+                      />
+                    </div>
+                  </details>
+                )}
+                {owner && full && (
+                  <details data-section open={open("share")}>
+                    <summary>
+                      {t.publicLink}
+                      {shareUrl && <span class="badge public">{t.publicBadge}</span>}
+                    </summary>
+                    <div class="sect">
+                      <ShareSection id={id} artifact={artifact} shareUrl={shareUrl} bypass={bypass} csrf={viewer.csrf} />
+                    </div>
+                  </details>
+                )}
+                {(from.length > 0 || to.length > 0) && (
+                  <details data-section>
+                    <summary>{t.linked(from.length + to.length)}</summary>
+                    <div class="sect">
+                      <LinksSection from={from} to={to} />
+                    </div>
+                  </details>
+                )}
+                {isLatest && canEdit && !markdown && (
+                  <a href={`/a/${id}/edit`} class="item" title={t.editSourceTitle}>
+                    {t.editSource}
+                  </a>
+                )}
+                <button type="button" class="item" data-copy={`/a/${id}`} data-copied={t.copied} title={t.copyTitle}>
+                  {t.copyLink}
+                </button>
+                <a id="open" href={openHref} target="_blank" rel="noopener noreferrer" class="item" title={t.newTabTitle}>
+                  {t.newTab} ↗
+                </a>
+              </div>
+            </details>
+            <span class="divider" aria-hidden="true" />
+            <Bell unread={unread} class="tool icon bell" />
+          </div>
         </div>
         <div class="main">
-          {tree && (
-            <nav id="side" class="side" aria-label={`Pages in ${artifact.project}`}>
-              <h2>
-                <a href={projectHref(artifact.project)}>{artifact.project}</a>
-              </h2>
-              <PageTree rows={tree} current={id} open={new Set([...trail.map((t) => t.id), id])} />
-            </nav>
-          )}
-          <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
-          <script nonce={nonce}>{raw(FRAGMENT_INTO_FRAME)}</script>
+          <nav id="side" class="side" aria-label={t.sideToggle}>
+            <div class="site">
+              <a href="/">{t.site}</a>
+              <a href="/activity" class="muted small">
+                {t.activity}
+              </a>
+            </div>
+            <form method="get" action="/search" role="search">
+              <input type="search" name="q" placeholder={t.search} aria-label={t.search} />
+            </form>
+            <div class={`proj${artifact.id === home?.id ? " current" : ""}`}>
+              <a href={front} title={artifact.project ? t.frontPage(artifact.project) : t.noProject}>
+                {artifact.project ?? t.noProject}
+              </a>
+              {projects.length > 0 && (
+                <details class="switch" data-menu>
+                  <summary title={t.switchProject} aria-label={t.switchProject}>
+                    ▾
+                  </summary>
+                  <div class="panel">
+                    {projects.map((p) => (
+                      <a href={homes.get(p) ? `/a/${homes.get(p)!.id}` : projectHref(p)} class={p === artifact.project ? "current" : undefined}>
+                        {p}
+                      </a>
+                    ))}
+                    {visibleProjects(stats, access).some((p) => p.project === null) && <a href={projectHref(null)}>{t.noProject}</a>}
+                  </div>
+                </details>
+              )}
+            </div>
+            <div class="links">
+              <a href={projectHref(artifact.project)}>{t.allPages}</a>
+              {artifact.project && <a href={`/activity?project=${encodeURIComponent(artifact.project)}`}>{t.activity}</a>}
+            </div>
+            <PageTree rows={sideRows} current={id} open={new Set([...trail.map((r) => r.id), id])} project={artifact.project} />
+          </nav>
+          <div class="frame-col">
+            {!isLatest && (
+              <div class="old-strip">
+                {t.oldVersion(versionNumber, artifact.current_version)} · <a href={`/a/${id}`}>{t.showLatest}</a>
+              </div>
+            )}
+            <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
+            <script nonce={nonce}>{raw(FRAGMENT_INTO_FRAME)}</script>
+          </div>
           <button type="button" id="sel-btn" class="sel-btn" hidden>
-            Comment on the selection
+            {t.selection}
           </button>
-          <CommentsPanel id={id} threads={threads} csrf={viewer.csrf} canWrite={full} canSettle={settles} canDelete={deletes} />
+          <CommentsPanel id={id} threads={threads} shown={versionNumber} csrf={viewer.csrf} canWrite={full} canSettle={settles} canDelete={deletes} />
         </div>
         <script nonce={nonce}>
           {raw(`
@@ -684,9 +1055,11 @@ if (toggle) {
   });
 }
 const lease = { url: ${JSON.stringify(`/a/${id}/lease`)}, token: ${JSON.stringify(token)}, exp: ${exp} };
+const csrf = ${jsonInScript(viewer.csrf)};
 // Someone saving or editing this page meanwhile: say so, and offer the newer version.
 {
   const shown = ${versionNumber}, latest = ${JSON.stringify(isLatest)};
+  const NEWER = ${jsonInScript(t.newer("{n}", "{by}"))}, EDITING = ${jsonInScript(t.editing("{names}"))};
   const newer = document.getElementById("newer"), editors = document.getElementById("editing");
   const poll = async () => {
     if (document.hidden) return;
@@ -694,8 +1067,8 @@ const lease = { url: ${JSON.stringify(`/a/${id}/lease`)}, token: ${JSON.stringif
       const res = await fetch(${JSON.stringify(`/a/${id}/state`)}, { credentials: "same-origin" });
       if (!res.ok) return;
       const s = await res.json();
-      if (latest && s.version > shown) { newer.textContent = "v" + s.version + " by " + s.by + " · show it"; newer.hidden = false; }
-      editors.textContent = s.editing.length ? s.editing.join(", ") + " editing" : "";
+      if (latest && s.version > shown) { newer.textContent = NEWER.replace("{n}", s.version).replace("{by}", s.by); newer.hidden = false; }
+      editors.textContent = s.editing.length ? EDITING.replace("{names}", s.editing.join(", ")) : "";
       editors.hidden = !s.editing.length;
     } catch {}
   };
@@ -705,10 +1078,23 @@ const lease = { url: ${JSON.stringify(`/a/${id}/lease`)}, token: ${JSON.stringif
 }
 // Comments beside the page; a passage selected in the page can be commented on, and commented ones are marked.
 const frame = document.getElementById("frame");
-const commentsOn = (on) => { document.body.classList.toggle("with-comments", on); document.getElementById("comments-toggle").setAttribute("aria-expanded", String(on)); };
+let seen = ${JSON.stringify(showComments)};
+const commentsOn = (on) => {
+  document.body.classList.toggle("with-comments", on);
+  document.getElementById("comments-toggle").setAttribute("aria-expanded", String(on));
+  // Opening the comments answers the notifications about them.
+  if (on && !seen) {
+    seen = true;
+    fetch(${JSON.stringify(`/a/${id}/seen`)}, { method: "POST", credentials: "same-origin", headers: { "x-csrf": csrf } })
+      .then((r) => r.ok ? r.json() : null).then((r) => {
+        const n = document.querySelector(".bell-count");
+        if (r && n && r.unread >= 0) { if (r.unread === 0) n.remove(); else n.textContent = r.unread > 99 ? "99+" : String(r.unread); }
+      }).catch(() => {});
+  }
+};
 document.getElementById("comments-toggle").addEventListener("click", () => commentsOn(!document.body.classList.contains("with-comments")));
-if (new URLSearchParams(location.search).get("comments") === "1") commentsOn(true);
-const quotes = ${jsonInScript(openThreads.filter((t) => t.first.quote).map((t) => ({ id: t.first.id, text: t.first.quote })))};
+if (${JSON.stringify(showComments)}) commentsOn(true);
+const quotes = ${jsonInScript(openThreads.filter((x) => x.first.quote).map((x) => ({ id: x.first.id, text: x.first.quote })))};
 const selBtn = document.getElementById("sel-btn");
 let selected = "";
 window.addEventListener("message", (e) => {
@@ -718,8 +1104,8 @@ window.addEventListener("message", (e) => {
   if (d.type === "artifact:selection" && typeof d.text === "string") { selected = d.text.slice(0, 500); selBtn.hidden = !selected || !document.getElementById("c-body"); }
   if (d.type === "artifact:comment" && typeof d.id === "string") {
     commentsOn(true);
-    const t = document.getElementById("c-" + d.id.replace(/[^0-9a-z]/g, ""));
-    if (t) { t.scrollIntoView({ block: "center" }); t.classList.add("flash"); setTimeout(() => t.classList.remove("flash"), 1500); }
+    const el = document.getElementById("c-" + d.id.replace(/[^0-9a-z]/g, ""));
+    if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1500); }
   }
 });
 selBtn.addEventListener("click", () => {
@@ -825,9 +1211,10 @@ setInterval(refresh, 60000);
 const copy = document.getElementById("share-copy");
 if (copy) copy.addEventListener("click", async () => {
   const input = document.getElementById("share-url");
-  try { await navigator.clipboard.writeText(input.value); copy.textContent = "Copied"; }
-  catch { input.select(); copy.textContent = "Selected"; }
-  setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+  const label = copy.textContent;
+  try { await navigator.clipboard.writeText(input.value); copy.textContent = ${jsonInScript(t.copied)}; }
+  catch { input.select(); }
+  setTimeout(() => { copy.textContent = label; }, 1500);
 });`)}
         </script>
       </body>
@@ -835,13 +1222,60 @@ if (copy) copy.addEventListener("click", async () => {
   );
 }
 
-function daysLeft(iso: string): string {
-  const days = Math.ceil((Date.parse(iso) - Date.now()) / 864e5);
-  return days <= 1 ? "less than a day left" : `${days} days left`;
+/** Watching a page: a toggle, or a note that the whole project is watched. */
+function WatchControl(props: { id: string; project: string | null; page: boolean; projectWide: boolean; csrf: string; class: string }) {
+  const t = VIEWER;
+  if (props.projectWide && !props.page && props.project) {
+    return (
+      <a class={`tool on ${props.class}`} href={projectHref(props.project)} title={t.watchingProjectTitle(props.project)}>
+        {t.watchingProject(props.project)}
+      </a>
+    );
+  }
+  return (
+    <form method="post" action="/watch" style="margin:0" class={props.class === "item" ? undefined : props.class}>
+      <CsrfField token={props.csrf} />
+      <input type="hidden" name="page" value={props.id} />
+      <input type="hidden" name="on" value={props.page ? "0" : "1"} />
+      <button type="submit" class={`${props.class === "item" ? "item" : "tool"}${props.page ? " on" : ""}`} title={props.page ? t.stopTitle : t.watchTitle}>
+        {props.page ? `✓ ${t.watching}` : t.watch}
+      </button>
+    </form>
+  );
 }
 
-function SharePanel(props: { id: string; artifact: ArtifactRow; shareUrl: string | undefined; csrf: string; open: boolean }) {
+/** Writing a new page under this one, or beside it. */
+function NewPageForm(props: { id: string; parent: string | null; project: string | null; isHome: boolean; templates: MarkdownPage[]; csrf: string }) {
+  const t = VIEWER;
+  return (
+    <form method="post" action="/new" class="sect" style="padding:0">
+      <CsrfField token={props.csrf} />
+      {props.project && <input type="hidden" name="project" value={props.project} />}
+      <input name="title" type="text" required maxlength={200} placeholder={t.title} aria-label={t.newTitle} />
+      {!props.isHome && (
+        <div class="choice">
+          <label>
+            <input type="radio" name="parent" value={props.id} checked /> {t.under}
+          </label>
+          <label>
+            <input type="radio" name="parent" value={props.parent ?? "-"} /> {t.beside}
+          </label>
+        </div>
+      )}
+      {props.isHome && <input type="hidden" name="parent" value={props.id} />}
+      <div class="row">
+        <TemplateChoice pages={props.templates} />
+        <button type="submit" class="primary">
+          {t.startWriting}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ShareSection(props: { id: string; artifact: ArtifactRow; shareUrl: string | undefined; bypass: boolean; csrf: string }) {
   const { id, artifact, shareUrl, csrf } = props;
+  const t = PANELS;
   const action = (path: string, label: string, cls = "") => (
     <form method="post" action={`/a/${id}/share${path}`}>
       <CsrfField token={csrf} />
@@ -850,119 +1284,122 @@ function SharePanel(props: { id: string; artifact: ArtifactRow; shareUrl: string
       </button>
     </form>
   );
-  return (
-    <details open={props.open}>
-      <summary class="tool">
-        <span class="label">Share</span>
-        <span class="short">⤴</span> ▾
-      </summary>
-      <div class="panel share">
-        {shareUrl ? (
-          <>
-            <p>Anyone with this link can view the latest version without signing in.</p>
-            <div class="link">
-              <input id="share-url" type="text" readonly value={shareUrl} aria-label="Public link" />
-              <button type="button" id="share-copy">
-                Copy
-              </button>
-            </div>
-            <p>
-              Open until <time datetime={artifact.share_expires_at!}>{formatTime(artifact.share_expires_at!)}</time> ({daysLeft(artifact.share_expires_at!)}).
-            </p>
-            <div class="actions">
-              {action("", `Extend ${SHARE_DAYS} days`)}
-              {action("/reset", "New link")}
-              {action("/off", "Turn off", "danger")}
-            </div>
-          </>
-        ) : (
-          <>
-            <p>
-              Create a link that anyone can open without signing in, for {SHARE_DAYS} days. They see the latest version only, not the list or
-              older versions.
-            </p>
-            <div class="actions">{action("", "Create public link", "primary")}</div>
-          </>
-        )}
+  const days = shareUrl ? Math.ceil((Date.parse(artifact.share_expires_at!) - Date.now()) / 864e5) : 0;
+  return shareUrl ? (
+    <>
+      <p>{t.shareOn}</p>
+      {props.bypass && <p class="small" style="color:var(--warning)">{t.shareBypass}</p>}
+      <div class="link">
+        <input id="share-url" type="text" readonly value={shareUrl} aria-label={t.publicLinkLabel} />
+        <button type="button" id="share-copy">
+          {t.copy}
+        </button>
       </div>
-    </details>
+      <p>
+        {t.openUntil(
+          <time datetime={artifact.share_expires_at!} data-exact>
+            {formatTime(artifact.share_expires_at!)}
+          </time>,
+          t.daysLeft(days),
+        )}
+      </p>
+      <div class="actions">
+        {action("", t.extend(SHARE_DAYS))}
+        {action("/reset", t.newLink)}
+        {action("/off", t.turnOff, "danger")}
+      </div>
+    </>
+  ) : (
+    <>
+      <p>{t.shareOff(SHARE_DAYS)}</p>
+      {props.bypass && <p class="small" style="color:var(--warning)">{t.shareBypass}</p>}
+      <div class="actions">{action("", t.create, "primary")}</div>
+    </>
   );
 }
 
-/** Moves the page to another project. Shares the share panel's look. */
 /** The comments beside a page: open threads first, then the settled ones folded. */
-function CommentsPanel(props: { id: string; threads: Thread[]; csrf: string; canWrite: boolean; canSettle: (t: Thread) => boolean; canDelete: (c: CommentRow) => boolean }) {
+function CommentsPanel(props: { id: string; threads: Thread[]; shown: number; csrf: string; canWrite: boolean; canSettle: (t: Thread) => boolean; canDelete: (c: CommentRow) => boolean }) {
   const { id, threads, csrf } = props;
-  const open = threads.filter((t) => !t.first.resolved_at), settled = threads.filter((t) => t.first.resolved_at);
+  const t = COMMENTS;
+  const open = threads.filter((x) => !x.first.resolved_at), settled = threads.filter((x) => x.first.resolved_at);
   const one = (c: CommentRow, reply: boolean) => (
     <div class={reply ? "reply" : undefined}>
       <div class="c-head">
-        <strong>{c.author_name}</strong>
-        {c.author_device && " (agent)"} · <Time iso={c.created_at} /> · v{c.version}
-        {props.canDelete(c) && (
-          <form method="post" action={`/a/${id}/comments/${c.id}/delete`} class="inline c-del">
-            <CsrfField token={csrf} />
-            <button type="submit" title={reply ? "Delete this reply" : "Delete this thread"}>
-              Delete
-            </button>
-          </form>
-        )}
+        <strong>{c.author_device && c.agent_of ? WHO.agent(c.agent_of, c.author_name) : c.author_name}</strong> · <Time iso={c.created_at} />
+        {c.version !== props.shown && <> · {t.onVersion(c.version)}</>}
       </div>
       <div class="c-body">{c.body}</div>
     </div>
   );
-  const thread = (t: Thread) => (
-    <article class={`thread${t.first.resolved_at ? " settled" : ""}`} id={`c-${t.first.id}`}>
-      {t.first.quote && (
-        <blockquote data-focus={t.first.id} title="Show this passage in the page">
-          {t.first.quote}
+  const remove = (c: CommentRow, reply: boolean) =>
+    props.canDelete(c) && (
+      <form method="post" action={`/a/${id}/comments/${c.id}/delete`} data-confirm={reply ? t.deleteReply : t.deleteThread}>
+        <CsrfField token={csrf} />
+        <button type="submit" class="quiet">
+          {t.delete}
+        </button>
+      </form>
+    );
+  const thread = (x: Thread) => (
+    <article class={`thread${x.first.resolved_at ? " settled" : ""}`} id={`c-${x.first.id}`}>
+      {x.first.quote && (
+        <blockquote data-focus={x.first.id} title={t.showPassage}>
+          {x.first.quote}
         </blockquote>
       )}
-      {one(t.first, false)}
-      {t.replies.map((r) => one(r, true))}
+      {one(x.first, false)}
+      {x.replies.map((r) => (
+        <>
+          {one(r, true)}
+          {remove(r, true)}
+        </>
+      ))}
       <div class="c-actions">
         {props.canWrite && (
           <details>
-            <summary>Reply</summary>
+            <summary>{t.reply}</summary>
             <form method="post" action={`/a/${id}/comments`}>
               <CsrfField token={csrf} />
-              <input type="hidden" name="reply_to" value={t.first.id} />
+              <input type="hidden" name="reply_to" value={x.first.id} />
               <input type="hidden" name="mentions" value="" />
-              <textarea name="body" required maxlength={4000} aria-label="Reply" />
-              <button type="submit">Reply</button>
+              <textarea name="body" required maxlength={4000} aria-label={t.reply} />
+              <button type="submit">{t.sendReply}</button>
             </form>
           </details>
         )}
-        {props.canSettle(t) && (
-          <form method="post" action={`/a/${id}/comments/${t.first.id}/resolve`} class="inline">
+        {props.canSettle(x) && (
+          <form method="post" action={`/a/${id}/comments/${x.first.id}/resolve`} class="inline">
             <CsrfField token={csrf} />
-            <input type="hidden" name="resolved" value={t.first.resolved_at ? "0" : "1"} />
-            <button type="submit">{t.first.resolved_at ? "Reopen" : "Resolve"}</button>
+            <input type="hidden" name="resolved" value={x.first.resolved_at ? "0" : "1"} />
+            <button type="submit">{x.first.resolved_at ? t.reopen : t.resolve}</button>
           </form>
         )}
+        {remove(x.first, false)}
       </div>
     </article>
   );
   return (
-    <aside id="comments" class="comments" aria-label="Comments">
-      <h2>Comments</h2>
+    <aside id="comments" class="comments" aria-label={t.heading}>
+      <h2>{t.heading}</h2>
+      {props.canWrite && <p class="hint">{t.hint}</p>}
       {props.canWrite && (
         <form method="post" action={`/a/${id}/comments`} class="c-new">
           <CsrfField token={csrf} />
           <input type="hidden" name="quote" id="c-quote" value="" />
           <input type="hidden" name="mentions" value="" />
           <blockquote id="c-quote-show" hidden />
-          <textarea name="body" id="c-body" required maxlength={4000} placeholder="Comment on this page, or select a passage in it first" aria-label="New comment" />
+          <textarea name="body" id="c-body" required maxlength={4000} placeholder={t.placeholder} aria-label={t.newComment} />
           <button type="submit" class="primary">
-            Comment
+            {t.submit}
           </button>
         </form>
       )}
-      {open.length === 0 && settled.length === 0 && <p class="muted">No comments yet.</p>}
+      {open.length === 0 && settled.length === 0 && <p class="muted">{t.none}</p>}
       {open.map(thread)}
       {settled.length > 0 && (
         <details class="settled-list">
-          <summary>Resolved ({settled.length})</summary>
+          <summary>{t.resolved(settled.length)}</summary>
           {settled.map(thread)}
         </details>
       )}
@@ -971,29 +1408,30 @@ function CommentsPanel(props: { id: string; threads: Thread[]; csrf: string; can
 }
 
 /** The pages that link to this one and the pages it links to (only those the viewer may see). */
-function LinksPanel(props: { from: LinkedPage[]; to: LinkedPage[] }) {
-  const list = (rows: LinkedPage[]) => rows.map((r) => <a href={`/a/${r.id}`}>{r.title}{r.project && <span>{r.project}</span>}</a>);
+function LinksSection(props: { from: LinkedPage[]; to: LinkedPage[] }) {
+  const t = VIEWER;
+  const list = (rows: LinkedPage[]) =>
+    rows.map((r) => (
+      <a href={`/a/${r.id}`} class="item" style="padding:var(--space-1) 0">
+        {r.title}
+        {r.project && <span class="muted small">{r.project}</span>}
+      </a>
+    ));
   return (
-    <details>
-      <summary class="tool" title="Pages linked from and to this one">
-        <span class="label">Links</span>
-        <span class="short">⇄</span> {props.from.length + props.to.length} ▾
-      </summary>
-      <div class="panel links">
-        {props.from.length > 0 && (
-          <>
-            <h3>Linked from</h3>
-            {list(props.from)}
-          </>
-        )}
-        {props.to.length > 0 && (
-          <>
-            <h3>Links to</h3>
-            {list(props.to)}
-          </>
-        )}
-      </div>
-    </details>
+    <>
+      {props.from.length > 0 && (
+        <>
+          <h3>{t.linkedFrom}</h3>
+          {list(props.from)}
+        </>
+      )}
+      {props.to.length > 0 && (
+        <>
+          <h3>{t.linksTo}</h3>
+          {list(props.to)}
+        </>
+      )}
+    </>
   );
 }
 
@@ -1003,7 +1441,7 @@ function parentChoices(tree: TreeRow[], id: string): { id: string; label: string
   const walk = (rows: TreeRow[], depth: number) => {
     for (const r of rows) {
       if (below.has(r.id)) continue;
-      out.push({ id: r.id, label: `${"\u00a0\u00a0\u00a0".repeat(depth)}${r.title}` });
+      out.push({ id: r.id, label: `${"   ".repeat(depth)}${r.title}` });
       walk(tree.filter((x) => x.parent === r.id), depth + 1);
     }
   };
@@ -1013,162 +1451,164 @@ function parentChoices(tree: TreeRow[], id: string): { id: string; label: string
 }
 
 /** Who may see and change a page, beyond what its project allows. */
-function AccessPanel(props: {
+function AccessSection(props: {
   id: string;
   csrf: string;
   restrictions: PathRestriction[];
   rows: { user_id: string; name: string; can: string }[];
   people: { id: string; name: string }[];
   me: string;
-  open: boolean;
 }) {
   const { id, csrf, rows } = props;
+  const t = PANELS;
   const own = props.restrictions.find((r) => r.own)?.restriction ?? null;
   const above = props.restrictions.filter((r) => !r.own);
   const modes = [
-    { value: "", label: "Open", note: "Everyone who can see the project views it; its editors change it." },
-    { value: "edit", label: "Only some can edit", note: "Everyone who can see the project views it; the people below change it." },
-    { value: "view", label: "Only some can view", note: "Nobody else sees it, nor the pages under it." },
+    { value: "", label: t.modeOpen, note: t.modeOpenNote },
+    { value: "edit", label: t.modeEdit, note: t.modeEditNote },
+    { value: "view", label: t.modeView, note: t.modeViewNote },
   ];
   const candidates = props.people.filter((p) => !rows.some((r) => r.user_id === p.id));
   return (
-    <details open={props.open}>
-      <summary class="tool" title="Who may see and change this page">
-        <span class="label">{own || above.length ? "Restricted" : "Access"}</span>
-        <span class="short">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
-        </span>{" "}
-        ▾
-      </summary>
-      <div class="panel share access-panel">
-        <h3>Who may see and change this page</h3>
-        <form method="post" action={`/a/${id}/access`} class="modes">
-          <CsrfField token={csrf} />
-          {modes.map((m) => (
-            <label class="mode">
-              <input type="radio" name="restriction" value={m.value} checked={(own ?? "") === m.value} />
-              <span>
-                <strong>{m.label}</strong>
-                <br />
-                <span class="muted small">{m.note}</span>
-              </span>
-            </label>
-          ))}
+    <>
+      <form method="post" action={`/a/${id}/access`} class="modes">
+        <CsrfField token={csrf} />
+        {modes.map((m) => (
+          <label class="mode">
+            <input type="radio" name="restriction" value={m.value} checked={(own ?? "") === m.value} />
+            <span>
+              <strong>{m.label}</strong>
+              <br />
+              <span class="muted small">{m.note}</span>
+            </span>
+          </label>
+        ))}
+        <div>
           <button type="submit" class="primary">
-            Save
+            {t.save}
           </button>
-        </form>
-        {own && (
-          <>
-            <h3>People</h3>
-            <ul class="people">
-              {rows.map((r) => (
-                <li>
-                  <span>{r.name}</span>
-                  <span class="muted small">{r.can === "edit" ? "can edit" : "can view"}</span>
-                  {r.user_id !== props.me && (
-                    <form method="post" action={`/a/${id}/access/remove`}>
-                      <CsrfField token={csrf} />
-                      <input type="hidden" name="user" value={r.user_id} />
-                      <button type="submit" title={`Take ${r.name} off`} aria-label={`Take ${r.name} off`}>
-                        ×
-                      </button>
-                    </form>
-                  )}
-                </li>
-              ))}
-            </ul>
-            {candidates.length > 0 && (
-              <form method="post" action={`/a/${id}/access/people`} class="link">
-                <CsrfField token={csrf} />
-                <select name="user" aria-label="Person">
-                  {candidates.map((p) => (
-                    <option value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                <select name="can" aria-label="What they may do">
-                  {own === "view" && <option value="view">can view</option>}
-                  <option value="edit">can edit</option>
-                </select>
-                <button type="submit">Add</button>
-              </form>
-            )}
-            <p class="muted small">The owner always sees and changes every page.</p>
-          </>
-        )}
-        {above.length > 0 && (
-          <p class="muted small">
-            The pages above it restrict it too:{" "}
-            {above.map((r, k) => (
-              <>
-                {k > 0 && ", "}
-                <a href={`/a/${r.id}`} style="display:inline;padding:0">
-                  {r.title}
-                </a>{" "}
-                ({r.restriction === "view" ? "only some can view" : "only some can edit"})
-              </>
-            ))}
-            .
-          </p>
-        )}
-      </div>
-    </details>
-  );
-}
-
-/** A page's labels, to add and remove. */
-function LabelPanel(props: { id: string; labels: string[]; csrf: string; open: boolean }) {
-  const { id, labels, csrf } = props;
-  return (
-    <details open={props.open}>
-      <summary class="tool" title="Labels: words that group pages across projects">
-        <span class="label">Labels</span>
-        <span class="short">#</span> ▾
-      </summary>
-      <div class="panel share label-panel">
-        <h3>Labels</h3>
-        {labels.length > 0 ? (
-          <ul>
-            {labels.map((l) => (
+        </div>
+      </form>
+      {own && (
+        <>
+          <h3>{t.people}</h3>
+          <ul class="people">
+            {rows.map((r) => (
               <li>
-                <a class="chip" href={`/?label=${encodeURIComponent(l)}`}>
-                  {l}
-                </a>
-                <form method="post" action={`/a/${id}/labels/remove`}>
-                  <CsrfField token={csrf} />
-                  <input type="hidden" name="label" value={l} />
-                  <button type="submit" title={`Remove ${l}`} aria-label={`Remove the label ${l}`}>
-                    ×
-                  </button>
-                </form>
+                <span>{r.name}</span>
+                <span class="muted small">{r.can === "edit" ? t.canEdit : t.canView}</span>
+                {r.user_id !== props.me && (
+                  <form method="post" action={`/a/${id}/access/remove`}>
+                    <CsrfField token={csrf} />
+                    <input type="hidden" name="user" value={r.user_id} />
+                    <button type="submit" title={t.takeOff(r.name)} aria-label={t.takeOff(r.name)}>
+                      ×
+                    </button>
+                  </form>
+                )}
               </li>
             ))}
           </ul>
-        ) : (
-          <p class="muted small">No labels yet. A label groups pages across projects, like “decision” or “draft”.</p>
-        )}
-        <form method="post" action={`/a/${id}/labels`} class="link">
-          <CsrfField token={csrf} />
-          <input name="add" type="text" required maxlength={200} placeholder="decision, draft" aria-label="Labels to add, separated by commas" />
-          <button type="submit" class="primary">
-            Add
-          </button>
-        </form>
-      </div>
-    </details>
+          {candidates.length > 0 && (
+            <form method="post" action={`/a/${id}/access/people`} class="row">
+              <CsrfField token={csrf} />
+              <select name="user" aria-label={t.person}>
+                {candidates.map((p) => (
+                  <option value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <select name="can" aria-label={t.whatTheyMay}>
+                {own === "view" && <option value="view">{t.canView}</option>}
+                <option value="edit">{t.canEdit}</option>
+              </select>
+              <button type="submit">{t.add}</button>
+            </form>
+          )}
+          <p class="muted small">{t.ownerAlways}</p>
+        </>
+      )}
+      {above.length > 0 && (
+        <p class="muted small">
+          {t.above}{" "}
+          {above.map((r, k) => (
+            <>
+              {k > 0 && ", "}
+              <a href={`/a/${r.id}`} style="color:var(--accent)">
+                {r.title}
+              </a>{" "}
+              ({r.restriction === "view" ? t.aboveView : t.aboveEdit})
+            </>
+          ))}
+        </p>
+      )}
+    </>
   );
 }
 
-/** `projects`: the owner's choice of projects; an editor (without it) only moves pages within the project. */
-/** Which template a new page starts from: the built-in ones, then the project's template pages. */
-function TemplateChoice(props: { pages: MarkdownPage[] }) {
+/** A page's labels, to add and remove; the labels used elsewhere are one click away. */
+function LabelSection(props: { id: string; labels: string[]; choices: string[]; csrf: string }) {
+  const { id, labels, csrf } = props;
+  const t = PANELS;
   return (
-    <select name="template" aria-label="Start from a template">
-      {BUILT_IN_TEMPLATES.map((t) => (
-        <option value={t.id}>{t.name}</option>
+    <>
+      {labels.length > 0 ? (
+        <ul class="chips-edit">
+          {labels.map((l) => (
+            <li>
+              <a class="chip" href={`/?label=${encodeURIComponent(l)}`}>
+                {l}
+              </a>
+              <form method="post" action={`/a/${id}/labels/remove`}>
+                <CsrfField token={csrf} />
+                <input type="hidden" name="label" value={l} />
+                <button type="submit" title={t.remove(l)} aria-label={t.remove(l)}>
+                  ×
+                </button>
+              </form>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p class="small">{t.labelsNone}</p>
+      )}
+      <form method="post" action={`/a/${id}/labels`} class="link">
+        <CsrfField token={csrf} />
+        <input name="add" type="text" required maxlength={200} placeholder={t.labelsPlaceholder} aria-label={t.labelsAdd} list="label-choices" />
+        <datalist id="label-choices">
+          {props.choices.map((l) => (
+            <option value={l} />
+          ))}
+        </datalist>
+        <button type="submit" class="primary">
+          {t.add}
+        </button>
+      </form>
+      {props.choices.length > 0 && (
+        <div class="suggest">
+          {t.labelsUsed}
+          {props.choices.slice(0, 12).map((l) => (
+            <form method="post" action={`/a/${id}/labels`}>
+              <CsrfField token={csrf} />
+              <input type="hidden" name="add" value={l} />
+              <button type="submit">+ {l}</button>
+            </form>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Which template a new page starts from: the project's template pages, then the built-in ones. */
+function TemplateChoice(props: { pages: MarkdownPage[] }) {
+  const t = PANELS;
+  return (
+    <select name="template" aria-label={t.template} title={t.template}>
+      {BUILT_IN_TEMPLATES.map((x) => (
+        <option value={x.id}>{x.name}</option>
       ))}
       {props.pages.length > 0 && (
-        <optgroup label="This project's templates">
+        <optgroup label={t.projectTemplates}>
           {props.pages.map((p) => (
             <option value={`page:${p.id}`}>{p.title}</option>
           ))}
@@ -1178,92 +1618,73 @@ function TemplateChoice(props: { pages: MarkdownPage[] }) {
   );
 }
 
-function MovePanel(props: { id: string; project: string | null; projects?: string[]; csrf: string; tree?: TreeRow[]; parent: string | null; templates?: MarkdownPage[] }) {
+/** `projects`: the owner's choice of projects; an editor (without it) only moves pages within the project. */
+function MoveSection(props: { id: string; project: string | null; projects?: string[]; csrf: string; tree: TreeRow[]; parent: string | null }) {
   const { id, project, projects, csrf, tree } = props;
-  const siblings = tree ? siblingsOf(tree, id) : [];
+  const t = PANELS;
+  const siblings = siblingsOf(tree, id);
   const place = siblings.findIndex((r) => r.id === id);
   return (
-    <details>
-      <summary class="tool">
-        <span class="label">Move</span>
-        <span class="short">▤</span> ▾
-      </summary>
-      <div class="panel share move">
-        {tree && (
-          <>
-            <h3>Place in {project}</h3>
-            <form method="post" action={`/a/${id}/parent`} class="link">
-              <CsrfField token={csrf} />
-              <select name="parent" aria-label="Put this page under">
-                <option value="" selected={!props.parent}>
-                  At the top
-                </option>
-                {parentChoices(tree, id).map((o) => (
-                  <option value={o.id} selected={o.id === props.parent}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-              <button type="submit" class="primary">
-                Put under
-              </button>
-            </form>
-            {siblings.length > 1 && (
-              <div class="actions">
-                {(["up", "down"] as const).map((dir) => (
-                  <form method="post" action={`/a/${id}/order`}>
-                    <CsrfField token={csrf} />
-                    <input type="hidden" name="dir" value={dir} />
-                    <button type="submit" disabled={dir === "up" ? place <= 0 : place >= siblings.length - 1}>
-                      {dir === "up" ? "↑ Earlier" : "↓ Later"}
-                    </button>
-                  </form>
-                ))}
-              </div>
-            )}
-            <h3>New page under this one</h3>
-            <form method="post" action="/new" class="link new-page">
-              <CsrfField token={csrf} />
-              <input type="hidden" name="parent" value={id} />
-              <input name="title" type="text" required maxlength={200} placeholder="Title" aria-label="Title of the new page" />
-              <TemplateChoice pages={props.templates ?? []} />
-              <button type="submit">Write</button>
-            </form>
-            {projects && <h3>Project</h3>}
-          </>
-        )}
-        {projects && <ProjectMove id={id} project={project} projects={projects} csrf={csrf} />}
-      </div>
-    </details>
-  );
-}
-
-function ProjectMove(props: { id: string; project: string | null; projects: string[]; csrf: string }) {
-  const { id, project, projects, csrf } = props;
-  return (
     <>
-        <p>{project ? `In ${project}, with the pages under it. Move them to another project:` : "Not in a project. Put it in one:"}</p>
-        <form method="post" action={`/a/${id}/project`} class="link">
-          <CsrfField token={csrf} />
-          <input name="project" type="text" list="project-names" required maxlength={60} value={project ?? ""} aria-label="Project" />
-          <datalist id="project-names">
-            {projects.map((p) => (
-              <option value={p} />
-            ))}
-          </datalist>
-          <button type="submit" class="primary">
-            Move
-          </button>
-        </form>
-        {project && (
-          <div class="actions">
+      {project && (
+        <>
+          <h3>{t.placeIn(project)}</h3>
+          <form method="post" action={`/a/${id}/parent`} class="row">
+            <CsrfField token={csrf} />
+            <select name="parent" aria-label={t.parent}>
+              <option value="" selected={!props.parent}>
+                {t.top(project)}
+              </option>
+              {parentChoices(tree, id).map((o) => (
+                <option value={o.id} selected={o.id === props.parent}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <button type="submit" class="primary">
+              {t.putUnder}
+            </button>
+          </form>
+          {siblings.length > 1 && (
+            <div class="actions">
+              {(["up", "down"] as const).map((dir) => (
+                <form method="post" action={`/a/${id}/order`}>
+                  <CsrfField token={csrf} />
+                  <input type="hidden" name="dir" value={dir} />
+                  <button type="submit" disabled={dir === "up" ? place <= 0 : place >= siblings.length - 1}>
+                    {dir === "up" ? t.earlier : t.later}
+                  </button>
+                </form>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      {projects && (
+        <>
+          {project && <h3>{t.project}</h3>}
+          <p class="small">{project ? t.inProject(project) : t.noProjectYet}</p>
+          <form method="post" action={`/a/${id}/project`} class="row">
+            <CsrfField token={csrf} />
+            <input name="project" type="text" list="project-names" required maxlength={60} placeholder={t.project} aria-label={t.project} />
+            <datalist id="project-names">
+              {projects
+                .filter((p) => p !== project)
+                .map((p) => (
+                  <option value={p} />
+                ))}
+            </datalist>
+            <button type="submit">{t.moveTo}</button>
+          </form>
+          {project && (
             <form method="post" action={`/a/${id}/project`}>
               <CsrfField token={csrf} />
               <input type="hidden" name="project" value="" />
-              <button type="submit">Remove from {project}</button>
+              <button type="submit">{t.removeFrom(project)}</button>
             </form>
-          </div>
-        )}
+          )}
+        </>
+      )}
     </>
   );
 }
@@ -1527,11 +1948,17 @@ pages.post("/new", requireViewer("viewer", true), requireSameOriginForm(), async
   const form = await c.req.parseBody();
   const title = titleSchema.safeParse(typeof form["title"] === "string" ? form["title"] : "");
   if (!title.success) return c.text(title.error.issues[0]!.message, 400);
-  const parentId = typeof form["parent"] === "string" && form["parent"] ? form["parent"] : undefined;
-  const parent = parentId ? await getArtifact(c.env.DB, parentId) : undefined;
+  // "-" asks for the top of the project; no parent puts the page under the project's front page.
+  const top = form["parent"] === "-";
+  const named = typeof form["parent"] === "string" && form["parent"] && !top ? form["parent"] : undefined;
+  const chosenProject = typeof form["project"] === "string" && form["project"] ? form["project"] : null;
+  if (chosenProject !== null && !projectSchema.safeParse(chosenProject).success) return c.text("That is not a project name.", 400);
+  const parentId = named ?? (top ? undefined : (await homeOf(c.env.DB, chosenProject))?.id);
+  let parent = parentId ? await getArtifact(c.env.DB, parentId) : undefined;
   if (parentId && !parent) return c.text("The page to put it under no longer exists.", 400);
-  const project = parent ? parent.project : typeof form["project"] === "string" && form["project"] ? form["project"] : null;
-  if (project !== null && !projectSchema.safeParse(project).success) return c.text("That is not a project name.", 400);
+  // The front page may be closed to this writer; then the page starts at the top instead.
+  if (!named && parent && !(await canEditPage(c.env.DB, viewer, parent))) parent = undefined;
+  const project = parent ? parent.project : chosenProject;
   if (!(await canSeeProject(c.env.DB, viewer, project)) || !(await canEditProject(c.env.DB, viewer, project))) {
     return c.text("Only the owner and this project's editors can add pages to it.", 403);
   }
@@ -1693,7 +2120,7 @@ insert.addEventListener("change", () => {
 const link = document.getElementById("link");
 if (link) link.addEventListener("change", () => {
   if (!link.value) return;
-  frame.contentWindow.postMessage({ type: "artifact:insert", text: "[" + titles[link.value].replace(/[\\[\\]]/g, "") + "](/a/" + link.value + ")" }, "*");
+  frame.contentWindow.postMessage({ type: "artifact:link", href: "/a/" + link.value, text: titles[link.value] }, "*");
   link.value = "";
 });
 const headers = { "content-type": "application/json", "x-csrf": ${JSON.stringify(viewer.csrf)} };
@@ -2027,7 +2454,8 @@ pages.get("/a/:id/state", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
   if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.json({ error: "not found" }, 404);
   const latest = artifact.current_version;
-  return c.json({ version: latest, by: await savedBy(c, id, latest), editing: await editing(c.env.DB, id, viewer.userId) });
+  const [author] = await versionAuthors(c.env.DB, id);
+  return c.json({ version: latest, by: authorLabel(author), editing: await editing(c.env.DB, id, viewer.userId) });
 });
 
 // --- Comments ---
@@ -2035,6 +2463,16 @@ pages.get("/a/:id/state", requireViewer(), async (c) => {
 const commentForm = [requireViewer("viewer", true), requireSameOriginForm()] as const;
 
 /** A comment on a page, or a reply in one of its threads; a passage quoted from the page starts a thread on it. */
+/** The comments panel was opened: the notifications about this page's comments are answered. */
+pages.post("/a/:id/seen", requireViewer(), requireSameOriginJson(), async (c) => {
+  const id = c.req.param("id");
+  const viewer = c.get("viewer");
+  const artifact = await getArtifact(c.env.DB, id);
+  if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.json({ error: "not found" }, 404);
+  const marked = await markSeen(c.env.DB, viewer.userId, id, { comments: true });
+  return c.json({ unread: Math.max(0, viewer.unread - marked) });
+});
+
 pages.post("/a/:id/comments", ...commentForm, async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
@@ -2060,7 +2498,7 @@ pages.post("/a/:id/comments", ...commentForm, async (c) => {
   const mentions = people.filter((u) => body.includes(`@${u.name}`)).map((u) => u.id);
   await record(c.env.DB, {
     artifactId: id, project: artifact.project, kind: replyTo ? "replied" : "commented",
-    actor: { userId: viewer.userId, name: viewer.name }, commentId: replyTo ?? cid, mentions,
+    actor: { userId: viewer.userId, name: viewer.name }, commentId: cid, mentions,
     thread: replyTo ? await threadPeople(c.env.DB, replyTo) : [],
   });
   await setWatch(c.env.DB, viewer.userId, pageTarget(id), true);
@@ -2111,61 +2549,64 @@ const ACTIVITY_STYLES = `
 .feed li.unread::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; align-self: center; }
 .feed .why { font-size: var(--text-xs); }
 .feed .when { color: var(--text-2); font-size: var(--text-sm); margin-left: auto; font-weight: 400; }
+.feed .quote { flex-basis: 100%; color: var(--text-2); font-size: var(--text-sm); font-weight: 400; border-left: 3px solid var(--border-strong); padding-left: var(--space-2); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.feed li.unread .quote { color: var(--text); }
+.feed .quote { order: 10; }
 `;
 
-const VERB: Record<ActivityRow["kind"], string> = {
-  created: "made",
-  updated: "changed",
-  commented: "commented on",
-  replied: "replied on",
-  resolved: "resolved a thread on",
-};
-
-/** "Alex changed Handbook (v3)", linking to the page or its comment. */
+/** "Kiho's agent (work-laptop) changed Handbook", linking to the page or its comment, with the comment's text. */
 function ActivityLine(props: { a: ActivityRow; href?: string; project?: boolean }) {
   const { a } = props;
+  const t = LIST;
+  const who = actorLabel(a);
+  const page = <a href={props.href ?? activityHref(a)}>{a.title}</a>;
   return (
     <>
-      <span>
-        {a.actor_name}
-        {a.actor_device && <span class="muted"> (agent)</span>} {VERB[a.kind]}{" "}
-        <a href={props.href ?? activityHref(a)}>{a.title}</a>
-        {(a.kind === "updated" || a.kind === "created") && a.version !== null && <span class="muted"> v{a.version}</span>}
+      <span class="what">
+        {t.did[a.kind](who, page)}
+        {a.kind === "updated" && a.version !== null && a.version > 1 && (
+          <>
+            {" · "}
+            <a class="muted small" href={`/a/${a.artifact_id}/diff?from=${a.version - 1}&to=${a.version}`}>
+              {t.changes}
+            </a>
+          </>
+        )}
       </span>
-      {props.project && a.project && <span class="badge">{a.project}</span>}
+      {props.project && a.page_project && <span class="badge">{a.page_project}</span>}
+      {a.comment_body && a.kind !== "resolved" && <span class="quote">{a.comment_body.length > 160 ? `${a.comment_body.slice(0, 160)}…` : a.comment_body}</span>}
     </>
   );
 }
 
-const REASON: Record<string, string> = { mentioned: "mentioned you", thread: "in your thread", watching: "watching" };
-
 pages.get("/notifications", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
+  const t = LIST;
   const access = await accessFor(c.env.DB, viewer);
   const rows = (await listNotifications(c.env.DB, viewer.userId)).filter((n) => access.sees({ id: n.artifact_id, project: n.page_project }));
   return c.html(
-    <Page title="Notifications" viewer={viewer}>
+    <Page title={t.notificationsTitle} viewer={viewer}>
       <style>{raw(ACTIVITY_STYLES)}</style>
       <div class="page-head">
         <div>
-          <h1>Notifications</h1>
-          <p class="lead">What happened on pages you watch, in threads you wrote in, and where someone mentioned you.</p>
+          <h1>{t.notificationsTitle}</h1>
+          <p class="lead">{t.notificationsLead}</p>
         </div>
         {viewer.unread > 0 && viewer.sessionKind === "full" && (
           <form method="post" action="/notifications/read">
             <CsrfField token={viewer.csrf} />
-            <button type="submit">Mark all as read</button>
+            <button type="submit">{t.markAll}</button>
           </form>
         )}
       </div>
       {rows.length === 0 ? (
-        <p class="muted">Nothing yet. Watch a page or a project to hear about its changes and comments.</p>
+        <p class="muted">{t.nothingNotified}</p>
       ) : (
         <ul class="feed">
           {rows.map((n) => (
             <li class={n.read_at ? undefined : "unread"}>
               <ActivityLine a={n} href={`/notifications/${n.notification_id}/open`} project />
-              <span class="badge why">{REASON[n.reason]}</span>
+              <span class="badge why">{t.reason[n.reason]}</span>
               <span class="when">
                 <Time iso={n.at} />
               </span>
@@ -2192,25 +2633,50 @@ pages.post("/notifications/read", requireViewer("viewer", true), requireSameOrig
   return c.redirect("/notifications", 303);
 });
 
+/** What changed lately: everywhere, or in one project (?project=); ?before= goes further back. */
 pages.get("/activity", requireViewer(), async (c) => {
   const viewer = c.get("viewer");
+  const t = LIST;
   const access = await accessFor(c.env.DB, viewer);
-  const rows = (await listActivity(c.env.DB, { limit: 100 })).filter((a) => access.sees({ id: a.artifact_id, project: a.page_project }));
+  const wanted = (c.req.query("project") ?? "").trim();
+  const project = wanted && projectSchema.safeParse(wanted).success && !access.hiddenProjects.has(wanted) ? wanted : undefined;
+  const before = c.req.query("before");
+  const at = before && !Number.isNaN(Date.parse(before)) ? new Date(before).toISOString() : undefined;
+  const LIMIT = 100;
+  const found = await listActivity(c.env.DB, { limit: LIMIT, project, before: at });
+  const rows = found.filter((a) => access.sees({ id: a.artifact_id, project: a.page_project }));
+  const projects = visibleProjects(await listProjectStats(c.env.DB), access).flatMap((p) => (p.project ? [p.project] : [])).sort((a, b) => a.localeCompare(b));
+  const here = (extra: string) => `/activity?${project ? `project=${encodeURIComponent(project)}&` : ""}${extra}`;
   return c.html(
-    <Page title="Activity" viewer={viewer}>
-      <style>{raw(ACTIVITY_STYLES)}</style>
-      <h1>Activity</h1>
-      <p class="lead">What changed lately, on every page you can see.</p>
+    <Page title={t.activityTitle} viewer={viewer}>
+      <style>{raw(ACTIVITY_STYLES + PROJECT_STYLES + TREE_STYLES)}</style>
+      <h1>{t.activityTitle}</h1>
+      <p class="lead">{project ? t.activityProjectLead(project) : t.activityLead}</p>
+      <nav class="label-strip" aria-label={t.projects}>
+        <a class={`chip${project ? "" : " current"}`} href="/activity">
+          {t.everything}
+        </a>
+        {projects.map((p) => (
+          <a class={`chip${p === project ? " current" : ""}`} href={`/activity?project=${encodeURIComponent(p)}`}>
+            {p}
+          </a>
+        ))}
+      </nav>
       <ul class="feed">
         {rows.map((a) => (
           <li>
-            <ActivityLine a={a} project />
+            <ActivityLine a={a} project={!project} />
             <span class="when">
               <Time iso={a.at} />
             </span>
           </li>
         ))}
       </ul>
+      {found.length === LIMIT && (
+        <a class="more-link" href={here(`before=${encodeURIComponent(found[found.length - 1]!.at)}`)}>
+          {t.older}
+        </a>
+      )}
     </Page>,
   );
 });
@@ -2264,7 +2730,7 @@ pages.post("/a/:id/project", ...ownerForm, async (c) => {
   if (!parsed.success) return c.text("A project name is one line of at most 60 characters, without slashes.", 400);
   if (!(await setProject(c.env.DB, id, parsed.data))) return c.notFound();
   await recordViewerAction(c, "artifact.move", "artifact", id, { project: parsed.data });
-  return c.redirect(`/a/${id}`, 303);
+  return c.redirect(`/a/${id}?move=1`, 303);
 });
 // The owner, and the editors of the page's project, rearrange its pages.
 const editorForm = [requireViewer("viewer", true), requireSameOriginForm()] as const;
@@ -2358,7 +2824,7 @@ pages.post("/a/:id/parent", ...editorForm, async (c) => {
   }
   if (parent !== artifact.parent) await setParent(c.env.DB, id, parent);
   await recordViewerAction(c, "artifact.move", "artifact", id, { parent });
-  return c.redirect(`/a/${id}`, 303);
+  return c.redirect(`/a/${id}?move=1`, 303);
 });
 
 /** Moves a page one place earlier or later among the pages with the same parent. */
@@ -2370,7 +2836,7 @@ pages.post("/a/:id/order", ...editorForm, async (c) => {
   const tree = await listProjectPages(c.env.DB, artifact.project);
   const at = siblingsOf(tree, id).findIndex((r) => r.id === id);
   await placeAmongSiblings(c.env.DB, tree, id, at + 1 + (form["dir"] === "up" ? -1 : 1));
-  return c.redirect(`/a/${id}`, 303);
+  return c.redirect(`/a/${id}?move=1`, 303);
 });
 
 pages.post("/a/:id/share", ...ownerForm, (c) => shareAction(c, "open"));

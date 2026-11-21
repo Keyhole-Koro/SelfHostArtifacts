@@ -48,7 +48,10 @@ code { font: var(--text-sm)/1.5 var(--font-mono); background: var(--surface-2); 
 .brand:hover { text-decoration: none; }
 .menu { margin-left: auto; position: relative; }
 .top-search { margin: 0 0 0 auto; display: flex; }
-.top-search + .menu, .bell + .menu { margin-left: 0; }
+.top-search + .menu, .bell + .menu, .top-search + .top-link { margin-left: 0; }
+.top-link { color: var(--text-2); font-size: var(--text-sm); padding: 4px var(--space-2); border-radius: var(--radius-sm); white-space: nowrap; }
+.top-link:hover { color: var(--text); background: var(--surface-2); text-decoration: none; }
+@media (max-width: 560px) { .top-link { display: none; } }
 .bell { position: relative; display: inline-flex; align-items: center; color: var(--text-2); padding: 6px; border-radius: 999px; }
 .bell:hover { color: var(--text); background: var(--surface-2); }
 .bell-count { position: absolute; top: -2px; right: -4px; min-width: 16px; padding: 0 4px; border-radius: 999px; background: var(--accent); color: var(--accent-text, #fff); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
@@ -166,6 +169,7 @@ export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boo
         <title>{props.title}</title>
         <style>{raw(TOKENS + STYLES)}</style>
         {props.passkeys && <script src="/assets/passkey.js" defer></script>}
+        <script src="/assets/ui.js" defer></script>
       </head>
       <body>
         <header class="top">
@@ -178,9 +182,14 @@ export function Page(props: { title: string; viewer?: PageViewer; passkeys?: boo
                 <input type="search" name="q" placeholder="Search pages" aria-label="Search pages" />
               </form>
             )}
+            {viewer && (
+              <a href="/activity" class="top-link">
+                Activity
+              </a>
+            )}
             {viewer && <Bell unread={viewer.unread} />}
             {viewer && (
-              <details class="menu">
+              <details class="menu" data-menu>
                 <summary>
                   <span class="avatar" aria-hidden="true">
                     {initials(viewer.name)}
@@ -226,7 +235,7 @@ export function ago(iso: string, now = Date.now()): string {
   return iso.slice(0, 10);
 }
 
-/** A time shown relatively, with the exact time on hover. */
+/** A time shown relatively, with the exact time on hover (in the reader's own time zone, see ui-client.ts). */
 export function Time(props: { iso: string }) {
   return (
     <time datetime={props.iso} title={formatTime(props.iso)}>

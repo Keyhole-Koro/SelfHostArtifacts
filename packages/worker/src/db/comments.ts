@@ -13,6 +13,8 @@ export interface CommentRow {
   quote: string | null;
   resolved_at: string | null;
   created_at: string;
+  /** For a comment by an agent: the person whose agent it is. */
+  agent_of?: string | null;
 }
 
 export const MAX_COMMENT_CHARS = 4000;
@@ -24,7 +26,13 @@ export interface Thread {
 }
 
 export async function listComments(db: D1Database, artifactId: string): Promise<CommentRow[]> {
-  const { results } = await db.prepare("select * from comments where artifact_id = ? order by created_at, id").bind(artifactId).all<CommentRow>();
+  const { results } = await db
+    .prepare(
+      `select c.*, u.name as agent_of from comments c left join devices d on d.id = c.author_device left join users u on u.id = d.user_id
+       where c.artifact_id = ? order by c.created_at, c.id`,
+    )
+    .bind(artifactId)
+    .all<CommentRow>();
   return results;
 }
 

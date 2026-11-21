@@ -115,17 +115,25 @@ export interface ActivityRow {
   title: string;
   /** The page's project now (project is where it was when this happened). */
   page_project: string | null;
+  /** For an agent's doing: the person whose agent it is. */
+  agent_of: string | null;
+  /** For a comment, a reply or a resolution: the comment's text, and the thread it is in. */
+  comment_body?: string | null;
+  thread_id?: string | null;
 }
 
-/** The newest activity, of one project or one page if given, on pages not in the trash. */
-export async function listActivity(db: D1Database, opts: { project?: string; artifactId?: string; limit?: number } = {}): Promise<ActivityRow[]> {
+/** The parts every feed row joins: the page, the agent's person, the comment and its thread. */
+const FEED_JOINS = `join artifacts a on a.id = v.artifact_id
+       left join devices d on d.id = v.actor_device left join users du on du.id = d.user_id
+       left join comments cm on cm.id = v.comment_id`;
+const FEED_COLUMNS = `v.*, a.title, a.project as page_project, du.name as agent_of, cm.body as comment_body, coalesce(cm.reply_to, cm.id) as thread_id`;
+
+/** The newest activity, of one project or one page if given, on pages not in the trash; `before` pages back. */
+export async function listActivity(db: D1Database, opts: { project?: string; artifactId?: string; limit?: number; before?: string } = {}): Promise<ActivityRow[]> {
   const where = opts.artifactId ? "and v.artifact_id = ?" : opts.project ? "and v.project = ?" : "";
   const { results } = await db
-    .prepare(
-      `select v.*, a.title, a.project as page_project from activity v join artifacts a on a.id = v.artifact_id
-       where a.deleted_at is null ${where} order by v.at desc limit ?`,
-    )
-    .bind(...(opts.artifactId ? [opts.artifactId] : opts.project ? [opts.project] : []), opts.limit ?? 50)
+    .prepare(`select ${FEED_COLUMNS} from activity v ${FEED_JOINS} where a.deleted_at is null ${where} ${opts.before ? "and v.at < ?" : ""} order by v.at desc limit ?`)
+    .bind(...(opts.artifactId ? [opts.artifactId] : opts.project ? [opts.project] : []), ...(opts.before ? [opts.before] : []), opts.limit ?? 50)
     .all<ActivityRow>();
   return results;
 }
@@ -139,8 +147,8 @@ export interface NotificationRow extends ActivityRow {
 export async function listNotifications(db: D1Database, userId: string, limit = 100): Promise<NotificationRow[]> {
   const { results } = await db
     .prepare(
-      `select n.id as notification_id, n.reason, n.read_at, v.*, a.title, a.project as page_project
-       from notifications n join activity v on v.id = n.activity_id join artifacts a on a.id = v.artifact_id
+      `select n.id as notification_id, n.reason, n.read_at, ${FEED_COLUMNS}
+       from notifications n join activity v on v.id = n.activity_id ${FEED_JOINS}
        where n.user_id = ? and a.deleted_at is null order by n.created_at desc limit ?`,
     )
     .bind(userId, limit)
@@ -156,9 +164,26 @@ export async function markRead(db: D1Database, userId: string, id?: string): Pro
   ).run();
 }
 
+/**
+ * Marks read what a person has now seen of a page: its changes, plus its comments when
+ * `comments` is set. Returns how many notifications that was.
+ */
+export async function markSeen(db: D1Database, userId: string, artifactId: string, opts: { comments?: boolean } = {}): Promise<number> {
+  const which = opts.comments ? "" : "and comment_id is null";
+  const result = await db
+    .prepare(
+      `update notifications set read_at = ? where user_id = ? and read_at is null
+       and activity_id in (select id from activity where artifact_id = ? ${which})`,
+    )
+    .bind(new Date().toISOString(), userId, artifactId)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 /** Where a piece of activity is: the page, at its comment when it is about one. */
-export function activityHref(a: Pick<ActivityRow, "artifact_id" | "comment_id">): string {
-  return a.comment_id ? `/a/${a.artifact_id}?comments=1#c-${a.comment_id}` : `/a/${a.artifact_id}`;
+export function activityHref(a: Pick<ActivityRow, "artifact_id" | "comment_id" | "thread_id">): string {
+  const thread = a.thread_id ?? a.comment_id;
+  return thread ? `/a/${a.artifact_id}?comments=1#c-${thread}` : `/a/${a.artifact_id}`;
 }
 
 export function cleanupStatements(db: D1Database, now: Date): D1PreparedStatement[] {

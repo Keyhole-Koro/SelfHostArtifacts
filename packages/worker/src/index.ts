@@ -10,6 +10,7 @@ import { projectPages } from "./routes/projects.tsx";
 import { secretPages } from "./routes/secret.tsx";
 import { PASSKEY_CLIENT_JS } from "./ui/passkey-client.ts";
 import { SECRET_CLIENT_JS } from "./ui/secret-client.ts";
+import { UI_JS } from "./ui/ui-client.ts";
 
 export const app = new Hono<AppEnv>();
 
@@ -43,6 +44,9 @@ app.get("/assets/passkey.js", (c) =>
 );
 app.get("/assets/secret.js", (c) =>
   c.body(SECRET_CLIENT_JS, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=300" }),
+);
+app.get("/assets/ui.js", (c) =>
+  c.body(UI_JS, 200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=300" }),
 );
 app.route("/auth", auth);
 app.route("/invite", invites);

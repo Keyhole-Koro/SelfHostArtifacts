@@ -50,6 +50,7 @@ import {
   placeAmongSiblings,
   setParent,
   setProject,
+  homeOf,
   subtreeOf,
   trashArtifact,
   type ArtifactRow,
@@ -251,11 +252,13 @@ signed.post("/artifacts", async (c) => {
   const resolved = await resolveFiles(c, manifest);
   if (!resolved.ok) return resolved.res;
   const id = randomId();
+  // Without a parent, a page goes under its project's front page (the page labeled home).
+  const parent = manifest.parent ?? (await homeOf(c.env.DB, project))?.id;
   await createArtifact(c.env.DB, id, {
     title: manifest.title,
     description: manifest.description,
     project,
-    parent: manifest.parent,
+    parent,
     text: manifest.text,
     links: manifest.links,
     labels: manifest.labels,
@@ -425,7 +428,7 @@ signed.post("/artifacts/:id/comments", async (c) => {
   if (req.reply_to && req.resolve) await setResolved(c.env.DB, req.reply_to, true);
   const thread = req.reply_to ? await threadPeople(c.env.DB, req.reply_to) : [];
   const actor = { deviceId: device.id, name: device.name };
-  await record(c.env.DB, { artifactId: artifact.id, project: artifact.project, kind: req.reply_to ? "replied" : "commented", actor, commentId: req.reply_to ?? id, thread });
+  await record(c.env.DB, { artifactId: artifact.id, project: artifact.project, kind: req.reply_to ? "replied" : "commented", actor, commentId: id, thread });
   if (req.reply_to && req.resolve) await record(c.env.DB, { artifactId: artifact.id, project: artifact.project, kind: "resolved", actor, commentId: req.reply_to, thread });
   await recordAuditEvent(c, {
     actorType: "device", actorId: device.id, actorLabel: device.name,
@@ -474,7 +477,8 @@ signed.patch("/artifacts/:id", async (c) => {
     const problem = await parentProblem(c, move.parent, project, artifact);
     if (problem) return problem;
   }
-  if (project !== artifact.project) await setProject(c.env.DB, artifact.id, project);
+  // Into another project: under its front page, unless the move names the parent (or the top).
+  if (project !== artifact.project) await setProject(c.env.DB, artifact.id, project, { top: move.parent !== undefined });
   if (move.parent !== undefined && move.parent !== (project !== artifact.project ? null : artifact.parent)) {
     await setParent(c.env.DB, artifact.id, move.parent);
   }

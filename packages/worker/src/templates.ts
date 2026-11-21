@@ -30,7 +30,7 @@ export const BUILT_IN_TEMPLATES: Template[] = [
   {
     id: "howto",
     name: "How-to",
-    labels: ["how-to"],
+    labels: ["howto"],
     body: (t) => `# ${t}\n\n{{toc}}\n\n## Before you start\n\n## Steps\n\n1. \n\n## If something goes wrong\n`,
   },
   {

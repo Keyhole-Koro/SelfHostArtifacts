@@ -165,7 +165,7 @@ export function editorHtml(entry: string): string {
 
 export const EDITOR_JS = `const host = document.getElementById("ed");
 const initial = await (await fetch(host.dataset.src)).text();
-let get, insert, set;
+let get, insert, set, link;
 try {
   const load = import(${JSON.stringify(EDITOR_MODULE)});
   const { default: Editor } = await Promise.race([load, new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 15000))]);
@@ -175,6 +175,8 @@ try {
   });
   get = () => ed.getMarkdown();
   insert = (text) => ed.insertText(text);
+  // A link to another page is a real link in both modes; inserting "[title](url)" as text would be escaped in WYSIWYG.
+  link = (href, text) => ed.exec("addLink", { linkUrl: href, linkText: text });
   // A merge with conflict marks is shown as Markdown, where the marks are plain lines.
   set = (md, mode) => { if (mode === "markdown" && ed.isWysiwygMode()) ed.changeMode("markdown", true); ed.setMarkdown(md, false); };
 } catch {
@@ -184,6 +186,7 @@ try {
   host.replaceWith(area);
   get = () => area.value;
   insert = (text) => { area.setRangeText(text, area.selectionStart, area.selectionEnd, "end"); area.focus(); };
+  link = (href, text) => insert("[" + text.replace(/[\\[\\]]/g, "") + "](" + href + ")");
   set = (md) => { area.value = md; };
 }
 window.addEventListener("message", (e) => {
@@ -191,6 +194,7 @@ window.addEventListener("message", (e) => {
   const d = e.data || {};
   if (d.type === "artifact:get") window.parent.postMessage({ type: "artifact:markdown", markdown: get() }, "*");
   if (d.type === "artifact:insert" && typeof d.text === "string") insert(d.text);
+  if (d.type === "artifact:link" && typeof d.href === "string" && typeof d.text === "string") link(d.href, d.text);
   if (d.type === "artifact:set" && typeof d.markdown === "string") set(d.markdown, d.mode);
 });
 window.parent.postMessage({ type: "artifact:editor-ready" }, "*");
