@@ -113,6 +113,12 @@ export const DOC_JS = `(async () => {
     if (url.host !== location.host) { a.target = "_blank"; a.rel = "noopener noreferrer"; }
   }
   const h = main.querySelector("h1"); if (h && !document.title) document.title = h.textContent;
+  // A link to a section (#its-id) came in before the section existed: go there now.
+  if (location.hash) {
+    let target = null;
+    try { target = document.getElementById(decodeURIComponent(location.hash.slice(1))); } catch {}
+    if (target) target.scrollIntoView();
+  }
   // Rendered: the viewer can now mark the passages that have comments.
   if (window.parent !== window) window.parent.postMessage({ type: "artifact:ready" }, "*");
 })();

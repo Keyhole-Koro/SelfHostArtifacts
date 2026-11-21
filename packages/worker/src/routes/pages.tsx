@@ -5,7 +5,7 @@ import type { AppEnv } from "../app-env.ts";
 import type { RegistrationResponseJSON } from "@simplewebauthn/server";
 import { passkeyLabel, registrationOptions, takeCeremony, verifyRegistration } from "../auth/passkeys.ts";
 import { requireSameOriginForm, requireSameOriginJson, requireViewer } from "../auth/session.ts";
-import { SANDBOX_FLAGS, mintContentToken } from "../content.ts";
+import { SANDBOX_FLAGS, mintContentToken, renewContentLease, signedContentClaims } from "../content.ts";
 import { EDITOR_PATH, frameSrc, markdownLinks } from "../doc.ts";
 import { MAX_COMMENT_CHARS, MAX_QUOTE_CHARS, addComment, deleteComment, getComment, listComments, openThreadCounts, setResolved, threadPeople, threadsOf, type CommentRow, type Thread } from "../db/comments.ts";
 import { changeLabels, labelCounts, labeledSearch, labelsOf } from "../db/labels.ts";
@@ -76,6 +76,12 @@ export const pages = new Hono<AppEnv>();
 function jsonInScript(value: unknown): string {
   return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
+
+/**
+ * Runs right after the frame, before its first page has loaded: a #fragment in the address bar
+ * (a link to a place in the page) goes to the page in the frame from its start.
+ */
+const FRAGMENT_INTO_FRAME = `if (location.hash) { const f = document.getElementById("frame"); f.src = f.getAttribute("src") + location.hash; }`;
 
 const SECRET_STATUS_LABEL = {
   waiting: "Not opened",
@@ -506,8 +512,10 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
   const shareUrl = shareActive(artifact)
     ? `${c.get("config").origin}${sharePath(id, await shareKey(c.env.CONTENT_TOKEN_SECRET, id, artifact.share_nonce))}`
     : undefined;
-  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, versionNumber, undefined, viewer.userId);
+  // The frame keeps this URL while the page is open: the script below renews its lease.
+  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, versionNumber, undefined, viewer.userId, true);
   const src = frameSrc(token, version.entry);
+  const openHref = `/a/${id}/open?v=${versionNumber}`;
   const nonce = c.get("nonce");
   const isLatest = versionNumber === artifact.current_version;
   const markdown = version.entry.endsWith(".md");
@@ -643,7 +651,7 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
               )}
             </div>
           </details>
-          <a id="open" href={src} target="_blank" rel="noopener noreferrer" class="tool" title="Open in a new tab">
+          <a id="open" href={openHref} target="_blank" rel="noopener noreferrer" class="tool" title="Open in a new tab">
             ↗ <span class="label">Open</span>
           </a>
         </div>
@@ -657,6 +665,7 @@ async function viewerPage(c: Context<AppEnv>, id: string, requested: number | un
             </nav>
           )}
           <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
+          <script nonce={nonce}>{raw(FRAGMENT_INTO_FRAME)}</script>
           <button type="button" id="sel-btn" class="sel-btn" hidden>
             Comment on the selection
           </button>
@@ -674,8 +683,7 @@ if (toggle) {
     sync();
   });
 }
-let exp = ${exp};
-const tokenUrl = ${JSON.stringify(`/a/${id}/token?v=${versionNumber}`)};
+const lease = { url: ${JSON.stringify(`/a/${id}/lease`)}, token: ${JSON.stringify(token)}, exp: ${exp} };
 // Someone saving or editing this page meanwhile: say so, and offer the newer version.
 {
   const shown = ${versionNumber}, latest = ${JSON.stringify(isLatest)};
@@ -777,14 +785,39 @@ window.addEventListener("message", (e) => {
   const d = e.data;
   if (d && d.type === "artifact:navigate" && typeof d.path === "string" && /^\\/a\\/[0-9a-z]{16}(\\/v\\/[0-9]+)?\\/?(#[^\\s<>"]*)?$/.test(d.path)) location.href = d.path;
 });
+// The page's #fragment and the address bar's go together (see NAV_JS), and "Open" and the newer
+// version open the page at the same place.
+const placeLinks = (hash) => {
+  document.getElementById("open").href = ${JSON.stringify(openHref)} + hash;
+  document.getElementById("newer").href = ${JSON.stringify(`/a/${id}`)} + hash;
+};
+placeLinks(location.hash);
+window.addEventListener("message", (e) => {
+  if (e.source !== frame.contentWindow) return;
+  const d = e.data || {};
+  if (d.type !== "artifact:hash" || typeof d.hash !== "string" || d.hash.length > 2000) return;
+  const url = new URL(location.href);
+  url.hash = d.hash;
+  if (url.href !== location.href) history.replaceState(history.state, "", url);
+  placeLinks(url.hash);
+});
+window.addEventListener("hashchange", () => {
+  frame.contentWindow.postMessage({ type: "artifact:hash", hash: location.hash }, "*");
+  placeLinks(location.hash);
+});
+// The frame's URL runs out ten minutes after it was made unless its lease is renewed: renew it
+// while this page is open, so the page in the frame keeps working and is never reloaded.
 async function refresh() {
-  if (Date.now() / 1000 < exp - 120) return;
-  const res = await fetch(tokenUrl, { credentials: "same-origin" });
-  if (!res.ok) return;
-  const next = await res.json();
-  exp = next.exp;
-  document.getElementById("frame").src = next.src;
-  document.getElementById("open").href = next.src;
+  if (Date.now() / 1000 < lease.exp - 120) return;
+  try {
+    const res = await fetch(lease.url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", "x-csrf": ${JSON.stringify(viewer.csrf)} },
+      body: JSON.stringify({ token: lease.token }),
+    });
+    if (res.ok) lease.exp = (await res.json()).exp;
+  } catch {}
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 window.addEventListener("focus", refresh);
@@ -1239,7 +1272,7 @@ pages.get("/a/:id", requireViewer(), (c) => viewerPage(c, c.req.param("id"), und
 
 pages.get("/a/:id/v/:version{[0-9]+}", requireViewer(), (c) => viewerPage(c, c.req.param("id"), Number(c.req.param("version"))));
 
-/** A fresh content URL for the viewer page, before its token expires. */
+/** A fresh content URL, without a lease: the source editor hands one to its frame before the last runs out. */
 pages.get("/a/:id/token", requireViewer(), async (c) => {
   const id = c.req.param("id");
   const artifact = await getArtifact(c.env.DB, id);
@@ -1248,6 +1281,36 @@ pages.get("/a/:id/token", requireViewer(), async (c) => {
   if (!version) return c.json({ error: "not found" }, 404);
   const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version, undefined, c.get("viewer").userId);
   return c.json({ src: frameSrc(token, version.entry), exp });
+});
+
+/**
+ * The viewer page renews the lease of its frame's URL while it is open (see CONTENT_TOKEN_SECONDS).
+ * Only the person the URL was made for can, and only while they may still see the page: once
+ * they may not, the URL stops within ten minutes, as a token without a lease would.
+ */
+pages.post("/a/:id/lease", requireViewer(), requireSameOriginJson(), async (c) => {
+  const id = c.req.param("id");
+  const viewer = c.get("viewer");
+  const body: { token?: unknown } = await c.req.json().catch(() => ({}));
+  const claims = typeof body.token === "string" ? await signedContentClaims(c.env.CONTENT_TOKEN_SECRET, body.token) : undefined;
+  if (!claims?.l || claims.a !== id || claims.u !== viewer.userId || claims.s !== undefined) return c.json({ error: "That is not the lease of this page." }, 400);
+  const artifact = await getArtifact(c.env.DB, id);
+  if (!artifact || !(await canSeePage(c.env.DB, viewer, artifact))) return c.json({ error: "not found" }, 404);
+  return c.json({ exp: await renewContentLease(c.env.DB, claims.l) });
+});
+
+/**
+ * "Open in a new tab": the content URL is made when the link is followed, so the link itself is
+ * not a bearer URL that works for anyone. The browser keeps the link's #fragment across the redirect.
+ */
+pages.get("/a/:id/open", requireViewer(), async (c) => {
+  const id = c.req.param("id");
+  const artifact = await getArtifact(c.env.DB, id);
+  if (!artifact || !(await canSeePage(c.env.DB, c.get("viewer"), artifact))) return c.notFound();
+  const version = await getVersion(c.env.DB, id, Number(c.req.query("v") ?? artifact.current_version));
+  if (!version) return c.notFound();
+  const { token } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, id, version.version, undefined, c.get("viewer").userId);
+  return c.redirect(frameSrc(token, version.entry), 302);
 });
 
 /** A version's text as recorded when it was published, for comparing versions. */
@@ -2333,7 +2396,8 @@ pages.get("/s/:id/:key", async (c) => {
   if (!artifact) return c.text(LINK_GONE, 404);
   const version = await getVersion(c.env.DB, artifact.id, artifact.current_version);
   if (!version) return c.text(LINK_GONE, 404);
-  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, artifact.id, version.version, artifact.share_nonce);
+  // As on the viewer page, the frame keeps this URL while the page is open and renews its lease.
+  const { token, exp } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, artifact.id, version.version, artifact.share_nonce, undefined, true);
   const src = frameSrc(token, version.entry);
   return c.html(
     <html lang="en">
@@ -2351,23 +2415,22 @@ pages.get("/s/:id/:key", async (c) => {
             Updated <Time iso={version.created_at} />
           </span>
           <span class="spacer" />
-          <a id="open" href={src} target="_blank" rel="noopener noreferrer" class="tool" title="Open in a new tab">
+          <a id="open" href={`${c.req.path}/open`} target="_blank" rel="noopener noreferrer" class="tool" title="Open in a new tab">
             ↗ <span class="label">Open</span>
           </a>
         </div>
         <iframe id="frame" src={src} sandbox={SANDBOX_FLAGS} title={artifact.title} />
+        <script nonce={c.get("nonce")}>{raw(FRAGMENT_INTO_FRAME)}</script>
         <script nonce={c.get("nonce")}>
           {raw(`
-let exp = ${exp};
-const tokenUrl = location.pathname + "/token";
+if (location.hash) document.getElementById("open").href += location.hash;
+const lease = { url: location.pathname + "/lease", token: ${JSON.stringify(token)}, exp: ${exp} };
 async function refresh() {
-  if (Date.now() / 1000 < exp - 120) return;
-  const res = await fetch(tokenUrl, { credentials: "omit" });
-  if (!res.ok) return;
-  const next = await res.json();
-  exp = next.exp;
-  document.getElementById("frame").src = next.src;
-  document.getElementById("open").href = next.src;
+  if (Date.now() / 1000 < lease.exp - 120) return;
+  try {
+    const res = await fetch(lease.url, { method: "POST", credentials: "omit", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: lease.token }) });
+    if (res.ok) lease.exp = (await res.json()).exp;
+  } catch {}
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 window.addEventListener("focus", refresh);
@@ -2378,6 +2441,29 @@ setInterval(refresh, 60000);`)}
   );
 });
 
+/** Renews the lease of a public page's frame URL. It still stops at once when the link is turned off. */
+pages.post("/s/:id/:key/lease", async (c) => {
+  noIndex(c);
+  const artifact = await sharedArtifact(c);
+  if (!artifact) return c.json({ error: LINK_GONE }, 404);
+  const body: { token?: unknown } = await c.req.json().catch(() => ({}));
+  const claims = typeof body.token === "string" ? await signedContentClaims(c.env.CONTENT_TOKEN_SECRET, body.token) : undefined;
+  if (!claims?.l || claims.a !== artifact.id || claims.s !== artifact.share_nonce) return c.json({ error: "That is not the lease of this page." }, 400);
+  return c.json({ exp: await renewContentLease(c.env.DB, claims.l) });
+});
+
+/** "Open in a new tab" on a public page: a fresh content URL of the latest version. */
+pages.get("/s/:id/:key/open", async (c) => {
+  noIndex(c);
+  const artifact = await sharedArtifact(c);
+  if (!artifact) return c.text(LINK_GONE, 404);
+  const version = await getVersion(c.env.DB, artifact.id, artifact.current_version);
+  if (!version) return c.text(LINK_GONE, 404);
+  const { token } = await mintContentToken(c.env.CONTENT_TOKEN_SECRET, artifact.id, version.version, artifact.share_nonce);
+  return c.redirect(frameSrc(token, version.entry), 302);
+});
+
+/** A fresh content URL. Public pages opened before their frames had leases reload their frame with it. */
 pages.get("/s/:id/:key/token", async (c) => {
   noIndex(c);
   const artifact = await sharedArtifact(c);

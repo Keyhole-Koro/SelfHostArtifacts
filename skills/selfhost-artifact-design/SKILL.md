@@ -90,7 +90,12 @@ fact (a sentence or a stat tile).
 The page runs in a sandboxed frame with an opaque origin:
 
 - `localStorage`, `sessionStorage`, `indexedDB` and `document.cookie` throw. Keep state in memory
-  (wrap any access in `try/catch` if a library touches them).
+  (wrap any access in `try/catch` if a library touches them). The page is not reloaded while it
+  is open, so that state lasts.
+- The page's `#fragment` shows in the viewer's address bar. To let a link or a reload open the
+  same place (a tab, a filter, an open section), write it to the fragment with
+  `history.replaceState(null, "", "#…")` and read `location.hash` at start. A fragment the reader
+  types into the address bar reaches the page as `hashchange`.
 - `fetch` works for the page's own files (`fetch("data.json")`) and, only when the page was
   published with `allow_connect`, for those hosts.
 - Images, fonts and media load from the page's own files, `data:` URLs and the allowed CDNs.

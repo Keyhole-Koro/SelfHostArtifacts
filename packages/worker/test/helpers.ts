@@ -1,6 +1,7 @@
 import { CONTENT_HASH_HEADER, canonicalRequest, formatSignatureHeader, type Manifest } from "@artifact/shared";
 import { SELF, env } from "cloudflare:test";
-import { base64url, randomId, randomToken, sha256Hex, utf8 } from "../src/lib/encoding.ts";
+import { base64url, fromBase64url, randomId, randomToken, sha256Hex, utf8 } from "../src/lib/encoding.ts";
+import { sign } from "../src/lib/signed.ts";
 
 export const ORIGIN = "http://localhost:8787";
 export const ROOT = "root" as const;
@@ -104,9 +105,31 @@ export function browserPost(path: string, cookie: string, form: Record<string, s
   return SELF.fetch(`${ORIGIN}${path}`, { method: "POST", headers, body: new URLSearchParams(form).toString(), redirect: "manual" });
 }
 
-/** The /c/... URL of the viewer page's iframe. */
+/** A /c/... URL of the page, without a lease (what the source editor is handed). */
 export async function contentSrc(id: string, cookie: string, version?: number): Promise<string> {
   const res = await browserGet(`/a/${id}/token${version ? `?v=${version}` : ""}`, cookie);
   const body = (await res.json()) as { src: string };
   return body.src;
+}
+
+/** The /c/... URL of the frame in a viewer page or a public page. */
+export async function frameSrcOf(res: Response): Promise<string> {
+  const src = (await res.text()).match(/<iframe id="frame" src="([^"]+)"/)?.[1];
+  if (!src) throw new Error("The page has no frame.");
+  return src.replaceAll("&amp;", "&");
+}
+
+/** The token of a /c/<token>/... URL. */
+export function tokenOf(src: string): string {
+  return src.split("/")[2]!;
+}
+
+export function claimsOf(src: string): Record<string, unknown> {
+  return JSON.parse(new TextDecoder().decode(fromBase64url(tokenOf(src).split(".")[0]!)));
+}
+
+/** The same URL with its token run out, as a frame holds it ten minutes after its page opened. */
+export async function ranOut(src: string): Promise<string> {
+  const token = await sign({ ...claimsOf(src), exp: Math.floor(Date.now() / 1000) - 1 }, env.CONTENT_TOKEN_SECRET);
+  return src.replace(tokenOf(src), token);
 }

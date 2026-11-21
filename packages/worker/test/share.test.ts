@@ -1,7 +1,7 @@
-import { env } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { restoreArtifact, trashArtifact } from "../src/db/artifacts.ts";
-import { ROOT, browserGet, browserPost, createDevice, publish, sessionCookie } from "./helpers.ts";
+import { ORIGIN, ROOT, browserGet, browserPost, claimsOf, createDevice, publish, ranOut, sessionCookie, tokenOf } from "./helpers.ts";
 
 async function publishPage(html = "<h1>hello public</h1>") {
   const device = await createDevice();
@@ -157,5 +157,38 @@ describe("public links", () => {
     await share(id, owner);
     const list = await (await browserGet("/", owner.cookie)).text();
     expect(list).toMatch(/Shared page<\/a>[\s\S]{0,400}public/);
+  });
+
+  it("keeps the frame's URL while the public page renews its lease, and still closes it when the link is turned off", async () => {
+    const owner = await sessionCookie(ROOT);
+    const { id } = await publishPage();
+    const path = await share(id, owner);
+    const src = await iframeSrc(await browserGet(path));
+    expect(claimsOf(src)).toHaveProperty("l");
+    const late = await ranOut(src);
+    expect((await browserGet(late)).status).toBe(403);
+    const renew = (token: string, at = path) =>
+      SELF.fetch(`${ORIGIN}${at}/lease`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
+    expect((await renew(tokenOf(late))).status).toBe(200);
+    expect(await (await browserGet(late)).text()).toBe("<h1>hello public</h1>");
+    // Another page's public link does not renew it.
+    const other = await publishPage();
+    expect((await renew(tokenOf(late), await share(other.id, owner))).status).toBe(400);
+
+    expect((await browserPost(`/a/${id}/share/off`, owner.cookie, { csrf: owner.csrf })).status).toBe(303);
+    expect((await browserGet(late)).status).toBe(403);
+    expect((await renew(tokenOf(late))).status).toBe(404);
+  });
+
+  it("opens a new tab through a link that makes a fresh URL", async () => {
+    const owner = await sessionCookie(ROOT);
+    const { id } = await publishPage();
+    const path = await share(id, owner);
+    expect(await (await browserGet(path)).text()).toContain(`id="open" href="${path}/open"`);
+    const res = await browserGet(`${path}/open`);
+    expect(res.status).toBe(302);
+    const src = res.headers.get("location")!;
+    expect(claimsOf(src)).not.toHaveProperty("l");
+    expect(await (await browserGet(src)).text()).toBe("<h1>hello public</h1>");
   });
 });
