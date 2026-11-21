@@ -7,6 +7,7 @@ import { cleanupStatements as activityCleanup, purgeActivityStatements } from ".
 import { purgeLabelStatements } from "./db/labels.ts";
 import { purgeAccessStatements } from "./db/access.ts";
 import { presenceCleanup } from "./db/presence.ts";
+import { leaseCleanup } from "./db/leases.ts";
 import { forgetPages, indexPending, semanticOn } from "./db/semantic.ts";
 import { purgeCommentStatements } from "./db/comments.ts";
 
@@ -39,6 +40,7 @@ export async function cleanup(env: Env, config: Config, now = new Date()): Promi
     db.prepare("delete from secrets where finished_at <= ?").bind(new Date(now.getTime() - SECRET_HISTORY_DAYS * 864e5).toISOString()),
     ...activityCleanup(db, now),
     presenceCleanup(db, now),
+    leaseCleanup(db, now),
   ]);
   const expired = expiredResults.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
 

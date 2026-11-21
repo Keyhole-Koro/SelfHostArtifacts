@@ -1,8 +1,21 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { CONTENT_TOKEN_SECONDS, mintContentToken } from "../src/content.ts";
 import { sign } from "../src/lib/signed.ts";
-import { ORIGIN, ROOT, browserGet, contentSrc, createDevice, publish, sessionCookie } from "./helpers.ts";
+import {
+  ORIGIN,
+  ROOT,
+  browserGet,
+  claimsOf,
+  contentSrc,
+  createDevice,
+  frameSrcOf,
+  publish,
+  ranOut,
+  sessionCookie,
+  signedFetch,
+  tokenOf,
+} from "./helpers.ts";
 
 /** A page's own bytes: the HTML the viewer gets ends with the link script. */
 function withoutNav(body: string): string {
@@ -108,5 +121,81 @@ describe("viewer page", () => {
     expect(html).toMatch(/<iframe id="frame" src="\/c\/[^"]+\/index.html" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals"/);
     expect(html).not.toContain("allow-same-origin");
     expect(res.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  });
+
+  it("opens a new tab through a link that makes a fresh URL of the shown version, without a lease", async () => {
+    const { id, cookie, device } = await published({ "index.html": "v1" });
+    await publish(device, { "index.html": "v2" }, { id, base_version: 1 });
+    const html = await (await browserGet(`/a/${id}/v/1`, cookie)).text();
+    expect(html).toContain(`id="open" href="/a/${id}/open?v=1"`);
+    const res = await browserGet(`/a/${id}/open?v=1`, cookie);
+    expect(res.status).toBe(302);
+    const src = res.headers.get("location")!;
+    expect(claimsOf(src)).toMatchObject({ a: id, v: 1 });
+    expect(claimsOf(src)).not.toHaveProperty("l");
+    expect(withoutNav(await (await SELF.fetch(`${ORIGIN}${src}`)).text())).toBe("v1");
+    // Copying the link gives no one the page: without a session it goes to sign-in.
+    expect((await browserGet(`/a/${id}/open?v=1`)).headers.get("location")).toMatch(/^\/auth\/login\?next=/);
+  });
+});
+
+/** Asks for another ten minutes of a frame URL's lease, as the viewer page's script does. */
+function renew(id: string, who: { cookie: string; csrf: string }, token: string, headers: Record<string, string> = {}) {
+  return SELF.fetch(`${ORIGIN}/a/${id}/lease`, {
+    method: "POST",
+    headers: { cookie: who.cookie, origin: ORIGIN, "x-csrf": who.csrf, "content-type": "application/json", ...headers },
+    body: JSON.stringify({ token }),
+    redirect: "manual",
+  });
+}
+
+describe("frame leases", () => {
+  it("keeps the frame's URL serving past its ten minutes while the viewer renews the lease", async () => {
+    const { id } = await published();
+    const owner = await sessionCookie(ROOT);
+    const src = await frameSrcOf(await browserGet(`/a/${id}`, owner.cookie));
+    expect(claimsOf(src)).toMatchObject({ a: id, v: 1, u: owner.userId, l: expect.stringMatching(/^[0-9a-z]{16}$/) });
+    // Ten minutes later, without a renewal, it has run out like any other token.
+    const late = await ranOut(src);
+    expect((await SELF.fetch(`${ORIGIN}${late}`)).status).toBe(403);
+
+    const before = Math.floor(Date.now() / 1000);
+    const res = await renew(id, owner, tokenOf(late));
+    expect(res.status).toBe(200);
+    const { exp } = (await res.json()) as { exp: number };
+    expect(exp).toBeGreaterThanOrEqual(before + CONTENT_TOKEN_SECONDS);
+    expect(exp).toBeLessThanOrEqual(before + CONTENT_TOKEN_SECONDS + 1);
+    // The same URL serves the page and the files beside it again: the frame never needs a new one.
+    expect(withoutNav(await (await SELF.fetch(`${ORIGIN}${late}`)).text())).toBe("<h1>hi</h1>");
+    expect((await SELF.fetch(new URL("css/site.css", `${ORIGIN}${late}`))).status).toBe(200);
+
+    // A lease that was not renewed in time has ended.
+    await env.DB.prepare("update content_leases set expires_at = ? where id = ?").bind(new Date(Date.now() - 1000).toISOString(), claimsOf(src).l).run();
+    expect((await SELF.fetch(`${ORIGIN}${late}`)).status).toBe(403);
+  });
+
+  it("is renewed only by the person the URL was made for, for that page, from the viewer page", async () => {
+    const { id, device } = await published();
+    const other = await published();
+    const owner = await sessionCookie(ROOT);
+    const token = tokenOf(await frameSrcOf(await browserGet(`/a/${id}`, owner.cookie)));
+    expect((await renew(other.id, owner, token)).status).toBe(400);
+    expect((await renew(id, await sessionCookie(ROOT), token)).status).toBe(400);
+    expect((await renew(id, owner, tokenOf(await contentSrc(id, owner.cookie)))).status).toBe(400); // no lease
+    expect((await renew(id, owner, "not-a-token")).status).toBe(400);
+    expect((await renew(id, owner, token, { "x-csrf": "wrong" })).status).toBe(403);
+    expect((await renew(id, owner, token, { origin: "null" })).status).toBe(403); // from a sandboxed page
+    expect((await renew(id, owner, token)).status).toBe(200);
+    // Once the page is gone the lease is not renewed, and the URL stops within ten minutes.
+    await signedFetch(device, "DELETE", `/api/v1/artifacts/${id}`);
+    expect((await renew(id, owner, token)).status).toBe(404);
+  });
+
+  it("does not let a token without a lease serve past its expiry", async () => {
+    const { id, cookie } = await published();
+    const owner = await sessionCookie(ROOT);
+    const late = await ranOut(await contentSrc(id, cookie));
+    expect((await renew(id, owner, tokenOf(late))).status).toBe(400);
+    expect((await SELF.fetch(`${ORIGIN}${late}`)).status).toBe(403);
   });
 });

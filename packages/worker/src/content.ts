@@ -1,6 +1,12 @@
+import { leaseLive, renewLease } from "./db/leases.ts";
+import { randomId } from "./lib/encoding.ts";
 import { sign, verify } from "./lib/signed.ts";
 
-/** Lifetime of the token in /c/:token/. The viewer page fetches a fresh one before it runs out. */
+/**
+ * Lifetime of the token in /c/:token/, and of each renewal of its lease. A token in the frame
+ * of a viewer page has a lease: the page renews it while it is open, so the frame keeps its URL
+ * and the page in it is never reloaded. Any other token (a new tab, an editor) just runs out.
+ */
 export const CONTENT_TOKEN_SECONDS = 10 * 60;
 
 export interface ContentToken {
@@ -9,6 +15,7 @@ export interface ContentToken {
   exp: number; // unix seconds
   s?: string; // share nonce, for tokens minted by a public link; checked on every request
   u?: string; // the user a viewer token was minted for: macros show only what they may see
+  l?: string; // lease id: after `exp` the token serves while content_leases says so
 }
 
 export async function mintContentToken(
@@ -17,14 +24,32 @@ export async function mintContentToken(
   version: number,
   shareNonce?: string,
   userId?: string,
+  leased = false,
 ): Promise<{ token: string; exp: number }> {
   const exp = Math.floor(Date.now() / 1000) + CONTENT_TOKEN_SECONDS;
   const claims: ContentToken = shareNonce ? { a: artifactId, v: version, exp, s: shareNonce } : { a: artifactId, v: version, exp, ...(userId ? { u: userId } : {}) };
+  if (leased) claims.l = randomId();
   return { token: await sign(claims, secret), exp };
 }
 
-export function readContentToken(secret: string, token: string): Promise<ContentToken | undefined> {
-  return verify<ContentToken>(token, secret);
+/** The claims of a token that may be used now: it has not run out, or its lease has not ended. */
+export async function readContentToken(db: D1Database, secret: string, token: string, now = Date.now()): Promise<ContentToken | undefined> {
+  const claims = await signedContentClaims(secret, token);
+  if (!claims) return undefined;
+  if (claims.exp * 1000 > now) return claims;
+  return claims.l !== undefined && (await leaseLive(db, claims.l, now)) ? claims : undefined;
+}
+
+/** The claims of a token we signed, whether or not it has run out: for renewing its lease. */
+export function signedContentClaims(secret: string, token: string): Promise<ContentToken | undefined> {
+  return verify<ContentToken>(token, secret, 0); // a clock at 0 passes every expiry
+}
+
+/** Keeps a leased token serving for another CONTENT_TOKEN_SECONDS; returns when that ends. */
+export async function renewContentLease(db: D1Database, lease: string): Promise<number> {
+  const exp = Math.floor(Date.now() / 1000) + CONTENT_TOKEN_SECONDS;
+  await renewLease(db, lease, exp);
+  return exp;
 }
 
 /** Libraries that artifacts may load. Keep in sync with skills/selfhost-artifact-design/references/libraries.md. */

@@ -28,6 +28,15 @@ describe("daily cleanup", () => {
     expect(report.purgedArtifacts).toBe(0);
   });
 
+  it("drops frame leases that have ended", async () => {
+    await env.DB.prepare("insert into content_leases (id, expires_at) values ('ended', ?), ('open', ?)")
+      .bind(new Date(Date.now() - 1000).toISOString(), new Date(Date.now() + 600_000).toISOString())
+      .run();
+    await cleanup(env, loadConfig(env));
+    const { results } = await env.DB.prepare("select id from content_leases where id in ('ended', 'open')").all<{ id: string }>();
+    expect(results.map((r) => r.id)).toEqual(["open"]);
+  });
+
   it("keeps blobs uploaded in the last day even when nothing references them yet", async () => {
     await env.BLOBS.put("blobs/" + "c".repeat(64), "in flight");
     const report = await cleanup(env, loadConfig(env));

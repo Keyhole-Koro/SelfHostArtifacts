@@ -20,8 +20,9 @@ export const content = new Hono<AppEnv>();
 /**
  * Served beside every page opened in the viewer, and loaded from the end of its HTML. A click on a
  * link to another artifact on this host asks the viewer (the parent frame) to go there, since
- * the sandbox does not let the page navigate the viewer itself. The viewer checks the path. On
- * a page opened in a tab of its own, or through a public link, it does nothing.
+ * the sandbox does not let the page navigate the viewer itself. The viewer checks the path. The
+ * page's #fragment and the viewer's go together, so a link can open the page at a place in it.
+ * On a page opened in a tab of its own, or through a public link, it does nothing.
  */
 export const NAV_PATH = "!artifact/nav.js"; // "!" cannot start a published file's name, so no page can clash with it
 const NAV_JS = `(() => {
@@ -36,6 +37,15 @@ const NAV_JS = `(() => {
     e.preventDefault();
     window.parent.postMessage({ type: "artifact:navigate", path: url.pathname + url.hash }, "*");
   });
+  // The page's #fragment shows in the viewer's address bar, so a link to the viewer, or reloading
+  // it, opens the page at the same place; one typed there comes in below. history.replaceState
+  // fires no event, so the fragment is also checked every second.
+  let hash = location.hash;
+  const sendHash = () => {
+    if (location.hash !== hash) { hash = location.hash; window.parent.postMessage({ type: "artifact:hash", hash }, "*"); }
+  };
+  window.addEventListener("hashchange", sendHash);
+  setInterval(sendHash, 1000);
   // Comments: the selected passage goes to the viewer, and passages that have comments are marked.
   let last = "";
   const report = () => {
@@ -75,6 +85,13 @@ const NAV_JS = `(() => {
       const m = document.querySelector('mark.artifact-comment[data-comment="' + String(d.id).replace(/[^0-9a-z]/g, "") + '"]');
       if (m) m.scrollIntoView({ block: "center", behavior: "smooth" });
     }
+    if (d.type === "artifact:hash" && typeof d.hash === "string" && d.hash !== location.hash) {
+      // A move within this document (an empty fragment still needs its "#"), never a reload.
+      const url = new URL(location.href);
+      url.hash = d.hash;
+      hash = url.hash;
+      location.replace(url.hash ? url.href : url.href + "#");
+    }
   });
   const ready = () => window.parent.postMessage({ type: "artifact:ready" }, "*");
   if (document.readyState === "complete") ready(); else window.addEventListener("load", ready);
@@ -99,7 +116,7 @@ function plain(status: number, text: string, allowConnect: string[] = []) {
 
 content.on(["GET", "HEAD"], "/:token/*", async (c) => {
   const token = c.req.param("token");
-  const claims = await readContentToken(c.env.CONTENT_TOKEN_SECRET, token);
+  const claims = await readContentToken(c.env.DB, c.env.CONTENT_TOKEN_SECRET, token);
   if (!claims) return plain(403, "This link has expired. Reopen the artifact from its page.");
   const artifact = await getArtifact(c.env.DB, claims.a);
   if (!artifact) return plain(404, "This artifact was deleted.");
